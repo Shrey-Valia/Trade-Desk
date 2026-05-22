@@ -196,3 +196,101 @@ def test_delete_removes_trade(client):
     tid = client.post("/api/journal/trades", json=_trade_payload()).json()["id"]
     assert client.delete(f"/api/journal/trades/{tid}").status_code == 204
     assert client.get(f"/api/journal/trades/{tid}").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — metadata enrichment + R-multiple
+# ---------------------------------------------------------------------------
+
+
+def test_create_persists_phase2_metadata(client):
+    payload = _trade_payload(
+        tags=["earnings", "momentum"],
+        confidence=4,
+        thesis="Pre-earnings vol play",
+        planned_exit="Close night before print",
+        risk_amount=500.0,
+    )
+    res = client.post("/api/journal/trades", json=payload)
+    assert res.status_code == 201
+    body = res.json()
+    assert body["tags"] == ["earnings", "momentum"]
+    assert body["confidence"] == 4
+    assert body["thesis"] == "Pre-earnings vol play"
+    assert body["planned_exit"] == "Close night before print"
+    assert body["risk_amount"] == 500.0
+    assert body["mistake_tags"] == []           # capture at close, not entry
+    assert body["r_multiple"] is None           # open trade
+
+
+def test_close_with_mistake_tags_persists(client):
+    tid = client.post("/api/journal/trades", json=_trade_payload(risk_amount=200.0)).json()["id"]
+    res = client.patch(
+        f"/api/journal/trades/{tid}",
+        json={
+            "status": "closed",
+            "exit_date": datetime.now(timezone.utc).isoformat(),
+            "exit_underlying_price": 240.0,
+            "realized_pnl": 400.0,
+            "mistake_tags": ["chased IV crush", "held too long"],
+            "review_note": "Should have closed before earnings.",
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["mistake_tags"] == ["chased IV crush", "held too long"]
+    assert body["review_note"] == "Should have closed before earnings."
+    # 400 / 200 = 2.0R
+    assert body["r_multiple"] == pytest.approx(2.0)
+
+
+def test_r_multiple_negative_for_losing_trade(client):
+    tid = client.post("/api/journal/trades", json=_trade_payload(risk_amount=500.0)).json()["id"]
+    res = client.patch(
+        f"/api/journal/trades/{tid}",
+        json={
+            "status": "closed",
+            "exit_date": datetime.now(timezone.utc).isoformat(),
+            "exit_underlying_price": 220.0,
+            "realized_pnl": -750.0,
+        },
+    )
+    # -750 / 500 = -1.5R
+    assert res.json()["r_multiple"] == pytest.approx(-1.5)
+
+
+def test_r_multiple_none_when_no_risk_amount(client):
+    """Trade without a risk_amount logged → r_multiple is None even when
+    realized_pnl is present. We surface '—' in UI rather than infer."""
+    tid = client.post("/api/journal/trades", json=_trade_payload()).json()["id"]  # no risk
+    res = client.patch(
+        f"/api/journal/trades/{tid}",
+        json={
+            "status": "closed",
+            "exit_date": datetime.now(timezone.utc).isoformat(),
+            "exit_underlying_price": 240.0,
+            "realized_pnl": 300.0,
+        },
+    )
+    assert res.json()["r_multiple"] is None
+
+
+def test_r_multiple_none_when_risk_is_zero(client):
+    """Defensive: a zero-risk trade should not divide by zero."""
+    # Backend schema requires risk_amount > 0, so we can't POST risk=0.
+    # Instead create with risk_amount=None then read back.
+    res = client.post("/api/journal/trades", json=_trade_payload())
+    body = res.json()
+    assert body["r_multiple"] is None
+    assert body["risk_amount"] is None
+
+
+def test_mistake_vocab_endpoint(client):
+    res = client.get("/api/journal/vocab/mistakes")
+    assert res.status_code == 200
+    tags = res.json()["tags"]
+    assert "chased IV crush" in tags
+    assert "rolled too soon" in tags
+    # Vocabulary is finite — keep this list aligned with the frontend
+    # MISTAKE_TAG_VOCABULARY constant.
+    assert len(tags) == 8

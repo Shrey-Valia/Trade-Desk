@@ -53,6 +53,21 @@ class TradeLeg(BaseModel):
         return round(v, 2)
 
 
+# Fixed vocabulary for the post-trade "what did I do wrong" capture.
+# Surfaced as the suggestion set in the close-position UI; custom strings
+# are also allowed via the `mistake_tags` free list.
+MISTAKE_TAG_VOCABULARY: tuple[str, ...] = (
+    "chased IV crush",
+    "rolled too soon",
+    "no exit plan",
+    "oversized",
+    "revenge trade",
+    "ignored regime",
+    "held too long",
+    "cut winner early",
+)
+
+
 class TradeIn(BaseModel):
     symbol: str = Field(min_length=1, max_length=16)
     strategy: str
@@ -62,6 +77,13 @@ class TradeIn(BaseModel):
     net_debit_credit: float | None = None    # computed from legs if omitted
     is_paper: bool = True
     notes: str | None = None
+    # Phase 2 enrichment — all optional and additive.
+    tags: list[str] = Field(default_factory=list)
+    confidence: int | None = Field(default=None, ge=1, le=5)
+    thesis: str | None = None
+    planned_exit: str | None = None
+    risk_amount: float | None = Field(default=None, gt=0)
+    screenshot_url: str | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -79,13 +101,16 @@ class TradeIn(BaseModel):
 class TradeUpdate(BaseModel):
     """PATCH payload — every field optional. Pass `status='closed'` plus
     exit_date / exit_underlying_price / realized_pnl to close a trade.
-    Notes can be edited independently."""
+    Notes / mistake tags / review can be edited independently after
+    close."""
 
     status: TradeStatus | None = None
     exit_date: datetime | None = None
     exit_underlying_price: float | None = Field(default=None, gt=0)
     realized_pnl: float | None = None
     notes: str | None = None
+    mistake_tags: list[str] | None = None
+    review_note: str | None = None
 
 
 class TradeOut(BaseModel):
@@ -102,6 +127,16 @@ class TradeOut(BaseModel):
     realized_pnl: float | None = None
     is_paper: bool
     notes: str | None = None
+    # Phase 2 enrichment.
+    tags: list[str] = Field(default_factory=list)
+    mistake_tags: list[str] = Field(default_factory=list)
+    confidence: int | None = None
+    thesis: str | None = None
+    planned_exit: str | None = None
+    risk_amount: float | None = None
+    screenshot_url: str | None = None
+    review_note: str | None = None
+    r_multiple: float | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -165,6 +200,7 @@ def compute_net_debit_credit(legs: list[TradeLeg]) -> float:
 __all__ = [
     "AnalyticsGreeks",
     "EXPECTED_LEG_COUNT",
+    "MISTAKE_TAG_VOCABULARY",
     "STRATEGY_TYPES",
     "TradeAnalyticsOut",
     "TradeIn",

@@ -56,6 +56,14 @@ export function TradeEntryModal({ open, onClose }: Props) {
   const [netOverride, setNetOverride] = useState<string>(""); // blank = use computed
   const [formError, setFormError] = useState<string | null>(null);
 
+  // Phase 2 metadata — all optional.
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagDraft, setTagDraft] = useState("");
+  const [confidence, setConfidence] = useState<number | null>(null);
+  const [thesis, setThesis] = useState("");
+  const [plannedExit, setPlannedExit] = useState("");
+  const [riskAmount, setRiskAmount] = useState("");
+
   // Hydrate defaults when the modal opens.
   useEffect(() => {
     if (!open) return;
@@ -67,7 +75,25 @@ export function TradeEntryModal({ open, onClose }: Props) {
     setIsPaper(true);
     setNetOverride("");
     setFormError(null);
+    setTags([]);
+    setTagDraft("");
+    setConfidence(null);
+    setThesis("");
+    setPlannedExit("");
+    setRiskAmount("");
   }, [open, selected, detail]);
+
+  const addTag = () => {
+    const t = tagDraft.trim();
+    if (!t) return;
+    if (tags.includes(t)) {
+      setTagDraft("");
+      return;
+    }
+    setTags([...tags, t]);
+    setTagDraft("");
+  };
+  const removeTag = (t: string) => setTags(tags.filter((x) => x !== t));
 
   // Re-scaffold legs when strategy changes — preserves the current expiry
   // and ATM strike anchor so the user doesn't lose context.
@@ -110,6 +136,11 @@ export function TradeEntryModal({ open, onClose }: Props) {
         net_debit_credit: netOverride !== "" ? Number(netOverride) : null,
         is_paper: isPaper,
         notes: notes.trim() || null,
+        tags,
+        confidence,
+        thesis: thesis.trim() || null,
+        planned_exit: plannedExit.trim() || null,
+        risk_amount: riskAmount ? Number(riskAmount) : null,
       });
       onClose();
     } catch (err) {
@@ -146,7 +177,8 @@ export function TradeEntryModal({ open, onClose }: Props) {
           </button>
         </header>
 
-        <div className="grid grid-cols-2 gap-4 p-4">
+        <SectionHeader label="Setup" />
+        <div className="grid grid-cols-2 gap-4 px-4 pb-4 pt-2">
           <Field label="Symbol">
             <input
               value={symbol}
@@ -243,15 +275,130 @@ export function TradeEntryModal({ open, onClose }: Props) {
           </Field>
         </div>
 
-        <Field label="Notes" className="px-4 pb-3">
+        <SectionHeader label="Thesis & plan" />
+        <div className="grid grid-cols-2 gap-4 px-4 pb-3 pt-2">
+          <Field label="Tags">
+            <div className="flex flex-col gap-1">
+              <div className="flex gap-1 flex-wrap min-h-[1.5rem]">
+                {tags.map((t) => (
+                  <span
+                    key={t}
+                    className="inline-flex items-center gap-1 px-1.5 py-px text-tiny border border-hairline bg-tier-1 text-fg-secondary"
+                    style={{ borderRadius: 0, fontSize: 10 }}
+                  >
+                    {t}
+                    <button
+                      type="button"
+                      onClick={() => removeTag(t)}
+                      className="text-fg-tertiary hover:text-bearish leading-none"
+                      aria-label={`Remove tag ${t}`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-1">
+                <input
+                  type="text"
+                  value={tagDraft}
+                  onChange={(e) => setTagDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addTag();
+                    }
+                  }}
+                  placeholder="earnings, momentum…"
+                  className="flex-1 h-7 px-2 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
+                  style={{ borderRadius: 0 }}
+                />
+                <button
+                  type="button"
+                  onClick={addTag}
+                  className="h-7 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2"
+                  style={{ borderRadius: 0 }}
+                >
+                  add
+                </button>
+              </div>
+            </div>
+          </Field>
+          <Field label="Confidence">
+            <div className="flex items-center gap-1">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setConfidence(confidence === n ? null : n)}
+                  className={[
+                    "h-7 w-7 text-tiny tabular-nums border",
+                    confidence != null && n <= confidence
+                      ? "border-amber text-amber bg-tier-1"
+                      : "border-hairline text-fg-tertiary hover:bg-tier-2",
+                  ].join(" ")}
+                  style={{ borderRadius: 0 }}
+                  aria-label={`Confidence ${n}`}
+                >
+                  {n}
+                </button>
+              ))}
+              <span className="ml-1 text-tiny text-fg-tertiary">
+                {confidence == null ? "—" : `${confidence}/5`}
+              </span>
+            </div>
+          </Field>
+        </div>
+
+        <Field label="Thesis" className="px-4 pb-3">
           <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
+            value={thesis}
+            onChange={(e) => setThesis(e.target.value)}
             rows={2}
-            className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary resize-none"
+            placeholder="Why this setup, right now?"
+            className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none"
             style={{ borderRadius: 0 }}
           />
         </Field>
+
+        <Field label="Planned exit" className="px-4 pb-3">
+          <textarea
+            value={plannedExit}
+            onChange={(e) => setPlannedExit(e.target.value)}
+            rows={2}
+            placeholder="At what level / event do you close?"
+            className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none"
+            style={{ borderRadius: 0 }}
+          />
+        </Field>
+
+        <SectionHeader label="Risk" />
+        <div className="grid grid-cols-2 gap-4 px-4 pb-3 pt-2">
+          <Field label="Risk amount ($)">
+            <input
+              type="number"
+              step="1"
+              min="0"
+              value={riskAmount}
+              onChange={(e) => setRiskAmount(e.target.value)}
+              placeholder="500"
+              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
+              style={{ borderRadius: 0 }}
+            />
+            <div className="text-tiny text-fg-tertiary mt-0.5">
+              Drives R-multiple on close.
+            </div>
+          </Field>
+          <Field label="Notes (entry)">
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary resize-none"
+              style={{ borderRadius: 0 }}
+            />
+          </Field>
+        </div>
 
         {formError && (
           <div className="px-4 pb-2 text-tiny text-bearish">{formError}</div>
@@ -296,6 +443,16 @@ function Field({
       </span>
       {children}
     </label>
+  );
+}
+
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div className="px-4 py-1.5 bg-tier-1 border-t border-hairline">
+      <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
+        {label}
+      </span>
+    </div>
   );
 }
 

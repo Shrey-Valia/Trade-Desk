@@ -27,10 +27,34 @@ export const TradeOutSchema = z.object({
   realized_pnl: z.number().nullable().optional(),
   is_paper: z.boolean(),
   notes: z.string().nullable().optional(),
+  // Phase 2 metadata.
+  tags: z.array(z.string()).default([]),
+  mistake_tags: z.array(z.string()).default([]),
+  confidence: z.number().int().min(1).max(5).nullable().optional(),
+  thesis: z.string().nullable().optional(),
+  planned_exit: z.string().nullable().optional(),
+  risk_amount: z.number().nullable().optional(),
+  screenshot_url: z.string().nullable().optional(),
+  review_note: z.string().nullable().optional(),
+  r_multiple: z.number().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
 export type Trade = z.infer<typeof TradeOutSchema>;
+
+// Mirror of MISTAKE_TAG_VOCABULARY in backend schemas/journal.py — used
+// as autocomplete suggestions in the close-position UI. Custom strings
+// are also accepted.
+export const MISTAKE_TAG_VOCABULARY: readonly string[] = [
+  "chased IV crush",
+  "rolled too soon",
+  "no exit plan",
+  "oversized",
+  "revenge trade",
+  "ignored regime",
+  "held too long",
+  "cut winner early",
+] as const;
 
 export const TradesResponseSchema = z.object({
   trades: z.array(TradeOutSchema),
@@ -161,6 +185,12 @@ export interface TradeInput {
   net_debit_credit?: number | null;
   is_paper: boolean;
   notes?: string | null;
+  tags?: string[];
+  confidence?: number | null;
+  thesis?: string | null;
+  planned_exit?: string | null;
+  risk_amount?: number | null;
+  screenshot_url?: string | null;
 }
 
 export interface TradeUpdateInput {
@@ -169,6 +199,8 @@ export interface TradeUpdateInput {
   exit_underlying_price?: number;
   realized_pnl?: number;
   notes?: string;
+  mistake_tags?: string[];
+  review_note?: string;
 }
 
 /** Pure helper mirroring backend compute_net_debit_credit so the form

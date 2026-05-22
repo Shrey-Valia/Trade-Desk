@@ -30,6 +30,7 @@ from models.trade import Trade
 from schemas.journal import (
     AnalyticsGreeks,
     EXPECTED_LEG_COUNT,
+    MISTAKE_TAG_VOCABULARY,
     TradeAnalyticsOut,
     TradeIn,
     TradeOut,
@@ -70,8 +71,15 @@ def create_trade(
         status="open",
         is_paper=payload.is_paper,
         notes=payload.notes,
+        confidence=payload.confidence,
+        thesis=payload.thesis,
+        planned_exit=payload.planned_exit,
+        risk_amount=payload.risk_amount,
+        screenshot_url=payload.screenshot_url,
     )
     trade.legs = [leg.model_dump(mode="json") for leg in payload.legs]
+    trade.tags = list(payload.tags)
+    trade.mistake_tags = []         # captured at close time, not entry
     session.add(trade)
     session.commit()
     session.refresh(trade)
@@ -124,10 +132,23 @@ def update_trade(
         trade.realized_pnl = payload.realized_pnl
     if payload.notes is not None:
         trade.notes = payload.notes
+    if payload.mistake_tags is not None:
+        trade.mistake_tags = list(payload.mistake_tags)
+    if payload.review_note is not None:
+        trade.review_note = payload.review_note
 
     session.commit()
     session.refresh(trade)
     return _to_out(trade)
+
+
+@router.get("/vocab/mistakes")
+def mistake_vocab() -> dict[str, list[str]]:
+    """Suggestion set for the close-position mistake-tag picker.
+
+    Frontend treats this as autocomplete suggestions, not a closed set —
+    custom mistake-tag strings can still be saved against a trade."""
+    return {"tags": list(MISTAKE_TAG_VOCABULARY)}
 
 
 @router.get("/trades/{trade_id}/analytics", response_model=TradeAnalyticsOut)
@@ -266,6 +287,15 @@ def _to_out(trade: Trade) -> TradeOut:
         realized_pnl=trade.realized_pnl,
         is_paper=trade.is_paper,
         notes=trade.notes,
+        tags=trade.tags,
+        mistake_tags=trade.mistake_tags,
+        confidence=trade.confidence,
+        thesis=trade.thesis,
+        planned_exit=trade.planned_exit,
+        risk_amount=trade.risk_amount,
+        screenshot_url=trade.screenshot_url,
+        review_note=trade.review_note,
+        r_multiple=trade.r_multiple,
         created_at=trade.created_at,
         updated_at=trade.updated_at,
     )

@@ -3,7 +3,11 @@ import { useState } from "react";
 import { useUpdateTrade } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
 import { useSelectedTicker } from "@/stores/selectedTicker";
-import { STRATEGY_LABELS, type Trade } from "@/types/journal";
+import {
+  MISTAKE_TAG_VOCABULARY,
+  STRATEGY_LABELS,
+  type Trade,
+} from "@/types/journal";
 
 interface Props {
   trades: Trade[];
@@ -68,6 +72,7 @@ export function TradeList({
                 <Th className="text-right">DTE</Th>
                 <Th className="text-right">Net</Th>
                 <Th className="text-right">Realized</Th>
+                <Th className="text-right">R</Th>
                 <Th className="text-left">Status</Th>
                 <Th className="text-left">Tag</Th>
                 <Th />
@@ -221,6 +226,9 @@ function TradeRow({
         <Td className={`text-right ${pnlClass(trade.realized_pnl)}`}>
           {trade.realized_pnl == null ? "—" : formatNet(trade.realized_pnl)}
         </Td>
+        <Td className={`text-right ${pnlClass(trade.r_multiple ?? null)}`}>
+          {trade.r_multiple == null ? "—" : formatRMultiple(trade.r_multiple)}
+        </Td>
         <Td className="text-left">
           <StatusChip status={trade.status} />
         </Td>
@@ -261,6 +269,24 @@ function CloseForm({
   const updateTrade = useUpdateTrade();
   const [exitPrice, setExitPrice] = useState("");
   const [pnl, setPnl] = useState("");
+  const [mistakes, setMistakes] = useState<string[]>([]);
+  const [customMistake, setCustomMistake] = useState("");
+  const [review, setReview] = useState("");
+
+  const toggleMistake = (tag: string) => {
+    setMistakes((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    );
+  };
+  const addCustom = () => {
+    const t = customMistake.trim();
+    if (!t || mistakes.includes(t)) {
+      setCustomMistake("");
+      return;
+    }
+    setMistakes([...mistakes, t]);
+    setCustomMistake("");
+  };
 
   const submit = async () => {
     if (!exitPrice) return;
@@ -271,6 +297,8 @@ function CloseForm({
         exit_date: new Date().toISOString(),
         exit_underlying_price: Number(exitPrice),
         realized_pnl: pnl ? Number(pnl) : 0,
+        mistake_tags: mistakes,
+        review_note: review.trim() || undefined,
       },
     });
     onClosed();
@@ -278,50 +306,134 @@ function CloseForm({
 
   return (
     <tr className="bg-tier-1 border-t border-hairline">
-      <td colSpan={9} className="px-3 py-2">
-        <div className="flex items-center gap-3 text-tiny">
-          <span className="text-fg-secondary uppercase tracking-label-up">
-            Close {trade.symbol}
-          </span>
-          <label className="flex items-center gap-1">
-            <span className="text-fg-tertiary">Exit price</span>
-            <input
-              type="number"
-              step="0.01"
-              value={exitPrice}
-              onChange={(e) => setExitPrice(e.target.value)}
-              className="h-6 w-20 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right"
+      <td colSpan={10} className="px-3 py-2">
+        <div className="flex flex-col gap-2 text-tiny">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-fg-secondary uppercase tracking-label-up">
+              Close {trade.symbol}
+            </span>
+            <label className="flex items-center gap-1">
+              <span className="text-fg-tertiary">Exit price</span>
+              <input
+                type="number"
+                step="0.01"
+                value={exitPrice}
+                onChange={(e) => setExitPrice(e.target.value)}
+                className="h-6 w-20 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right"
+                style={{ borderRadius: 0 }}
+              />
+            </label>
+            <label className="flex items-center gap-1">
+              <span className="text-fg-tertiary">Realized P&amp;L</span>
+              <input
+                type="number"
+                step="0.01"
+                value={pnl}
+                onChange={(e) => setPnl(e.target.value)}
+                placeholder="0"
+                className="h-6 w-24 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right placeholder:text-fg-tertiary"
+                style={{ borderRadius: 0 }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={updateTrade.isPending || !exitPrice}
+              className="h-6 px-2 uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
+              style={{ borderRadius: 0 }}
+            >
+              Save close
+            </button>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="h-6 px-2 text-fg-tertiary hover:text-fg-primary"
+            >
+              cancel
+            </button>
+          </div>
+          <div className="flex items-start gap-3 flex-wrap">
+            <span className="text-fg-tertiary uppercase tracking-label-up mt-1 shrink-0"
+                  style={{ fontSize: 9 }}>
+              Mistakes
+            </span>
+            <div className="flex gap-1 flex-wrap">
+              {MISTAKE_TAG_VOCABULARY.map((tag) => {
+                const on = mistakes.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => toggleMistake(tag)}
+                    className={[
+                      "px-1.5 py-px text-tiny border",
+                      on
+                        ? "border-amber text-amber bg-tier-2"
+                        : "border-hairline text-fg-tertiary hover:bg-tier-2",
+                    ].join(" ")}
+                    style={{ borderRadius: 0, fontSize: 10 }}
+                  >
+                    {tag}
+                  </button>
+                );
+              })}
+              {/* Custom mistake input */}
+              <input
+                type="text"
+                value={customMistake}
+                onChange={(e) => setCustomMistake(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustom();
+                  }
+                }}
+                placeholder="+ custom"
+                className="h-6 w-24 px-1 text-tiny bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
+                style={{ borderRadius: 0, fontSize: 10 }}
+              />
+            </div>
+          </div>
+          {mistakes.filter((m) => !MISTAKE_TAG_VOCABULARY.includes(m as never)).length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap pl-12">
+              <span className="text-fg-tertiary" style={{ fontSize: 9 }}>
+                Custom:
+              </span>
+              {mistakes
+                .filter((m) => !MISTAKE_TAG_VOCABULARY.includes(m as never))
+                .map((m) => (
+                  <span
+                    key={m}
+                    className="inline-flex items-center gap-1 px-1.5 py-px border border-amber text-amber"
+                    style={{ borderRadius: 0, fontSize: 10 }}
+                  >
+                    {m}
+                    <button
+                      type="button"
+                      onClick={() => toggleMistake(m)}
+                      className="leading-none"
+                      aria-label={`Remove ${m}`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+            </div>
+          )}
+          <label className="flex items-start gap-3">
+            <span className="text-fg-tertiary uppercase tracking-label-up mt-1 shrink-0"
+                  style={{ fontSize: 9 }}>
+              Review
+            </span>
+            <textarea
+              value={review}
+              onChange={(e) => setReview(e.target.value)}
+              rows={2}
+              placeholder="Post-trade note — what would you do differently?"
+              className="flex-1 px-1 py-0.5 text-tiny bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none"
               style={{ borderRadius: 0 }}
             />
           </label>
-          <label className="flex items-center gap-1">
-            <span className="text-fg-tertiary">Realized P&amp;L</span>
-            <input
-              type="number"
-              step="0.01"
-              value={pnl}
-              onChange={(e) => setPnl(e.target.value)}
-              placeholder="0"
-              className="h-6 w-24 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right placeholder:text-fg-tertiary"
-              style={{ borderRadius: 0 }}
-            />
-          </label>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={updateTrade.isPending || !exitPrice}
-            className="h-6 px-2 uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
-            style={{ borderRadius: 0 }}
-          >
-            Save close
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="h-6 px-2 text-fg-tertiary hover:text-fg-primary"
-          >
-            cancel
-          </button>
         </div>
       </td>
     </tr>
@@ -390,6 +502,11 @@ function formatDate(iso: string): string {
 function formatNet(value: number): string {
   const sign = value < 0 ? "−" : "";
   return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatRMultiple(r: number): string {
+  const sign = r < 0 ? "−" : r > 0 ? "+" : "";
+  return `${sign}${Math.abs(r).toFixed(2)}R`;
 }
 
 function pnlClass(pnl: number | null | undefined): string {

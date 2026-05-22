@@ -38,6 +38,19 @@ class Trade(Base):
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Phase 2 (overnight polish) — metadata enrichment. All fields below
+    # are NULLABLE and DEFAULTED so existing trade rows keep working
+    # without migration; new trades opt in by filling them.
+    tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    mistake_tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    thesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    planned_exit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    screenshot_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         nullable=False,
@@ -60,3 +73,37 @@ class Trade(Base):
     @legs.setter
     def legs(self, value: list[dict[str, Any]]) -> None:
         self.legs_json = json.dumps(value)
+
+    @property
+    def tags(self) -> list[str]:
+        try:
+            return json.loads(self.tags_json or "[]")
+        except (ValueError, TypeError):
+            return []
+
+    @tags.setter
+    def tags(self, value: list[str]) -> None:
+        self.tags_json = json.dumps(value)
+
+    @property
+    def mistake_tags(self) -> list[str]:
+        try:
+            return json.loads(self.mistake_tags_json or "[]")
+        except (ValueError, TypeError):
+            return []
+
+    @mistake_tags.setter
+    def mistake_tags(self, value: list[str]) -> None:
+        self.mistake_tags_json = json.dumps(value)
+
+    @property
+    def r_multiple(self) -> float | None:
+        """realized_pnl / risk_amount when both are present and risk > 0.
+        Returns None for open trades or trades without a risk target —
+        downstream UI shows '—' in that case rather than a divide-by-
+        zero or a misleadingly large number."""
+        if self.risk_amount is None or self.risk_amount <= 0:
+            return None
+        if self.realized_pnl is None:
+            return None
+        return float(self.realized_pnl) / float(self.risk_amount)
