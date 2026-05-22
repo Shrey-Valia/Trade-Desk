@@ -18,6 +18,10 @@ import {
   type AnalyticsResponse,
 } from "@/types/analytics";
 import {
+  CalendarMonthSchema,
+  type CalendarMonth,
+} from "@/types/calendar_journal";
+import {
   TradeAnalyticsSchema,
   TradeOutSchema,
   TradesResponseSchema,
@@ -160,6 +164,18 @@ export interface JournalAnalyticsFilters {
   since?: string | null;     // ISO date
   until?: string | null;
 }
+
+export const fetchJournalCalendar = (
+  month: string,
+  isPaper?: boolean | null,
+): Promise<CalendarMonth> => {
+  const p = new URLSearchParams();
+  p.set("month", month);
+  if (isPaper !== undefined && isPaper !== null) {
+    p.set("is_paper", String(isPaper));
+  }
+  return request(`/api/journal/calendar?${p.toString()}`, CalendarMonthSchema);
+};
 
 export const fetchJournalAnalytics = (
   filters: JournalAnalyticsFilters = {},

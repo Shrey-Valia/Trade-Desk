@@ -21,12 +21,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from calculations.journal_calendar import build_month, parse_month
 from calculations.position_analytics import (
     build_legs_from_journal,
     compute_analytics,
 )
 from database import get_session
 from models.trade import Trade
+from schemas.calendar_journal import (
+    CalendarDayOut,
+    CalendarMonthOut,
+    CalendarWeekOut,
+)
 from schemas.journal import (
     AnalyticsGreeks,
     EXPECTED_LEG_COUNT,
@@ -140,6 +146,53 @@ def update_trade(
     session.commit()
     session.refresh(trade)
     return _to_out(trade)
+
+
+@router.get("/calendar", response_model=CalendarMonthOut)
+def get_calendar(
+    month: str | None = None,
+    is_paper: bool | None = None,
+    session: Session = Depends(get_session),
+) -> CalendarMonthOut:
+    """Monthly P&L calendar grid. Buckets closed trades by exit_date.
+
+    `month` is "YYYY-MM"; malformed or omitted falls back to today's
+    month. `is_paper` mirrors the trade-list filter so the journal page
+    can flip paper/live without re-rendering the trade list separately.
+    """
+    target = parse_month(month)
+
+    stmt = select(Trade).where(Trade.status == "closed")
+    if is_paper is not None:
+        stmt = stmt.where(Trade.is_paper == is_paper)
+    trades = session.execute(stmt).scalars().all()
+
+    grid = build_month(trades, target)
+    return CalendarMonthOut(
+        month=grid.month,
+        label=grid.label,
+        weeks=[
+            CalendarWeekOut(
+                week_of_month=w.week_of_month,
+                days=[
+                    CalendarDayOut(
+                        date=d.date,
+                        in_month=d.in_month,
+                        realized_pnl=d.realized_pnl,
+                        trade_count=d.trade_count,
+                        trade_ids=d.trade_ids,
+                        is_today=d.is_today,
+                    )
+                    for d in w.days
+                ],
+                realized_pnl=w.realized_pnl,
+                trade_count=w.trade_count,
+            )
+            for w in grid.weeks
+        ],
+        realized_pnl=grid.realized_pnl,
+        trade_count=grid.trade_count,
+    )
 
 
 @router.get("/vocab/mistakes")
