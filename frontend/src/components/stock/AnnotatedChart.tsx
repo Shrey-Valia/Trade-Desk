@@ -19,7 +19,10 @@ import {
 
 import { useTickerChart } from "@/hooks/useTickerChart";
 import { colors } from "@/lib/design";
+import { useChartPrefs } from "@/stores/chartPrefs";
 import type { BarPoint, ChartAnnotations, ChartTimeframe } from "@/types/chart";
+
+import { ChartLegend } from "./ChartLegend";
 
 const TIMEFRAMES: ChartTimeframe[] = ["1D", "5D", "1M", "3M"];
 
@@ -104,7 +107,7 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
         </div>
       )}
 
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 relative">
         {isLoading && <ChartSkeleton />}
         {isError && (
           <div className="text-tiny text-bearish">
@@ -112,13 +115,16 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
           </div>
         )}
         {data && data.bars.length > 0 && (
-          <LightweightChart
-            key={`${symbol}:${timeframe}`}
-            bars={data.bars}
-            annotations={data.annotations}
-            timeframe={timeframe}
-            position={position ?? null}
-          />
+          <>
+            <LightweightChart
+              key={`${symbol}:${timeframe}`}
+              bars={data.bars}
+              annotations={data.annotations}
+              timeframe={timeframe}
+              position={position ?? null}
+            />
+            <ChartLegend hasActivePosition={position != null} />
+          </>
         )}
       </div>
 
@@ -139,6 +145,7 @@ interface ChartProps {
 }
 
 function LightweightChart({ bars, annotations, timeframe, position }: ChartProps) {
+  const showMarketAnnotations = useChartPrefs((s) => s.showMarketAnnotations);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null>(null);
@@ -160,6 +167,11 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
         fontFamily:
           '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
         fontSize: 11,
+        // Apache-2.0 license requires attribution; we satisfy it in
+        // README + on-screen "OPTIONS · FUTURES · TERMINAL" tagline
+        // rather than the corner watermark, which competes visually
+        // with our position annotations.
+        attributionLogo: false,
       },
       grid: {
         vertLines: { visible: false },
@@ -283,10 +295,28 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
       seriesRef.current = candles;
     }
 
-    annotationLinesRef.current = buildPriceLines(seriesRef.current, annotations);
+    // Market-structure annotations are managed by a separate effect
+    // below so the toggle doesn't rebuild the candle series.
+    annotationLinesRef.current = [];
 
     chart.timeScale().fitContent();
   }, [bars, annotations, timeframe]);
+
+  // Market-structure annotation overlay — toggle-aware.
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    for (const line of annotationLinesRef.current) {
+      try {
+        series.removePriceLine(line);
+      } catch {
+        /* line already detached */
+      }
+    }
+    annotationLinesRef.current = showMarketAnnotations
+      ? buildPriceLines(series, annotations)
+      : [];
+  }, [annotations, showMarketAnnotations]);
 
   // Position overlay — independent of the series lifecycle so the
   // scrubber can stream new BE values without redrawing candles.
@@ -338,8 +368,9 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
 
     // Breakeven price lines at the scrubber's DTE (the live one). Drawn
     // as solid magenta — distinctively NOT in the amber/red/green/cyan
-    // palette used for market-structure annotations.
-    const beLabel = position.scrubberLabel ? `BE ${position.scrubberLabel}` : "BE";
+    // palette used for market-structure annotations. Title kept to "BE"
+    // (no scrubber suffix) so the right-axis label stays compact; the
+    // scrubber state is surfaced in the payoff-panel header instead.
     for (const be of position.breakevensToday) {
       positionLinesRef.current.push(
         series.createPriceLine({
@@ -348,7 +379,7 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
           lineStyle: LineStyle.Solid,
           lineWidth: 2,
           axisLabelVisible: true,
-          title: beLabel,
+          title: "BE",
         }),
       );
     }
@@ -370,7 +401,7 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
             lineStyle: LineStyle.Dotted,
             lineWidth: 1,
             axisLabelVisible: true,
-            title: "BE expiry",
+            title: "BE✕",
           }),
         );
       }

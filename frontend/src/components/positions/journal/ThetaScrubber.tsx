@@ -1,3 +1,5 @@
+import { Coachmark } from "@/components/positions/Coachmark";
+
 interface Props {
   currentDte: number;
   scrubberDte: number;
@@ -34,7 +36,14 @@ export function ThetaScrubber({
   const elapsed = Math.max(0, currentDte - scrubberDte);
   const isAtNow = scrubberDte === currentDte;
   return (
-    <div className="flex items-center gap-3 px-3 py-1.5 border-t border-hairline bg-tier-0 shrink-0">
+    <div className="relative flex items-center gap-3 px-3 py-1.5 border-t border-hairline bg-tier-0 shrink-0">
+      <Coachmark
+        hint="scrubber"
+        label="Theta scrubber"
+        body="Drag right to fast-forward time — watch the breakeven move on the chart as theta decays."
+        side="top"
+        enabled={!disabled && currentDte > 0}
+      />
       <span className="text-tiny uppercase tracking-label-up text-fg-secondary shrink-0">
         Theta scrubber
       </span>

@@ -79,9 +79,25 @@ function Header({
 }
 
 function EmptyState({ loading }: { loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div
+          className="border border-hairline bg-tier-1"
+          style={{ width: "60%", height: "60%", borderRadius: 0 }}
+          aria-label="Loading analytics"
+        />
+      </div>
+    );
+  }
   return (
-    <div className="absolute inset-0 flex items-center justify-center text-tiny text-fg-tertiary">
-      {loading ? "Loading analytics…" : "Select a trade to render its payoff curve."}
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-fg-tertiary">
+      <span className="text-tiny uppercase tracking-label-up" style={{ fontSize: 9 }}>
+        No position
+      </span>
+      <span className="text-xs2" style={{ fontSize: 11 }}>
+        Click a trade below to render its payoff curve.
+      </span>
     </div>
   );
 }
@@ -143,6 +159,7 @@ function PayoffChart({ analytics }: { analytics: TradeAnalytics }) {
         fontFamily:
           '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
         fontSize: 10,
+        attributionLogo: false,
       },
       grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       crosshair: {

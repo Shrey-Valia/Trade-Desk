@@ -1767,3 +1767,9 @@ Beyond the core build, ideas for future enhancements:
 ---
 
 *Built for personal use. Not investment advice. Trade at your own risk.*
+
+---
+
+## Open-source attributions
+
+- Price chart and payoff curve rendering: [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) (Apache-2.0). On-chart watermark is disabled in favor of this notice.
