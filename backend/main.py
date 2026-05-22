@@ -13,6 +13,7 @@ from jobs.collect_options_chain import collect_options_chain
 from jobs.prewarm_hot_tickers import prewarm_hot_tickers
 from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
+from routers import analytics as analytics_router
 from routers import bs as bs_router
 from routers import calendar as calendar_router
 from routers import journal as journal_router
@@ -115,6 +116,7 @@ app.include_router(market_router.router)
 app.include_router(regime_router.router)
 app.include_router(signal_router.router)
 app.include_router(journal_router.router)
+app.include_router(analytics_router.router)
 
 
 @app.get("/health")

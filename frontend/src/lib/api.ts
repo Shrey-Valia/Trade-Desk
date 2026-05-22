@@ -14,6 +14,10 @@ import { McResponseSchema, type McResponse } from "@/types/mc";
 import { MetricsResponseSchema, type MetricsResponse } from "@/types/metrics";
 import { ModelSignalsResponseSchema, type ModelSignalsResponse } from "@/types/models";
 import {
+  AnalyticsResponseSchema,
+  type AnalyticsResponse,
+} from "@/types/analytics";
+import {
   TradeAnalyticsSchema,
   TradeOutSchema,
   TradesResponseSchema,
@@ -148,4 +152,25 @@ export const fetchTradeAnalytics = (
 ): Promise<TradeAnalytics> => {
   const q = dteOverride != null ? `?dte_override=${dteOverride}` : "";
   return request(`/api/journal/trades/${id}/analytics${q}`, TradeAnalyticsSchema);
+};
+
+export interface JournalAnalyticsFilters {
+  paper?: boolean | null;
+  strategy?: string | null;
+  since?: string | null;     // ISO date
+  until?: string | null;
+}
+
+export const fetchJournalAnalytics = (
+  filters: JournalAnalyticsFilters = {},
+): Promise<AnalyticsResponse> => {
+  const p = new URLSearchParams();
+  if (filters.paper !== undefined && filters.paper !== null) {
+    p.set("paper", String(filters.paper));
+  }
+  if (filters.strategy) p.set("strategy", filters.strategy);
+  if (filters.since) p.set("since", filters.since);
+  if (filters.until) p.set("until", filters.until);
+  const q = p.toString();
+  return request(`/api/analytics${q ? `?${q}` : ""}`, AnalyticsResponseSchema);
 };

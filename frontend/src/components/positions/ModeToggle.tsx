@@ -4,12 +4,17 @@ const SEGMENTS: { label: string; to: string; match: (path: string) => boolean }[
   {
     label: "Analysis",
     to: "/",
-    match: (p) => p !== "/positions",
+    match: (p) => p !== "/positions" && p !== "/analytics",
   },
   {
     label: "Positions",
     to: "/positions",
     match: (p) => p === "/positions",
+  },
+  {
+    label: "Analytics",
+    to: "/analytics",
+    match: (p) => p === "/analytics",
   },
 ];
 

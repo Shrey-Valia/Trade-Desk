@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from
 import { DashboardHeader } from "@/components/layout/DashboardHeader";
 import { TopNavBar } from "@/components/layout/TopNavBar";
 import { TickerTape } from "@/components/tradingview/TickerTape";
+import { AnalyticsPage } from "@/pages/AnalyticsPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { MarketPage } from "@/pages/MarketPage";
 import { NewsPage } from "@/pages/NewsPage";
@@ -18,6 +19,7 @@ export default function App() {
       <ColdOpenRedirect />
       <Routes>
         <Route path="/positions" element={<PositionsPage />} />
+        <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/*" element={<AnalysisShell />} />
       </Routes>
     </BrowserRouter>
