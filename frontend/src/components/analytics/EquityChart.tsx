@@ -101,9 +101,14 @@ export function EquityChart({ points }: Props) {
       });
     }
 
+    // Multiple trades can close on the same calendar day. The equity
+    // curve treats each trade as its own discrete step, but
+    // lightweight-charts rejects duplicate time values on a line
+    // series. Add the row index as seconds so every point gets a unique
+    // timestamp; visually-imperceptible offset, real ordering preserved.
     seriesRef.current.setData(
-      points.map((p) => ({
-        time: toTime(p.date),
+      points.map((p, i) => ({
+        time: toTime(p.date, i),
         value: p.cumulative_pnl,
       })),
     );
@@ -122,10 +127,11 @@ export function EquityChart({ points }: Props) {
   return <div ref={containerRef} className="h-full w-full" />;
 }
 
-function toTime(iso: string): UTCTimestamp {
+function toTime(iso: string, offset: number = 0): UTCTimestamp {
   // Equity points carry a date string like "2026-05-21"; convert to a
   // mid-day UTC timestamp so the lightweight-charts time axis treats
-  // each entry as a distinct day.
-  const ts = Math.floor(new Date(`${iso}T12:00:00Z`).getTime() / 1000);
+  // each entry as a distinct day. `offset` (seconds) tie-breaks rows
+  // that fall on the same calendar day so the series stays monotonic.
+  const ts = Math.floor(new Date(`${iso}T12:00:00Z`).getTime() / 1000) + offset;
   return ts as UTCTimestamp;
 }

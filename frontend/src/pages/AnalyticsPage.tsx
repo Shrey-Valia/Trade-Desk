@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 
 import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
-import { ModeToggle } from "@/components/positions/ModeToggle";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
 import type {
   AnalyticsResponse,
@@ -124,9 +123,6 @@ function Toolbar({
       {loading && (
         <span className="text-tiny text-fg-tertiary">refreshing…</span>
       )}
-      <div className="ml-auto">
-        <ModeToggle />
-      </div>
     </header>
   );
 }

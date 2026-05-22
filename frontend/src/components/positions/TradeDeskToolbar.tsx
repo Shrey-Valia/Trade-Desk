@@ -3,7 +3,6 @@ import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { formatPercent, formatPrice } from "@/lib/formatters";
 import type { ChartTimeframe } from "@/types/chart";
 
-import { ModeToggle } from "./ModeToggle";
 import { SymbolSearch } from "./SymbolSearch";
 
 const TIMEFRAMES: ChartTimeframe[] = ["1D", "5D", "1M", "3M"];
@@ -19,11 +18,14 @@ interface Props {
  *
  *   left:   TRADE DESK wordmark + symbol search
  *   center: selected symbol + price + change ($/%)
- *   right:  timeframe selector + mode toggle
+ *   right:  timeframe selector
  *
  * Owns the timeframe state (lifted up from AnnotatedChart). The chart in
  * the center pane consumes it via the controlledTimeframe prop — so the
  * single timeframe input lives here, not duplicated inside the chart.
+ *
+ * Mode toggle was retired in the navigation revamp (step 1) — major-
+ * section switching now lives in the persistent left rail.
  */
 export function TradeDeskToolbar({ symbol, timeframe, onTimeframeChange }: Props) {
   const { data: detail } = useTickerDetail(symbol);
@@ -38,7 +40,6 @@ export function TradeDeskToolbar({ symbol, timeframe, onTimeframeChange }: Props
       <SymbolReadout symbol={symbol} detail={detail} />
       <div className="ml-auto flex items-center gap-6">
         <TimeframeSelector value={timeframe} onChange={onTimeframeChange} />
-        <ModeToggle />
       </div>
     </header>
   );

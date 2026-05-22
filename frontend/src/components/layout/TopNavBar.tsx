@@ -1,7 +1,5 @@
 import { NavLink } from "react-router-dom";
 
-import { ModeToggle } from "@/components/positions/ModeToggle";
-
 const NAV_LINKS: { to: string; label: string }[] = [
   { to: "/", label: "Dashboard" },
   { to: "/market", label: "Market" },
@@ -10,17 +8,20 @@ const NAV_LINKS: { to: string; label: string }[] = [
 ];
 
 /**
- * 24px function-key style nav bar — sits between the 28px status strip
- * and the calendar strip / route content. Bloomberg metaphor: this is
- * the F1-F12 bar, not a web-app primary nav. Active tab gets a 2px
- * amber bottom rule (selection focus) and FG PRIMARY text; inactive
- * tabs are FG SECONDARY 11px uppercase tracked.
+ * 24px function-key style nav bar — the retired ANALYSIS-mode header.
+ *
+ * Analysis mode is no longer reachable from the navigation revamp's
+ * left rail (step 1), but its routes are still defined and this nav
+ * still works when those URLs are hit directly. The old "ANALYSIS /
+ * POSITIONS / ANALYTICS" toggle was removed from the right side; if
+ * you're sitting on an Analysis route and want to leave, change the
+ * URL — there's no cross-link from here back into the rail shell.
  */
 export function TopNavBar() {
   return (
     <nav
       aria-label="Primary"
-      className="flex items-stretch justify-between border-b border-hairline bg-tier-1 px-4"
+      className="flex items-stretch border-b border-hairline bg-tier-1 px-4"
       style={{ height: 24 }}
     >
       <div className="flex items-stretch gap-6">
@@ -41,12 +42,6 @@ export function TopNavBar() {
             {link.label}
           </NavLink>
         ))}
-      </div>
-      {/* Mode toggle sits to the right of the route tabs. In Analysis
-          mode "Analysis" is the active segment; clicking "Positions"
-          navigates to the Trade Desk shell. */}
-      <div className="flex items-stretch">
-        <ModeToggle />
       </div>
     </nav>
   );
