@@ -1,0 +1,177 @@
+"""API schema for the Trade Desk journal — Phase 1.
+
+Trade leg shape: side (call/put) + action (buy/sell) + strike + expiry +
+contracts + entry_price. Phase 2 will feed these into the existing BS
+pricer (calculations.black_scholes.Leg) for the payoff curve overlay.
+"""
+
+from __future__ import annotations
+
+from datetime import date as DateType, datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+from calculations.strategies import STRATEGY_TYPES
+
+TradeStatus = Literal["open", "closed"]
+LegSide = Literal["call", "put"]
+LegAction = Literal["buy", "sell"]
+
+# How many legs each known strategy is *expected* to have. Used for soft
+# validation — a mismatched leg count emits a warning but doesn't reject
+# the trade (custom variants are allowed).
+EXPECTED_LEG_COUNT: dict[str, int] = {
+    "long_call": 1,
+    "long_put": 1,
+    "short_call": 1,
+    "short_put": 1,
+    "long_straddle": 2,
+    "long_strangle": 2,
+    "bull_call_spread": 2,
+    "bear_put_spread": 2,
+    "bull_put_spread": 2,
+    "bear_call_spread": 2,
+    "calendar_spread": 2,
+    "iron_condor": 4,
+}
+
+
+class TradeLeg(BaseModel):
+    side: LegSide
+    action: LegAction
+    strike: float = Field(gt=0)
+    expiry: DateType
+    contracts: int = Field(gt=0, default=1)
+    entry_price: float = Field(ge=0)        # per-contract premium
+
+    @field_validator("strike")
+    @classmethod
+    def round_strike(cls, v: float) -> float:
+        # Strikes are usually quoted at 0.50 / 1.00 / 2.50 increments; round
+        # to a sensible precision so we don't carry 0.000000001 noise.
+        return round(v, 2)
+
+
+class TradeIn(BaseModel):
+    symbol: str = Field(min_length=1, max_length=16)
+    strategy: str
+    legs: list[TradeLeg] = Field(min_length=1)
+    entry_date: datetime
+    entry_underlying_price: float = Field(gt=0)
+    net_debit_credit: float | None = None    # computed from legs if omitted
+    is_paper: bool = True
+    notes: str | None = None
+
+    @field_validator("symbol")
+    @classmethod
+    def uppercase_symbol(cls, v: str) -> str:
+        return v.upper().strip()
+
+    @field_validator("strategy")
+    @classmethod
+    def known_strategy(cls, v: str) -> str:
+        # Soft constraint: unknown strategy keys are allowed (the schema is
+        # a journaling tool, not a trade-builder) but we normalize case.
+        return v.lower().strip()
+
+
+class TradeUpdate(BaseModel):
+    """PATCH payload — every field optional. Pass `status='closed'` plus
+    exit_date / exit_underlying_price / realized_pnl to close a trade.
+    Notes can be edited independently."""
+
+    status: TradeStatus | None = None
+    exit_date: datetime | None = None
+    exit_underlying_price: float | None = Field(default=None, gt=0)
+    realized_pnl: float | None = None
+    notes: str | None = None
+
+
+class TradeOut(BaseModel):
+    id: int
+    symbol: str
+    strategy: str
+    legs: list[TradeLeg]
+    entry_date: datetime
+    entry_underlying_price: float
+    net_debit_credit: float
+    status: TradeStatus
+    exit_date: datetime | None = None
+    exit_underlying_price: float | None = None
+    realized_pnl: float | None = None
+    is_paper: bool
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TradesResponse(BaseModel):
+    trades: list[TradeOut]
+
+
+class AnalyticsGreeks(BaseModel):
+    delta: float
+    gamma: float
+    theta: float
+    vega: float
+
+
+class TradeAnalyticsOut(BaseModel):
+    """Phase 2 analytics payload — drives the on-chart breakeven overlay
+    and the payoff panel."""
+
+    trade_id: int
+    symbol: str
+    spot: float
+    rate: float
+    current_dte_days: int
+    scrubber_dte_days: int
+    iv_used: float
+    iv_source: Literal["implied_from_entry", "fallback", "default"]
+    prices: list[float]
+    payoff_expiration: list[float]
+    payoff_today: list[float]
+    breakevens_expiration: list[float]
+    breakevens_today: list[float]
+    entry_underlying_price: float
+    entry_date: datetime
+    cost_basis: float
+    current_value: float
+    unrealized_pnl: float
+    max_profit: float | None = None
+    max_loss: float | None = None
+    unlimited_gain: bool
+    unlimited_loss: bool
+    greeks: AnalyticsGreeks
+
+
+def compute_net_debit_credit(legs: list[TradeLeg]) -> float:
+    """Net dollar cost of opening the position.
+
+    Positive = debit (we paid); negative = credit (we received).
+    Convention: each contract represents 100 shares (US equity options),
+    so total $ = sum_over_legs((buy_price - sell_price) × contracts × 100).
+    Sells reduce cost (subtract); buys add to cost.
+    """
+    total = 0.0
+    for leg in legs:
+        sign = 1.0 if leg.action == "buy" else -1.0
+        total += sign * leg.entry_price * leg.contracts * 100
+    return round(total, 2)
+
+
+# Re-export for downstream router/seed code that wants the canonical list.
+__all__ = [
+    "AnalyticsGreeks",
+    "EXPECTED_LEG_COUNT",
+    "STRATEGY_TYPES",
+    "TradeAnalyticsOut",
+    "TradeIn",
+    "TradeLeg",
+    "TradeOut",
+    "TradeStatus",
+    "TradeUpdate",
+    "TradesResponse",
+    "compute_net_debit_credit",
+]

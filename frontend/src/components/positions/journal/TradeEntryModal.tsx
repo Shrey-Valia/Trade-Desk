@@ -1,0 +1,424 @@
+import { useEffect, useMemo, useState } from "react";
+
+import { useTickerDetail } from "@/hooks/useTickerDetail";
+import { useCreateTrade } from "@/hooks/useTrades";
+import { useSelectedTicker } from "@/stores/selectedTicker";
+import {
+  STRATEGY_LABELS,
+  STRATEGY_LEG_TEMPLATES,
+  computeNet,
+  type TradeLeg,
+} from "@/types/journal";
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+}
+
+const STRATEGY_KEYS = Object.keys(STRATEGY_LEG_TEMPLATES);
+
+function defaultExpiry(): string {
+  // 21 days out — typical near-term monthly window.
+  const d = new Date();
+  d.setDate(d.getDate() + 21);
+  // Roll forward to the next Friday.
+  while (d.getDay() !== 5) d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function todayIso(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * Trade entry modal — Phase 1.
+ *
+ * Picking a strategy scaffolds the leg rows from STRATEGY_LEG_TEMPLATES;
+ * the user only fills strike + expiry + price + contracts. Net debit /
+ * credit previews live as the user types. Net override is allowed so
+ * the user can journal a real fill that doesn't quite match mid-price.
+ *
+ * Implementation note: this is a real modal (fixed overlay covers the
+ * page), not an in-flow dialog — the journal sits at the bottom of the
+ * Positions shell and would otherwise push layout when opened.
+ */
+export function TradeEntryModal({ open, onClose }: Props) {
+  const selected = useSelectedTicker((s) => s.symbol);
+  const { data: detail } = useTickerDetail(selected ?? null);
+  const createTrade = useCreateTrade();
+
+  const [symbol, setSymbol] = useState(selected ?? "");
+  const [strategy, setStrategy] = useState<string>("long_call");
+  const [legs, setLegs] = useState<TradeLeg[]>([]);
+  const [entryUnderlying, setEntryUnderlying] = useState<string>("");
+  const [notes, setNotes] = useState("");
+  const [isPaper, setIsPaper] = useState(true);
+  const [netOverride, setNetOverride] = useState<string>(""); // blank = use computed
+  const [formError, setFormError] = useState<string | null>(null);
+
+  // Hydrate defaults when the modal opens.
+  useEffect(() => {
+    if (!open) return;
+    setSymbol(selected ?? "");
+    setStrategy("long_call");
+    setLegs(scaffoldLegs("long_call", defaultExpiry(), detail?.price ?? 100));
+    setEntryUnderlying(detail ? String(detail.price) : "");
+    setNotes("");
+    setIsPaper(true);
+    setNetOverride("");
+    setFormError(null);
+  }, [open, selected, detail]);
+
+  // Re-scaffold legs when strategy changes — preserves the current expiry
+  // and ATM strike anchor so the user doesn't lose context.
+  const onStrategyChange = (next: string) => {
+    setStrategy(next);
+    const expiry = legs[0]?.expiry ?? defaultExpiry();
+    const anchorStrike =
+      legs[0]?.strike ?? (Number(entryUnderlying) || detail?.price || 100);
+    setLegs(scaffoldLegs(next, expiry, anchorStrike));
+  };
+
+  const computedNet = useMemo(() => computeNet(legs), [legs]);
+  const displayedNet = netOverride !== "" ? Number(netOverride) : computedNet;
+
+  if (!open) return null;
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+    if (!symbol.trim()) {
+      setFormError("Symbol is required.");
+      return;
+    }
+    if (legs.length === 0) {
+      setFormError("At least one leg required.");
+      return;
+    }
+    const underlying = Number(entryUnderlying);
+    if (!underlying || underlying <= 0) {
+      setFormError("Entry underlying price must be > 0.");
+      return;
+    }
+    try {
+      await createTrade.mutateAsync({
+        symbol: symbol.toUpperCase().trim(),
+        strategy,
+        legs,
+        entry_date: todayIso(),
+        entry_underlying_price: underlying,
+        net_debit_credit: netOverride !== "" ? Number(netOverride) : null,
+        is_paper: isPaper,
+        notes: notes.trim() || null,
+      });
+      onClose();
+    } catch (err) {
+      setFormError((err as Error).message);
+    }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Log a trade"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <form
+        onSubmit={onSubmit}
+        className="mt-16 w-[640px] max-h-[80vh] overflow-y-auto bg-tier-0 border border-hairline-strong"
+        style={{ borderRadius: 0 }}
+      >
+        <header className="flex items-center justify-between px-4 py-2 border-b border-hairline bg-tier-1">
+          <span className="text-xs2 uppercase tracking-label-up text-fg-primary">
+            Log a trade
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-tiny text-fg-tertiary hover:text-fg-primary"
+            aria-label="Close"
+          >
+            ESC ×
+          </button>
+        </header>
+
+        <div className="grid grid-cols-2 gap-4 p-4">
+          <Field label="Symbol">
+            <input
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+              spellCheck={false}
+              autoComplete="off"
+              className="w-full h-7 px-2 text-xs2 font-mono uppercase bg-tier-1 border border-hairline text-fg-primary"
+              style={{ borderRadius: 0 }}
+            />
+          </Field>
+          <Field label="Strategy">
+            <select
+              value={strategy}
+              onChange={(e) => onStrategyChange(e.target.value)}
+              className="w-full h-7 px-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary"
+              style={{ borderRadius: 0 }}
+            >
+              {STRATEGY_KEYS.map((key) => (
+                <option key={key} value={key}>
+                  {STRATEGY_LABELS[key] ?? key}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Entry underlying price">
+            <input
+              type="number"
+              step="0.01"
+              value={entryUnderlying}
+              onChange={(e) => setEntryUnderlying(e.target.value)}
+              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary"
+              style={{ borderRadius: 0 }}
+            />
+          </Field>
+          <Field label="Paper / live">
+            <div className="flex items-stretch gap-2 h-7">
+              <button
+                type="button"
+                onClick={() => setIsPaper(true)}
+                className={[
+                  "flex-1 text-tiny uppercase tracking-label-up border",
+                  isPaper
+                    ? "border-cyan text-cyan bg-tier-1"
+                    : "border-hairline text-fg-tertiary hover:bg-tier-2",
+                ].join(" ")}
+                style={{ borderRadius: 0 }}
+              >
+                Paper
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsPaper(false)}
+                className={[
+                  "flex-1 text-tiny uppercase tracking-label-up border",
+                  !isPaper
+                    ? "border-amber text-amber bg-tier-1"
+                    : "border-hairline text-fg-tertiary hover:bg-tier-2",
+                ].join(" ")}
+                style={{ borderRadius: 0 }}
+              >
+                Live
+              </button>
+            </div>
+          </Field>
+        </div>
+
+        <LegEditor legs={legs} onChange={setLegs} />
+
+        <div className="grid grid-cols-2 gap-4 px-4 py-3 border-t border-hairline">
+          <div>
+            <div className="text-tiny uppercase tracking-label-up text-fg-secondary mb-1">
+              Net cost (computed)
+            </div>
+            <div className="text-medium font-medium tabular-nums text-fg-primary">
+              {formatCost(computedNet)}
+            </div>
+            <div className="text-tiny text-fg-tertiary mt-0.5">
+              {computedNet >= 0 ? "Debit (paid)" : "Credit (received)"}
+            </div>
+          </div>
+          <Field label="Override net (optional)">
+            <input
+              type="number"
+              step="0.01"
+              value={netOverride}
+              onChange={(e) => setNetOverride(e.target.value)}
+              placeholder={String(computedNet)}
+              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
+              style={{ borderRadius: 0 }}
+            />
+            <div className="text-tiny text-fg-tertiary mt-0.5">
+              Will save as {formatCost(displayedNet)}.
+            </div>
+          </Field>
+        </div>
+
+        <Field label="Notes" className="px-4 pb-3">
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary resize-none"
+            style={{ borderRadius: 0 }}
+          />
+        </Field>
+
+        {formError && (
+          <div className="px-4 pb-2 text-tiny text-bearish">{formError}</div>
+        )}
+
+        <footer className="flex items-center justify-end gap-2 px-4 py-3 border-t border-hairline bg-tier-1">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2"
+            style={{ borderRadius: 0 }}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={createTrade.isPending}
+            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 disabled:opacity-50"
+            style={{ borderRadius: 0 }}
+          >
+            {createTrade.isPending ? "Saving…" : "Save trade"}
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <label className={`flex flex-col gap-1 ${className ?? ""}`}>
+      <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function LegEditor({
+  legs,
+  onChange,
+}: {
+  legs: TradeLeg[];
+  onChange: (legs: TradeLeg[]) => void;
+}) {
+  const updateLeg = (idx: number, patch: Partial<TradeLeg>) => {
+    onChange(legs.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
+  };
+
+  return (
+    <section className="border-t border-hairline">
+      <div className="grid grid-cols-[60px_60px_80px_120px_60px_80px] gap-2 px-4 py-1.5 bg-tier-1 text-tiny uppercase tracking-label-up text-fg-secondary">
+        <span>Side</span>
+        <span>Action</span>
+        <span>Strike</span>
+        <span>Expiry</span>
+        <span>Qty</span>
+        <span>Premium</span>
+      </div>
+      <div className="px-4 py-2 flex flex-col gap-1">
+        {legs.map((leg, i) => (
+          <div
+            key={i}
+            className="grid grid-cols-[60px_60px_80px_120px_60px_80px] gap-2 items-center"
+          >
+            <select
+              value={leg.side}
+              onChange={(e) => updateLeg(i, { side: e.target.value as TradeLeg["side"] })}
+              className="h-7 text-tiny bg-tier-1 border border-hairline text-fg-primary"
+              style={{ borderRadius: 0 }}
+            >
+              <option value="call">CALL</option>
+              <option value="put">PUT</option>
+            </select>
+            <select
+              value={leg.action}
+              onChange={(e) => updateLeg(i, { action: e.target.value as TradeLeg["action"] })}
+              className="h-7 text-tiny bg-tier-1 border border-hairline text-fg-primary"
+              style={{ borderRadius: 0 }}
+            >
+              <option value="buy">BUY</option>
+              <option value="sell">SELL</option>
+            </select>
+            <input
+              type="number"
+              step="0.5"
+              value={leg.strike || ""}
+              onChange={(e) => updateLeg(i, { strike: Number(e.target.value) })}
+              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right"
+              style={{ borderRadius: 0 }}
+            />
+            <input
+              type="date"
+              value={leg.expiry}
+              onChange={(e) => updateLeg(i, { expiry: e.target.value })}
+              className="h-7 px-1 text-tiny bg-tier-1 border border-hairline text-fg-primary"
+              style={{ borderRadius: 0 }}
+            />
+            <input
+              type="number"
+              step="1"
+              min="1"
+              value={leg.contracts}
+              onChange={(e) => updateLeg(i, { contracts: Number(e.target.value) || 1 })}
+              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right"
+              style={{ borderRadius: 0 }}
+            />
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={leg.entry_price || ""}
+              onChange={(e) => updateLeg(i, { entry_price: Number(e.target.value) })}
+              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right"
+              style={{ borderRadius: 0 }}
+            />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function scaffoldLegs(strategy: string, expiry: string, anchorStrike: number): TradeLeg[] {
+  const template = STRATEGY_LEG_TEMPLATES[strategy] ?? [
+    { side: "call", action: "buy" },
+  ];
+  // Round anchor strike to the nearest dollar for sane defaults.
+  const anchor = Math.round(anchorStrike);
+  return template.map((t, i) => ({
+    side: t.side,
+    action: t.action,
+    // Offset wing legs from anchor — keeps the form non-trivial out of
+    // the box for spreads / condors. User adjusts as needed.
+    strike: anchor + offsetForLegIndex(strategy, i),
+    expiry,
+    contracts: 1,
+    entry_price: 0,
+  }));
+}
+
+function offsetForLegIndex(strategy: string, idx: number): number {
+  // For multi-leg strategies, scaffold the wing strikes a few dollars
+  // away from the anchor. This is just an editing convenience; the user
+  // sets the actual strikes from the chain.
+  if (strategy === "bull_call_spread") return idx === 0 ? 0 : 5;
+  if (strategy === "bear_put_spread") return idx === 0 ? 0 : -5;
+  if (strategy === "bull_put_spread") return idx === 0 ? 0 : -5;
+  if (strategy === "bear_call_spread") return idx === 0 ? 0 : 5;
+  if (strategy === "long_strangle") return idx === 0 ? 5 : -5;
+  if (strategy === "iron_condor") {
+    return [5, 10, -5, -10][idx] ?? 0;
+  }
+  return 0;
+}
+
+function formatCost(value: number): string {
+  const sign = value < 0 ? "−" : "";
+  const abs = Math.abs(value);
+  return `${sign}$${abs.toFixed(2)}`;
+}

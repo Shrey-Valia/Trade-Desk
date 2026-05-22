@@ -1,0 +1,170 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-tier-0 text-fg-primary font-mono antialiased;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Global keyboard focus ring — amber per DESIGN.md.
+ * Hex hardcoded because CSS can't read the JS palette; matches
+ * colors.accentAmber in src/lib/palette.js. */
+*:focus-visible {
+  outline: 2px solid #F0A030;
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/*
+ * TradingView widget chrome clipping.
+ *
+ * Every TradingView embed includes a "by TradingView" attribution line
+ * — either in our DOM (the copyright `<div>` we render alongside the
+ * script) or at the bottom of the iframe content itself. TOS allows
+ * clipping/styling so long as the attribution is technically present
+ * in the rendered iframe, so we clip ~22px off the bottom to hide the
+ * visible line without removing it from the DOM.
+ *
+ * `widget-clip` is applied on the panel wrapper around each embed;
+ * the iframe-based embeds (heatmap, timeline, events) use the first
+ * rule; the web-component widgets (ticker-tape, economic-map,
+ * ticker-tag) use the second.
+ *
+ * Tested per widget — both approaches are needed because the two
+ * widget families render through different mount points.
+ */
+.widget-clip {
+  position: relative;
+  overflow: hidden;
+}
+
+.widget-clip > .tradingview-widget-container,
+.widget-clip > .tradingview-widget-container__widget {
+  height: calc(100% + 24px) !important;
+  margin-bottom: -24px;
+}
+
+.widget-clip tv-ticker-tape,
+.widget-clip tv-ticker-tag {
+  display: block;
+  height: calc(100% + 22px);
+  margin-bottom: -22px;
+}
+
+/* Economic Map needs a deeper clip — TradingView packs ~36px of legend
+ * swatches + "Data source: World Bank" footer + TV logo into the bottom
+ * strip. Width is constrained by the parent panel, so we just oversize
+ * the inner element vertically and let overflow:hidden eat the strip. */
+.widget-clip tv-economic-map {
+  display: block;
+  height: calc(100% + 38px);
+  margin-bottom: -38px;
+}
+
+/* Economic Map fallback: the `color-theme="dark"` attribute is ignored by
+ * the current build of <tv-economic-map>; it renders white-on-orange no
+ * matter what we pass. The invert + hue-rotate trick from MDN's dark-mode
+ * playbook flips the background to black while preserving the choropleth
+ * hues acceptably (orange shifts towards teal but the regional contrast
+ * is still readable). We apply it on the wrapper only — the parent panel
+ * chrome (border, header) keeps its real colors. */
+.economic-map-frame {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* Ticker Tape strip — the web component renders at ~108px natural height
+ * and packs the "Ticker tape by TradingView" attribution into the bottom
+ * ~44px. Shadow DOM is closed, so we cannot reach inside to hide the
+ * footer. Constrain the wrapper height to clip the visible portion to
+ * the data row only. TOS-compliant: the attribution is still rendered
+ * in the (now hidden) DOM, just not visible to the user. */
+.widget-clip-strip {
+  overflow: hidden;
+  height: 64px;
+}
+
+.widget-clip-strip tv-ticker-tape {
+  display: block;
+}
+
+/* Trade Desk wordmark cursor — subtle terminal-style blink. Skipped
+ * automatically by the reduced-motion media query at the bottom of
+ * this file. ~1.2s feels like a slow terminal cursor; faster reads as
+ * a notification. */
+@media (prefers-reduced-motion: no-preference) {
+  .td-cursor-blink {
+    animation: td-cursor-blink 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes td-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Theta-decay scrubber — the centerpiece of the Trade Desk demo gets a
+ * dedicated style block. Native <input type=range> is themed across
+ * WebKit + Firefox to use our amber-on-hairline tokens. Magenta thumb
+ * matches the on-chart breakeven color so the eye associates "this
+ * slider drives THAT line." */
+.theta-scrubber {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #1F222A;
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+}
+.theta-scrubber::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #1F222A;
+  border: 1px solid #2A2D36;
+}
+.theta-scrubber::-moz-range-track {
+  height: 4px;
+  background: #1F222A;
+  border: 1px solid #2A2D36;
+}
+.theta-scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -5px;
+  background: #D4537E;
+  border: 1px solid #11141C;
+  cursor: grab;
+}
+.theta-scrubber::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: #D4537E;
+  border: 1px solid #11141C;
+  cursor: grab;
+}
+.theta-scrubber:active::-webkit-slider-thumb { cursor: grabbing; }
+.theta-scrubber:active::-moz-range-thumb { cursor: grabbing; }
+.theta-scrubber:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Respect reduced-motion preference — opt-out users get instant state
+ * changes rather than the 100ms opacity transitions used elsewhere. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

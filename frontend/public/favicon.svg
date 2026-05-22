@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Trade Desk favicon: [TD█] in graphite + amber. Renders cleanly at
+       16px (tab) and 32px (bookmark) — the bracketed cursor reads as
+       "terminal application" at any scale. -->
+  <rect width="32" height="32" fill="#0A0C12"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-weight="600" font-size="14" text-anchor="middle">
+    <text x="5" y="22" fill="#F0A030">[</text>
+    <text x="13.5" y="22" fill="#E8E8E0">T</text>
+    <text x="20.5" y="22" fill="#8A8A82">D</text>
+    <rect x="24.5" y="11.5" width="3" height="10.5" fill="#F0A030"/>
+    <text x="29.5" y="22" fill="#F0A030">]</text>
+  </g>
+</svg>
