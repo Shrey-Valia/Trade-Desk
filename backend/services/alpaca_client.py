@@ -20,6 +20,7 @@ from alpaca.data.requests import (
     StockSnapshotRequest,
 )
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.trading.client import TradingClient
 
 from calculations.types import ContractRow
 from config import settings
@@ -75,6 +76,68 @@ def _stock_client() -> StockHistoricalDataClient:
 
 def _option_client() -> OptionHistoricalDataClient:
     return OptionHistoricalDataClient(settings.alpaca_api_key, settings.alpaca_api_secret)
+
+
+def _trading_client() -> TradingClient:
+    """Trading client (paper) — used for the /v2/clock endpoint. Paper vs
+    live doesn't matter for the clock; we follow the configured flag."""
+    return TradingClient(
+        api_key=settings.alpaca_api_key,
+        secret_key=settings.alpaca_api_secret,
+        paper=settings.alpaca_paper,
+    )
+
+
+@dataclass
+class MarketClock:
+    """Authoritative market session state from Alpaca's /v2/clock.
+
+    `is_open` is the only field anyone outside this module should branch on.
+    `next_open` / `next_close` are surfaced to the UI for "opens at X" pills
+    and as inputs to anything that wants to label pre/after-hours.
+    """
+
+    is_open: bool
+    timestamp: datetime           # server's notion of now (ET)
+    next_open: datetime           # ET-aware
+    next_close: datetime          # ET-aware
+
+
+def get_market_clock() -> MarketClock | None:
+    """Fetch the live market clock from Alpaca. Cached 10s — short enough
+    to flip on the open/close edge, long enough that watchlist + chain
+    requests don't pile up redundant calls.
+
+    Returns None on any error — callers should treat None as
+    "authoritative source unavailable" and fall back to the local
+    pandas_market_calendars calc."""
+    cached = cache.get("market:clock")
+    if cached is not None:
+        return cached
+    try:
+        clock = _trading_client().get_clock()
+        out = MarketClock(
+            is_open=bool(clock.is_open),
+            timestamp=_to_et(clock.timestamp),
+            next_open=_to_et(clock.next_open),
+            next_close=_to_et(clock.next_close),
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("alpaca clock fetch failed")
+        return None
+    cache.set("market:clock", out, ttl_seconds=10)
+    return out
+
+
+def _to_et(dt: datetime | None) -> datetime:
+    """Coerce a datetime to ET. Alpaca returns tz-aware UTC; convert.
+    Naive datetimes (shouldn't happen, but be defensive) are assumed UTC."""
+    if dt is None:
+        return datetime.now(_ET)
+    if dt.tzinfo is None:
+        from datetime import timezone as _tz
+        dt = dt.replace(tzinfo=_tz.utc)
+    return dt.astimezone(_ET)
 
 
 def get_quotes(symbols: list[str]) -> dict[str, Quote]:

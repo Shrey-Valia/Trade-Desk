@@ -61,6 +61,15 @@ export const TradesResponseSchema = z.object({
 });
 export type TradesResponse = z.infer<typeof TradesResponseSchema>;
 
+/** True when the trade's nearest-leg expiry is today (local). Mirrors
+ * the backend's _trade_is_zerodte detection — the chart uses this to
+ * decide whether to flip useTradeAnalytics into intraday mode. */
+export function isZeroDteTrade(trade: Trade | null | undefined): boolean {
+  if (!trade || !trade.legs?.length) return false;
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD local-ish
+  return trade.legs.some((leg) => leg.expiry === today);
+}
+
 // Phase 2 — position analytics for the on-chart breakeven + payoff panel.
 export const AnalyticsGreeksSchema = z.object({
   delta: z.number(),
@@ -167,6 +176,7 @@ export const STRATEGY_LABELS: Record<string, string> = {
   short_call: "Short call",
   short_put: "Short put",
   long_straddle: "Long straddle",
+  short_straddle: "Short straddle",
   long_strangle: "Long strangle",
   bull_call_spread: "Bull call spread",
   bear_put_spread: "Bear put spread",

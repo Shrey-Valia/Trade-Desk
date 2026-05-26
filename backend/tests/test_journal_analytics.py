@@ -79,7 +79,10 @@ def _today():
 
 
 def _leg_with_expiry(days_out: int) -> dict:
-    return {"expiry": (date.today() + timedelta(days=days_out)).isoformat()}
+    # Anchor to the test's _today() so the by_dte buckets are stable
+    # regardless of the system wall-clock date. (Pre-fix this used
+    # date.today() which drifted vs _today() on a calendar rollover.)
+    return {"expiry": (_today().date() + timedelta(days=days_out)).isoformat()}
 
 
 # ---------------------------------------------------------------------------

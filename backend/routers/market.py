@@ -1,13 +1,15 @@
 """GET /api/market/status — NYSE session state for the dashboard header.
 
-Pulled from pandas_market_calendars (the same source we use for trading-day
-gating elsewhere). 60s cache — session boundaries don't move intraday.
+Authoritative source: Alpaca's /v2/clock via `get_market_clock()`. Falls
+back to pandas_market_calendars only if Alpaca is unavailable. Short
+cache (15s) so the open/close edge flips promptly when the session
+transitions.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -16,7 +18,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from config import settings
-from services.alpaca_client import get_quotes
+from services.alpaca_client import get_market_clock, get_quotes
 from services.cache import cache
 from services.fred_client import vix_history
 
@@ -42,14 +44,76 @@ class MarketStatusResponse(BaseModel):
 
 @router.get("/status", response_model=MarketStatusResponse)
 def get_market_status() -> MarketStatusResponse:
+    """NYSE session state for the dashboard header + open-guards.
+
+    Authoritative path: Alpaca's /v2/clock (is_open + next_open +
+    next_close). When the clock says CLOSED we still want a clean
+    pre/after-hours label, so we derive that from local ET wall clock —
+    Alpaca only tells us "regular session?", not pre vs after.
+
+    Fallback path: pandas_market_calendars (the previous logic). Kicks
+    in if Alpaca creds are misconfigured or the clock call errors out
+    so the dashboard still renders something sensible.
+    """
     cache_key = "market:status"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
+    clock = get_market_clock()
+    if clock is not None:
+        response = _status_from_alpaca(clock)
+    else:
+        log.warning("alpaca clock unavailable; using local calendar fallback")
+        response = _status_from_local_calendar()
+    # 15s TTL so the open/close edge transitions promptly.
+    cache.set(cache_key, response, ttl_seconds=15)
+    return response
+
+
+def _status_from_alpaca(clock) -> MarketStatusResponse:
+    next_open_iso = clock.next_open.isoformat() if clock.next_open else None
+    next_close_iso = clock.next_close.isoformat() if clock.next_close else None
+
+    if clock.is_open:
+        return MarketStatusResponse(
+            status="open", label="Open",
+            next_open=next_open_iso, next_close=next_close_iso,
+        )
+
+    # Closed per Alpaca. Distinguish pre/after for the header pill using
+    # local ET wall clock against the conventional windows. Alpaca's clock
+    # doesn't surface this directly.
+    now = datetime.now(_ET)
+    h, m = now.hour, now.minute
+    if (h, m) >= _PRE_OPEN and (h, m) < (9, 30):
+        # Pre-market window, only on a trading day. If today isn't a
+        # trading day next_open will be a later date — keep "closed" in
+        # that case so the pill doesn't lie.
+        if clock.next_open and clock.next_open.date() == now.date():
+            return MarketStatusResponse(
+                status="pre", label="Pre-market",
+                next_open=next_open_iso, next_close=next_close_iso,
+            )
+    if (h, m) >= (16, 0) and (h, m) <= _AFTER_CLOSE:
+        # After-hours: only if today was a trading day. If the next_open
+        # is tomorrow (or later) we just spent a trading day.
+        if clock.next_open and clock.next_open.date() > now.date():
+            return MarketStatusResponse(
+                status="after", label="After-hours",
+                next_open=next_open_iso, next_close=next_close_iso,
+            )
+    return MarketStatusResponse(
+        status="closed", label="Closed",
+        next_open=next_open_iso, next_close=next_close_iso,
+    )
+
+
+def _status_from_local_calendar() -> MarketStatusResponse:
+    """Pre-Alpaca fallback. Kept to avoid hard-failing when the clock
+    endpoint can't be reached; behavior matches the previous version."""
     now = datetime.now(_ET)
     today = now.date()
-    # Pull a 7-day window — handles weekends and holidays in one lookup.
     schedule = _NYSE.schedule(start_date=today, end_date=today + timedelta(days=10))
 
     todays_session = None
@@ -81,7 +145,6 @@ def get_market_status() -> MarketStatusResponse:
     else:
         status, label = "closed", "Closed"
 
-    # Find the next session's open if we don't already have one (closed/after).
     if next_open is None:
         for ts in schedule.index:
             session_open = schedule.loc[ts]["market_open"].to_pydatetime()
@@ -89,11 +152,9 @@ def get_market_status() -> MarketStatusResponse:
                 next_open = session_open.astimezone(_ET).isoformat()
                 break
 
-    response = MarketStatusResponse(
+    return MarketStatusResponse(
         status=status, label=label, next_open=next_open, next_close=next_close,
     )
-    cache.set(cache_key, response, ttl_seconds=60)
-    return response
 
 
 class IndexQuote(BaseModel):
@@ -144,6 +205,16 @@ def get_liquid_universe() -> LiquidUniverseResponse:
     exposing it via the API keeps the frontend autocomplete in sync without
     a manual copy."""
     return LiquidUniverseResponse(symbols=list(settings.prewarm_liquid_universe))
+
+
+@router.get("/zerodte_universe", response_model=LiquidUniverseResponse)
+def get_zero_dte_universe() -> LiquidUniverseResponse:
+    """The 0DTE-eligible allowlist — drives the Trade Desk symbol search.
+
+    Trade Desk is a 0DTE-only product; only symbols with reliable same-
+    day options should be selectable. Source of truth is
+    `settings.zero_dte_universe`; edit there to add or drop names."""
+    return LiquidUniverseResponse(symbols=list(settings.zero_dte_universe))
 
 
 def _vix_from_fred() -> IndexQuote | None:

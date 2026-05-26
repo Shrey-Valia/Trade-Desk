@@ -45,22 +45,33 @@ export function WatchlistColumn() {
 
   return (
     <aside
-      className="border-r border-hairline bg-tier-0 overflow-y-auto"
+      className="border-r border-hairline bg-tier-0 overflow-y-auto flex-1 min-h-0"
       style={{ width: 240, minWidth: 240 }}
     >
-      <div className="px-3 py-2 border-b border-hairline">
+      <div className="px-3 py-1 border-b border-hairline">
         <div className="flex items-baseline justify-between">
-          <span className="text-xs2 uppercase tracking-label-up text-fg-secondary">
+          <span
+            className="uppercase tracking-label-up text-fg-secondary"
+            style={{ fontSize: 9, letterSpacing: "0.08em" }}
+          >
             Watchlist
           </span>
           {freshness && (
-            <span className="text-tiny text-fg-tertiary">{freshness}</span>
+            <span
+              className="text-fg-tertiary"
+              style={{ fontSize: 9 }}
+            >
+              {freshness}
+            </span>
           )}
         </div>
       </div>
 
       {closedBanner && (
-        <div className="px-3 py-1.5 text-tiny text-fg-tertiary bg-tier-1 border-b border-hairline">
+        <div
+          className="px-3 py-0.5 text-fg-tertiary bg-tier-1 border-b border-hairline"
+          style={{ fontSize: 9 }}
+        >
           {closedBanner}
         </div>
       )}

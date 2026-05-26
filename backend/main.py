@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -24,6 +25,7 @@ from routers import regime as regime_router
 from routers import signal as signal_router
 from routers import ticker as ticker_router
 from routers import watchlist as watchlist_router
+from routers import zerodte as zerodte_router
 
 logging.basicConfig(
     level=settings.log_level,
@@ -34,33 +36,34 @@ log = logging.getLogger("dashboard")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Startup is fast by design.
+
+    Anything that hits the network — watchlist refresh, hot-ticker
+    prewarm, earnings calendar fetch — runs off the critical path.
+    Previously these were called synchronously inside lifespan and
+    blocked the server from accepting traffic for ~3 minutes; that
+    looked like a hang. They're now scheduled as background tasks so
+    "Application startup complete" fires within a few seconds.
+
+    Endpoints already degrade gracefully against empty data (watchlist
+    returns empty buckets, chart returns 404 with a clean message, etc.)
+    so the frontend's existing loading states render correctly until
+    the background warm completes.
+    """
     init_db()
 
-    # One-shot demo seed for Trade Desk journal. No-ops once the trades
-    # table is non-empty, so it's safe to keep enabled across restarts.
-    try:
-        seed_example_trades()
-    except Exception:  # noqa: BLE001
-        log.exception("startup seed_example_trades failed")
+    # Demo seed for the Trade Desk journal — OFF by default. The app
+    # starts with an empty trades table so users build their own paper-
+    # trade history. Set SEED_TRADES=1 to opt back in for demos.
+    if settings.seed_trades:
+        try:
+            seed_example_trades()
+        except Exception:  # noqa: BLE001
+            log.exception("startup seed_example_trades failed")
+    else:
+        log.info("seed_trades=False; skipping demo seed (set SEED_TRADES=1 to enable)")
 
     scheduler = BackgroundScheduler(timezone="America/New_York")
-
-    # One-shot priming run at startup so the API isn't empty before the
-    # first scheduled tick. Forced past the market-hours gate so we get
-    # data even when running outside market hours.
-    try:
-        refresh_watchlist(force=True)
-    except Exception:  # noqa: BLE001
-        log.exception("startup refresh_watchlist failed")
-
-    # Prime hot-ticker caches once at boot so the first click after restart
-    # isn't a cold 8-15s wait. Forced past the market-hours gate for the
-    # same reason as refresh_watchlist above.
-    try:
-        prewarm_hot_tickers(force=True)
-    except Exception:  # noqa: BLE001
-        log.exception("startup prewarm_hot_tickers failed")
-
     scheduler.add_job(
         refresh_watchlist,
         trigger=IntervalTrigger(seconds=60),
@@ -90,9 +93,30 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     log.info("scheduler started")
 
+    # Background warm — kick off both jobs in a worker thread so the
+    # lifespan returns immediately. The jobs themselves are sync; we run
+    # them via to_thread so they don't block the event loop, and so the
+    # async-running-loop landmine in prewarm doesn't fire.
+    async def _background_warm() -> None:
+        log.info("background warm: starting refresh_watchlist + prewarm")
+        try:
+            await asyncio.to_thread(refresh_watchlist, force=True)
+        except Exception:  # noqa: BLE001
+            log.exception("background refresh_watchlist failed")
+        try:
+            await asyncio.to_thread(prewarm_hot_tickers, force=True)
+        except Exception:  # noqa: BLE001
+            log.exception("background prewarm_hot_tickers failed")
+        log.info("background warm: complete")
+
+    warm_task = asyncio.create_task(_background_warm())
+    log.info("startup complete; warm in background")
+
     try:
         yield
     finally:
+        # Cancel any still-running warm so shutdown is fast too.
+        warm_task.cancel()
         scheduler.shutdown(wait=False)
         log.info("scheduler stopped")
 
@@ -117,6 +141,7 @@ app.include_router(regime_router.router)
 app.include_router(signal_router.router)
 app.include_router(journal_router.router)
 app.include_router(analytics_router.router)
+app.include_router(zerodte_router.router)
 
 
 @app.get("/health")

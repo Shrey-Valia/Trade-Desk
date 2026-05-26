@@ -128,6 +128,9 @@ function Toolbar({
 }
 
 function AnalyticsBody({ data }: { data: AnalyticsResponse }) {
+  if (data.kpis.total_trades === 0) {
+    return <NoTradesYet />;
+  }
   return (
     <div className="flex flex-col gap-3 p-3">
       <KpiStrip kpis={data.kpis} />
@@ -141,6 +144,27 @@ function AnalyticsBody({ data }: { data: AnalyticsResponse }) {
         title="Equity curve"
         subtitle="Cumulative realized P&L over time"
       />
+    </div>
+  );
+}
+
+function NoTradesYet() {
+  return (
+    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-3 text-center">
+      <span
+        className="text-tiny uppercase tracking-label-up text-fg-secondary"
+        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+      >
+        No trades yet
+      </span>
+      <span className="text-medium text-fg-primary">
+        Place your first paper trade to start tracking analytics.
+      </span>
+      <span className="text-tiny text-fg-tertiary max-w-md">
+        Open a position from the option chain on the Chart view, or click
+        + Log Trade to enter a trade manually. Closed trades will populate
+        the KPIs, by-strategy table, mistake-cost table, and equity curve.
+      </span>
     </div>
   );
 }

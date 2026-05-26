@@ -1,0 +1,47 @@
+import { z } from "zod";
+
+import { TradeOutSchema, type Trade } from "@/types/journal";
+
+const API_BASE = "";
+
+/** Single-leg open: long/short call/put at the given strike, expiring
+ *  today (must be 0DTE). Backend creates a Trade with strategy=
+ *  long_call / long_put / short_call / short_put so the existing
+ *  analytics + chart-overlay path renders it unchanged. */
+export async function openZeroDteLeg(input: {
+  symbol: string;
+  side: "call" | "put";
+  action: "buy" | "sell";
+  strike: number;
+  entry_price: number;
+  contracts?: number;
+}): Promise<Trade> {
+  const res = await fetch(`${API_BASE}/api/zerodte/open-leg`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      symbol: input.symbol,
+      side: input.side,
+      action: input.action,
+      strike: input.strike,
+      entry_price: input.entry_price,
+      contracts: input.contracts ?? 1,
+    }),
+  });
+  if (!res.ok) {
+    // Surface the backend's detail message so the UI can show "market closed"
+    // and "0DTE only" reasons clearly rather than a generic failure string.
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* non-json body */
+    }
+    throw new Error(detail);
+  }
+  return TradeOutSchema.parse(await res.json());
+}
+
+// re-export for symmetry with other tiny api wrappers in lib/
+export const ZeroDteOpenLegResponseSchema = z.object({ trade: TradeOutSchema });

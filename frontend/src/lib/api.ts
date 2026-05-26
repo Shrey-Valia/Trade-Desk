@@ -22,6 +22,15 @@ import {
   type CalendarMonth,
 } from "@/types/calendar_journal";
 import {
+  ChainTableSchema,
+  ZeroDteChainSchema,
+  ZeroDteMarkSchema,
+  type ChainTable,
+  type ZeroDteChain,
+  type ZeroDteMark,
+  type ZeroDtePosition,
+} from "@/types/zerodte";
+import {
   TradeAnalyticsSchema,
   TradeOutSchema,
   TradesResponseSchema,
@@ -44,7 +53,18 @@ async function request<S extends z.ZodTypeAny>(
 ): Promise<z.infer<S>> {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status} ${res.statusText}`);
+    // Surface the backend's `detail` when present (FastAPI HTTPException
+    // bodies look like `{"detail": "..."}`). UI components branch on
+    // this text — e.g. ChainTable looks for "No 0DTE for" to render the
+    // strict-0DTE empty state instead of a generic error.
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* non-JSON body */
+    }
+    throw new Error(detail);
   }
   const json = await res.json();
   return schema.parse(json);
@@ -62,6 +82,16 @@ export const fetchTickerChart = (
 ): Promise<ChartResponse> =>
   request(
     `/api/ticker/${encodeURIComponent(symbol)}/chart?timeframe=${timeframe}`,
+    ChartResponseSchema,
+  );
+
+/** Fast-path bars-only fetch — bypasses the options-chain dependency. */
+export const fetchTickerBars = (
+  symbol: string,
+  timeframe: ChartTimeframe,
+): Promise<ChartResponse> =>
+  request(
+    `/api/ticker/${encodeURIComponent(symbol)}/bars?timeframe=${timeframe}`,
     ChartResponseSchema,
   );
 
@@ -97,6 +127,10 @@ export const fetchSignal = (symbol: string): Promise<SignalVerdict> =>
 
 export const fetchLiquidUniverse = (): Promise<LiquidUniverse> =>
   request("/api/market/liquid_universe", LiquidUniverseSchema);
+
+/** 0DTE-eligible allowlist — drives the symbol search restriction. */
+export const fetchZeroDteUniverse = (): Promise<LiquidUniverse> =>
+  request("/api/market/zerodte_universe", LiquidUniverseSchema);
 
 // -- Trade Desk journal -----------------------------------------------------
 
@@ -150,12 +184,25 @@ export const deleteTrade = async (id: number): Promise<void> => {
   }
 };
 
+export interface AnalyticsParams {
+  dteOverride?: number | null;
+  /** 0DTE-only: hours since entry. Backend ignores this when the trade
+   * is not 0DTE — safe to always pass when present. */
+  elapsedHours?: number | null;
+}
+
 export const fetchTradeAnalytics = (
   id: number,
-  dteOverride?: number | null,
+  params: AnalyticsParams = {},
 ): Promise<TradeAnalytics> => {
-  const q = dteOverride != null ? `?dte_override=${dteOverride}` : "";
-  return request(`/api/journal/trades/${id}/analytics${q}`, TradeAnalyticsSchema);
+  const p = new URLSearchParams();
+  if (params.dteOverride != null) p.set("dte_override", String(params.dteOverride));
+  if (params.elapsedHours != null) p.set("elapsed_hours", String(params.elapsedHours));
+  const q = p.toString();
+  return request(
+    `/api/journal/trades/${id}/analytics${q ? `?${q}` : ""}`,
+    TradeAnalyticsSchema,
+  );
 };
 
 export interface JournalAnalyticsFilters {
@@ -164,6 +211,59 @@ export interface JournalAnalyticsFilters {
   since?: string | null;     // ISO date
   until?: string | null;
 }
+
+// -- Zero-DTE ---------------------------------------------------------------
+
+export const fetchZeroDteChain = (
+  symbol: string = "SPY",
+): Promise<ZeroDteChain> =>
+  request(
+    `/api/zerodte/chain?symbol=${encodeURIComponent(symbol)}`,
+    ZeroDteChainSchema,
+  );
+
+/** Windowed chain table for the trading-ticket UI — strikes around ATM
+ * with call+put prices (live quote or BS fallback) and open interest. */
+export const fetchChainTable = (
+  symbol: string,
+  strikes: number = 15,
+): Promise<ChainTable> =>
+  request(
+    `/api/zerodte/chain/table?symbol=${encodeURIComponent(symbol)}&strikes=${strikes}`,
+    ChainTableSchema,
+  );
+
+/** Open an ATM straddle paper Trade on `symbol` expiring today.
+ *  action="buy" = long straddle (debit); action="sell" = short straddle
+ *  (credit). Returns the created Trade — caller sets it as the active
+ *  position. */
+export const openZeroDteStraddle = (
+  symbol: string,
+  action: "buy" | "sell" = "buy",
+  contracts: number = 1,
+): Promise<Trade> =>
+  mutate("/api/zerodte/open", TradeOutSchema, {
+    method: "POST",
+    body: JSON.stringify({ symbol, action, contracts }),
+  });
+
+/** Legacy /mark endpoint — still used by the standalone ZeroDtePage
+ * (now unlinked from the rail but kept on disk during the transition). */
+export const fetchZeroDteMark = async (
+  position: ZeroDtePosition,
+  elapsedHoursOverride?: number | null,
+): Promise<ZeroDteMark> => {
+  const res = await fetch(`${API_BASE}/api/zerodte/mark`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      position,
+      elapsed_hours_override: elapsedHoursOverride ?? null,
+    }),
+  });
+  if (!res.ok) throw new Error(`mark failed: ${res.status} ${res.statusText}`);
+  return ZeroDteMarkSchema.parse(await res.json());
+};
 
 export const fetchJournalCalendar = (
   month: string,

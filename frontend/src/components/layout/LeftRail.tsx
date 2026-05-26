@@ -44,12 +44,15 @@ export function LeftRail() {
       className="flex flex-col items-stretch border-r border-hairline bg-tier-1 shrink-0"
       style={{ width: 56 }}
     >
-      <ul className="flex flex-col">
+      {/* pt-4 (16px) gives the icons breathing room from the viewport
+       *  edge so the rail doesn't read as top-heavy. Settings stays
+       *  pinned to the bottom via mt-auto below. */}
+      <ul className="flex flex-col pt-4">
         {TOP_ITEMS.map((item) => (
           <RailEntry key={item.to} item={item} />
         ))}
       </ul>
-      <div className="mt-auto">
+      <div className="mt-auto pb-2">
         <ul className="flex flex-col">
           {BOTTOM_ITEMS.map((item) => (
             <RailEntry key={item.to} item={item} />

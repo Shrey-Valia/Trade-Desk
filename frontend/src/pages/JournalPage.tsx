@@ -31,7 +31,14 @@ export function JournalPage() {
   const [activeDay, setActiveDay] = useState<{ date: string; trade_ids: number[] } | null>(null);
 
   const { data } = useTrades();
-  const trades = data?.trades ?? [];
+  const allTrades = data?.trades ?? [];
+  // JOURNAL is closed-only — open positions live on the CHART view's
+  // chain panel now. The calendar view already bucketed by exit_date so
+  // open trades never showed there; the list view needs explicit filtering.
+  const trades = useMemo(
+    () => allTrades.filter((t) => t.status === "closed"),
+    [allTrades],
+  );
 
   const isPaperFilter: boolean | null =
     paperScope === "all" ? null : paperScope === "paper";
@@ -59,7 +66,14 @@ export function JournalPage() {
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
-      <PageHeader title="Journal" subtitle={`${trades.length} trades`} />
+      <PageHeader
+        title="Journal"
+        subtitle={
+          trades.length === 0
+            ? "Closed trades will appear here once you close a position."
+            : `${trades.length} closed trade${trades.length === 1 ? "" : "s"}`
+        }
+      />
       <Toolbar
         view={view}
         onViewChange={(v) => {

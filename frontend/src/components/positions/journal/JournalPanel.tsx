@@ -5,7 +5,7 @@ import { useTrades } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
 import { useSelectedTicker } from "@/stores/selectedTicker";
 
-import { STRATEGY_LABELS } from "@/types/journal";
+import { isZeroDteTrade, STRATEGY_LABELS } from "@/types/journal";
 
 import { PayoffPanel } from "./PayoffPanel";
 import { ThetaScrubber } from "./ThetaScrubber";
@@ -13,15 +13,18 @@ import { TradeEntryModal } from "./TradeEntryModal";
 import { TradeList } from "./TradeList";
 
 /**
- * Trade Desk Phase 2 — journal + payoff + scrubber, all wired to the
- * active position.
+ * Trade Desk — journal + payoff + scrubber, all wired to the active
+ * position.
  *
  *   left  ~60%: TradeList (row click = active position, drives overlays)
  *   right ~40%: PayoffPanel + ThetaScrubber
  *
- * The scrubber's DTE flows out to BOTH this panel's payoff curve AND
+ * The scrubber's state flows out to BOTH this panel's payoff curve AND
  * the price chart's breakeven overlay via the activePosition store.
  * Same source of truth, single fetcher, debounced through react-query.
+ *
+ * For 0DTE positions the scrubber switches from "integer days" mode to
+ * "fractional hours" mode — same component, different prop set.
  */
 export function JournalPanel() {
   const selectedSymbol = useSelectedTicker((s) => s.symbol);
@@ -33,7 +36,9 @@ export function JournalPanel() {
 
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const scrubberDte = useActivePosition((s) => s.scrubberDte);
+  const elapsedHoursStore = useActivePosition((s) => s.elapsedHours);
   const setScrubberDte = useActivePosition((s) => s.setScrubberDte);
+  const setElapsedHours = useActivePosition((s) => s.setElapsedHours);
 
   const { data } = useTrades();
   const trades = data?.trades ?? [];
@@ -42,12 +47,32 @@ export function JournalPanel() {
     return trades.filter((t) => t.symbol === selectedSymbol);
   }, [trades, scope, selectedSymbol]);
 
-  const analyticsQuery = useTradeAnalytics(activeTradeId, scrubberDte);
-  const analytics = analyticsQuery.data ?? null;
   const activeTrade = useMemo(
     () => trades.find((t) => t.id === activeTradeId) ?? null,
     [trades, activeTradeId],
   );
+  const isIntraday = useMemo(() => isZeroDteTrade(activeTrade), [activeTrade]);
+
+  const analyticsQuery = useTradeAnalytics(activeTradeId, scrubberDte, {
+    intraday: isIntraday,
+    elapsedHours: elapsedHoursStore,
+  });
+  const analytics = analyticsQuery.data ?? null;
+
+  // Hours-mode scrubber range: entry → 4pm ET on the position's expiry.
+  const intradayBand = useMemo(() => {
+    if (!isIntraday || !activeTrade) return null;
+    const entry = new Date(activeTrade.entry_date).getTime();
+    const expiryDate = activeTrade.legs[0]?.expiry;
+    if (!expiryDate) return null;
+    const close = new Date(`${expiryDate}T16:00:00-04:00`).getTime();
+    const totalHours = Math.max(0, (close - entry) / 3_600_000);
+    const liveElapsed = Math.max(
+      0,
+      Math.min(totalHours, (Date.now() - entry) / 3_600_000),
+    );
+    return { totalHours, liveElapsed };
+  }, [isIntraday, activeTrade]);
 
   return (
     <section className="border-t border-hairline bg-tier-0 shrink-0">
@@ -58,13 +83,14 @@ export function JournalPanel() {
         className="w-full flex items-center justify-between px-4 py-1.5 hover:bg-tier-1"
       >
         <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
-          Journal & Payoff
+          Journal &amp; Payoff
         </span>
         <span className="flex items-center gap-3">
           {activeTradeId && analytics && activeTrade && (
             <span className="text-tiny text-fg-tertiary normal-case tabular-nums">
               {analytics.symbol} {STRATEGY_LABELS[activeTrade.strategy] ?? activeTrade.strategy}
-              {" · "}P&amp;L <span className={pnlSpanClass(analytics.unrealized_pnl)}>
+              {" · "}P&amp;L{" "}
+              <span className={pnlSpanClass(analytics.unrealized_pnl)}>
                 {formatDollar(analytics.unrealized_pnl)}
               </span>
             </span>
@@ -94,7 +120,16 @@ export function JournalPanel() {
             </div>
             <PayoffPanel analytics={analytics} loading={analyticsQuery.isFetching} />
           </div>
-          {analytics && (
+          {analytics && isIntraday && intradayBand && (
+            <ThetaScrubber
+              mode="hours"
+              totalHours={intradayBand.totalHours}
+              liveElapsedHours={intradayBand.liveElapsed}
+              scrubberHours={elapsedHoursStore}
+              onChangeHours={setElapsedHours}
+            />
+          )}
+          {analytics && !isIntraday && (
             <ThetaScrubber
               currentDte={analytics.current_dte_days}
               scrubberDte={analytics.scrubber_dte_days}

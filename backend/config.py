@@ -23,6 +23,36 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{PROJECT_ROOT / 'data' / 'dashboard.db'}"
     log_level: str = "INFO"
 
+    # ---------------------------------------------------------------------
+    # 0DTE-eligible universe — the ONLY symbols Trade Desk allows users
+    # to open positions on. Same-day-expiry options are limited to a
+    # narrow set in practice; this allowlist gates the symbol search and
+    # the chain panel so users can't pick a ticker they won't be able to
+    # trade.
+    #
+    # Current contents (May 2026): index ETFs that list daily expirations
+    # on Alpaca's options feed.
+    #   - SPY  S&P 500 SPDR — daily 0DTE
+    #   - QQQ  Nasdaq-100 — daily 0DTE
+    #   - IWM  Russell 2000 — daily 0DTE
+    #
+    # Index options (SPX, XSP, NDX) are intentionally omitted: Alpaca's
+    # free options feed does not list cash-settled index options, so
+    # those contracts wouldn't actually be tradeable through this app.
+    # Add them here when/if the data source supports them.
+    #
+    # Edit this list as the market changes — adding a name turns it on
+    # everywhere (search, chain, opens) with no other code changes.
+    zero_dte_universe: tuple[str, ...] = ("SPY", "QQQ", "IWM")
+
+    # ---------------------------------------------------------------------
+    # Demo seed used to auto-populate the journal on a fresh DB. OFF by
+    # default — the app starts empty so users build their own paper-trade
+    # history. Set SEED_TRADES=1 in .env (or environment) to opt back in
+    # for demos / regression. The seed file (jobs/seed_trades.py) is
+    # kept on disk regardless; this just gates when it runs.
+    seed_trades: bool = False
+
     # Hardcoded universe for Phase 1. Expand later via a tickers table or env var.
     watchlist_universe: tuple[str, ...] = (
         "NVDA", "TSLA", "AAPL", "AMD", "MSFT", "META", "AMZN", "GOOGL",

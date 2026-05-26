@@ -40,22 +40,26 @@ export function WatchlistCategory({ category, items, note, selectedSymbol, onSel
   const emptyText = note ?? EMPTY_MESSAGES[category];
 
   return (
-    <div className="mb-3">
-      <div className="flex items-baseline justify-between px-3 pt-1.5 pb-1">
-        <div className="flex items-center gap-1">
-          <span aria-hidden className="text-tiny text-fg-tertiary">
-            ▾
-          </span>
-          <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
-            {label}
-          </span>
-        </div>
+    <div className="mb-1.5">
+      {/* Quiet category divider — tertiary text, no chevron volume. */}
+      <div className="flex items-baseline justify-between px-3 pt-1 pb-0.5">
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary"
+          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        >
+          {label}
+        </span>
         {count > 0 && (
-          <span className="text-tiny text-fg-tertiary tabular-nums">({count})</span>
+          <span
+            className="text-fg-tertiary tabular-nums"
+            style={{ fontSize: 9 }}
+          >
+            {count}
+          </span>
         )}
       </div>
       {items.length === 0 ? (
-        <div className="px-3 py-1.5 text-tiny text-fg-tertiary">{emptyText}</div>
+        <div className="px-3 py-1 text-tiny text-fg-tertiary">{emptyText}</div>
       ) : (
         items.map((item) => (
           <ItemRow

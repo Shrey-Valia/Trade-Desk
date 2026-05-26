@@ -73,6 +73,17 @@ export function WatchlistIcon(props: IconProps) {
   );
 }
 
+export function ZeroDteIcon(props: IconProps) {
+  // Hourglass — decay/clock cue for the 0DTE prototype destination.
+  return (
+    <svg {...BASE_PROPS} {...props}>
+      <line x1="4" y1="3" x2="16" y2="3" />
+      <line x1="4" y1="17" x2="16" y2="17" />
+      <path d="M5 3v3l5 4-5 4v3M15 3v3l-5 4 5 4v3" />
+    </svg>
+  );
+}
+
 export function SettingsIcon(props: IconProps) {
   // Gear — simplified six-tooth ring around a center circle.
   return (

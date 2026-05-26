@@ -17,7 +17,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 
-import { useTickerChart } from "@/hooks/useTickerChart";
+import { useTickerAnnotations, useTickerChart } from "@/hooks/useTickerChart";
 import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import type { BarPoint, ChartAnnotations, ChartTimeframe } from "@/types/chart";
@@ -44,6 +44,10 @@ export interface PositionOverlay {
   breakevensExpiration?: number[];
   /** Label suffix used on the BE price line, e.g. "T+14d". */
   scrubberLabel?: string;
+  /** Pre-formatted unrealized P&L string (e.g. "+$42.18" or "−$104.50").
+   *  When present, gets appended to each BE line's title so the right-
+   *  axis pill becomes "BE +$42.18" — the line IS the live P&L readout. */
+  uplLabel?: string;
 }
 
 interface Props {
@@ -75,12 +79,19 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
   const timeframe = controlledTimeframe?.value ?? internalTimeframe;
   const setTimeframe = controlledTimeframe?.onChange ?? setInternalTimeframe;
   const showInternalSelector = controlledTimeframe === undefined;
-  const { data, isLoading, isError, error } = useTickerChart(symbol, timeframe);
+  // Bars query — fast. Drives the candle render.
+  const bars = useTickerChart(symbol, timeframe);
+  // Annotations query — slower (options-chain dependency). Drawn as
+  // overlay lines when it resolves. The chart does NOT wait for this.
+  const annotations = useTickerAnnotations(symbol, timeframe);
+
+  const data = bars.data;
+  const annotationData = annotations.data?.annotations;
 
   return (
-    <div className="px-4 py-2 border-b border-hairline flex-1 min-h-0 flex flex-col">
+    <div className="px-3 py-1.5 border-b border-hairline flex-1 min-h-0 flex flex-col">
       {!hideHeader && (
-        <div className="flex items-center justify-between mb-2 shrink-0">
+        <div className="flex items-center justify-between mb-1.5 shrink-0">
           <span className="text-xs2 uppercase tracking-label-up text-fg-secondary">
             {symbol} · {timeframe}
           </span>
@@ -108,10 +119,10 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
       )}
 
       <div className="flex-1 min-h-0 relative">
-        {isLoading && <ChartSkeleton />}
-        {isError && (
-          <div className="text-tiny text-bearish">
-            {(error as Error)?.message ?? "Failed to load chart"}
+        {bars.isLoading && !data && <ChartSkeleton symbol={symbol} />}
+        {bars.isError && (
+          <div className="text-tiny text-bearish px-2 py-2">
+            {(bars.error as Error)?.message ?? "Failed to load chart"}
           </div>
         )}
         {data && data.bars.length > 0 && (
@@ -119,7 +130,7 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
             <LightweightChart
               key={`${symbol}:${timeframe}`}
               bars={data.bars}
-              annotations={data.annotations}
+              annotations={annotationData ?? EMPTY_ANNOTATIONS}
               timeframe={timeframe}
               position={position ?? null}
             />
@@ -128,7 +139,7 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
         )}
       </div>
 
-      {data && data.oi_source === "volume_proxy" && (
+      {annotations.data && annotations.data.oi_source === "volume_proxy" && (
         <div className="text-tiny text-fg-tertiary mt-1 shrink-0">
           OI unavailable on free feed — walls / max-pain use today's volume as proxy
         </div>
@@ -136,6 +147,19 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
     </div>
   );
 }
+
+// Empty annotations placeholder so the chart can render bars before the
+// slower annotations query resolves. Once annotations arrive, the
+// overlay effect adds the price lines without redrawing candles.
+const EMPTY_ANNOTATIONS: ChartAnnotations = {
+  expected_move_upper: null,
+  expected_move_lower: null,
+  call_wall: null,
+  put_wall: null,
+  max_pain: null,
+  gamma_flip: null,
+  earnings_date: null,
+};
 
 interface ChartProps {
   bars: BarPoint[];
@@ -368,9 +392,13 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
 
     // Breakeven price lines at the scrubber's DTE (the live one). Drawn
     // as solid magenta — distinctively NOT in the amber/red/green/cyan
-    // palette used for market-structure annotations. Title kept to "BE"
-    // (no scrubber suffix) so the right-axis label stays compact; the
-    // scrubber state is surfaced in the payoff-panel header instead.
+    // palette used for market-structure annotations. The title carries
+    // the live UPL ("BE +$42.18") so the right-axis pill IS the P&L
+    // readout — moves with the line as theta widens it. The scrubber
+    // state is surfaced separately in the panel below.
+    const beTitle = position.uplLabel
+      ? `BE ${position.uplLabel}`
+      : "BE";
     for (const be of position.breakevensToday) {
       positionLinesRef.current.push(
         series.createPriceLine({
@@ -379,7 +407,7 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
           lineStyle: LineStyle.Solid,
           lineWidth: 2,
           axisLabelVisible: true,
-          title: "BE",
+          title: beTitle,
         }),
       );
     }
@@ -411,6 +439,14 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
   return <div ref={containerRef} className="h-full w-full" />;
 }
 
+// Market-structure annotations are SECONDARY to the user's position.
+// Lines + their right-edge axis pills are drawn with reduced alpha so
+// candles dominate visually and the magenta position lines remain the
+// loudest overlay. Hex+alpha keeps the DESIGN.md semantic palette but
+// dims it to ~33% on the line and ~25% on the label background.
+const ANNOT_LINE_ALPHA = "55";   // ~33% — dotted thin line, calm in the gutter
+const ANNOT_LABEL_BG_ALPHA = "40"; // ~25% — pill background; text reads via fgPrimary
+
 function buildPriceLines(
   series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">,
   a: ChartAnnotations,
@@ -419,32 +455,33 @@ function buildPriceLines(
   const addLine = (
     price: number | null | undefined,
     color: string,
-    style: LineStyle,
     label: string,
   ) => {
     if (price == null) return;
     lines.push(
       series.createPriceLine({
         price,
-        color,
-        lineStyle: style,
+        color: `${color}${ANNOT_LINE_ALPHA}`,
+        lineStyle: LineStyle.Dotted,
         lineWidth: 1,
         axisLabelVisible: true,
+        axisLabelColor: `${color}${ANNOT_LABEL_BG_ALPHA}`,
+        axisLabelTextColor: colors.fgPrimary,
         title: label,
       }),
     );
   };
 
-  addLine(a.expected_move_upper, colors.accentAmber, LineStyle.Dashed, "EM+");
-  addLine(a.expected_move_lower, colors.accentAmber, LineStyle.Dashed, "EM-");
+  addLine(a.expected_move_upper, colors.accentAmber, "EM+");
+  addLine(a.expected_move_lower, colors.accentAmber, "EM-");
   if (a.call_wall) {
-    addLine(a.call_wall.strike, colors.bearish, LineStyle.Solid, "CW");
+    addLine(a.call_wall.strike, colors.bearish, "CW");
   }
   if (a.put_wall) {
-    addLine(a.put_wall.strike, colors.bullish, LineStyle.Solid, "PW");
+    addLine(a.put_wall.strike, colors.bullish, "PW");
   }
-  addLine(a.max_pain, colors.accentCyan, LineStyle.Dashed, "MP");
-  addLine(a.gamma_flip, colors.accentCyan, LineStyle.Dashed, "GF");
+  addLine(a.max_pain, colors.accentCyan, "MP");
+  addLine(a.gamma_flip, colors.accentCyan, "GF");
 
   return lines;
 }
@@ -453,11 +490,32 @@ function toTime(iso: string): UTCTimestamp {
   return Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp;
 }
 
-function ChartSkeleton() {
+function ChartSkeleton({ symbol }: { symbol: string }) {
   return (
     <div
-      className="h-full w-full bg-tier-1 border border-hairline"
-      aria-hidden
-    />
+      className="h-full w-full bg-tier-1 border border-hairline flex items-center justify-center"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex flex-col items-center gap-2 text-fg-secondary">
+        <div className="flex gap-1">
+          <span className="w-1.5 h-1.5 bg-fg-tertiary animate-pulse" />
+          <span
+            className="w-1.5 h-1.5 bg-fg-tertiary animate-pulse"
+            style={{ animationDelay: "120ms" }}
+          />
+          <span
+            className="w-1.5 h-1.5 bg-fg-tertiary animate-pulse"
+            style={{ animationDelay: "240ms" }}
+          />
+        </div>
+        <span
+          className="text-tiny uppercase tracking-label-up"
+          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        >
+          Loading {symbol} chart…
+        </span>
+      </div>
+    </div>
   );
 }

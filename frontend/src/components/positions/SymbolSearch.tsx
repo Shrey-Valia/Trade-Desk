@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useLiquidUniverse } from "@/hooks/useLiquidUniverse";
+import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useSelectedTicker } from "@/stores/selectedTicker";
 
 const MAX_SUGGESTIONS = 8;
@@ -8,9 +8,12 @@ const MAX_SUGGESTIONS = 8;
 /**
  * Symbol search box for the Trade Desk toolbar.
  *
- * Autocompletes against the prewarmed liquid set so the user lands on a
- * warm ticker. Free-form input — any non-empty value goes through to
- * setSymbol on Enter; obscure (non-warmed) tickers cold-load.
+ * Trade Desk is 0DTE-only: only symbols with reliable same-day options
+ * are tradeable. The search autocompletes — and STRICTLY restricts —
+ * to the backend's 0DTE allowlist (settings.zero_dte_universe). Typing
+ * a non-allowlist ticker (e.g. MRVL) produces a clear "no 0DTE-eligible
+ * match" line in the dropdown; Enter on no match is a no-op rather than
+ * committing an untradeable symbol.
  *
  * Keyboard:
  *   - Type to filter, ↑/↓ to move highlight, Enter to commit
@@ -18,7 +21,7 @@ const MAX_SUGGESTIONS = 8;
  *   - Click a row to commit
  */
 export function SymbolSearch() {
-  const { data } = useLiquidUniverse();
+  const { data } = useZeroDteUniverse();
   const setSymbol = useSelectedTicker((s) => s.setSymbol);
 
   const [query, setQuery] = useState("");
@@ -29,7 +32,11 @@ export function SymbolSearch() {
   const universe = data?.symbols ?? [];
 
   const matches = useMemo(() => {
-    if (!query) return [];
+    if (!query) {
+      // Empty query → show the whole allowlist so the user can see the
+      // universe at a glance. (Small list; this is fine.)
+      return universe.slice(0, MAX_SUGGESTIONS);
+    }
     const q = query.toUpperCase();
     const starts: string[] = [];
     const contains: string[] = [];
@@ -56,6 +63,9 @@ export function SymbolSearch() {
   const commit = (sym: string) => {
     const trimmed = sym.trim().toUpperCase();
     if (!trimmed) return;
+    // Defense in depth: never commit a symbol outside the allowlist,
+    // even if it somehow leaked in via direct keyboard input.
+    if (!universe.includes(trimmed)) return;
     setSymbol(trimmed);
     setQuery("");
     setOpen(false);
@@ -64,8 +74,10 @@ export function SymbolSearch() {
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      const pick = matches[activeIndex] ?? query;
-      commit(pick);
+      // No-op on Enter when no match — typed text is NOT a free-form
+      // pass-through anymore; only allowlist members commit.
+      if (matches.length === 0) return;
+      commit(matches[activeIndex] ?? matches[0]);
       return;
     }
     if (e.key === "Escape") {
@@ -103,33 +115,49 @@ export function SymbolSearch() {
         aria-autocomplete="list"
         aria-expanded={open && matches.length > 0}
       />
-      {open && matches.length > 0 && (
-        <ul
-          role="listbox"
+      {open && (
+        <div
           className="absolute left-0 right-0 top-full mt-px z-30 bg-tier-1 border border-hairline border-t-0 max-h-64 overflow-y-auto"
         >
-          {matches.map((sym, i) => (
-            <li
-              key={sym}
-              role="option"
-              aria-selected={i === activeIndex}
-              onMouseDown={(e) => {
-                // mousedown (not click) so the input doesn't blur first
-                e.preventDefault();
-                commit(sym);
-              }}
-              onMouseEnter={() => setActiveIndex(i)}
-              className={[
-                "px-2 py-1 text-xs2 cursor-pointer tabular-nums",
-                i === activeIndex
-                  ? "bg-tier-2 text-fg-primary"
-                  : "text-fg-secondary hover:bg-tier-2",
-              ].join(" ")}
+          {matches.length > 0 ? (
+            <ul role="listbox">
+              {matches.map((sym, i) => (
+                <li
+                  key={sym}
+                  role="option"
+                  aria-selected={i === activeIndex}
+                  onMouseDown={(e) => {
+                    // mousedown (not click) so the input doesn't blur first
+                    e.preventDefault();
+                    commit(sym);
+                  }}
+                  onMouseEnter={() => setActiveIndex(i)}
+                  className={[
+                    "px-2 py-1 text-xs2 cursor-pointer tabular-nums",
+                    i === activeIndex
+                      ? "bg-tier-2 text-fg-primary"
+                      : "text-fg-secondary hover:bg-tier-2",
+                  ].join(" ")}
+                >
+                  {sym}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div
+              className="px-2 py-1.5 text-tiny text-fg-tertiary"
+              role="status"
+              aria-live="polite"
             >
-              {sym}
-            </li>
-          ))}
-        </ul>
+              No 0DTE-eligible match
+              {universe.length > 0 && (
+                <span className="block text-fg-tertiary" style={{ fontSize: 9 }}>
+                  Allowed: {universe.join(" · ")}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -116,19 +116,13 @@ def get_ticker_detail(symbol: str) -> TickerDetailOut:
 # -- Phase 3: chart + metrics -----------------------------------------------
 
 
-@router.get("/{symbol}/chart", response_model=ChartResponse)
-def get_ticker_chart(symbol: str, timeframe: str = "5D") -> ChartResponse:
-    symbol = symbol.upper()
-    cache_key = f"chart:{symbol}:{timeframe}"
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
-
+def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
+    """Bars-only fetch. Separated so the bars path doesn't block on the
+    options-chain fetch that drives annotations — see split below."""
     bars = get_bars(symbol, timeframe) or []
     if not bars:
         raise HTTPException(status_code=404, detail=f"no bars for {symbol} @ {timeframe}")
-
-    bar_points = [
+    return [
         BarPoint(
             t=b.timestamp.isoformat(),
             o=float(b.open),
@@ -140,8 +134,50 @@ def get_ticker_chart(symbol: str, timeframe: str = "5D") -> ChartResponse:
         for b in bars
     ]
 
+
+@router.get("/{symbol}/bars", response_model=ChartResponse)
+def get_ticker_bars(symbol: str, timeframe: str = "5D") -> ChartResponse:
+    """Lightweight bars-only endpoint. Returns the same envelope as
+    /chart for schema reuse but with empty annotations and a "bars" oi
+    source — used by the frontend's fast-path chart query so candles
+    aren't blocked behind a 1–3s options chain fetch.
+
+    The annotations (max-pain, walls, EM bands) come from /chart in a
+    second parallel query and overlay onto the chart as they arrive."""
+    symbol = symbol.upper()
+    cache_key = f"bars:{symbol}:{timeframe}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    bar_points = _fetch_bars(symbol, timeframe)
+    response = ChartResponse(
+        symbol=symbol,
+        timeframe=timeframe,
+        bars=bar_points,
+        annotations=ChartAnnotations(),
+        oi_source="bars_only",
+    )
+    cache.set(cache_key, response, ttl_seconds=30)
+    return response
+
+
+@router.get("/{symbol}/chart", response_model=ChartResponse)
+def get_ticker_chart(symbol: str, timeframe: str = "5D") -> ChartResponse:
+    """Full chart payload — bars PLUS annotations (EM, walls, max pain,
+    gamma flip). Kept for backward compat and for the annotation overlay
+    query; the frontend's fast-path chart uses /bars and overlays the
+    annotations from THIS endpoint asynchronously."""
+    symbol = symbol.upper()
+    cache_key = f"chart:{symbol}:{timeframe}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    bar_points = _fetch_bars(symbol, timeframe)
+
     quote = get_quotes([symbol]).get(symbol)
-    spot = quote.price if quote else float(bars[-1].close)
+    spot = quote.price if quote else float(bar_points[-1].c)
 
     chain, oi_source = _chain_with_oi_proxy(symbol)
     annotations = _compute_annotations(chain, spot)

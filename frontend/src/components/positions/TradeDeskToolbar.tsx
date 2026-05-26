@@ -1,6 +1,10 @@
 import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
+import { useChainTable } from "@/hooks/useChainTable";
+import { useMarketStatus } from "@/hooks/useMarket";
+import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { formatPercent, formatPrice } from "@/lib/formatters";
+import { useTradeIntent } from "@/stores/tradeIntent";
 import type { ChartTimeframe } from "@/types/chart";
 
 import { SymbolSearch } from "./SymbolSearch";
@@ -38,10 +42,68 @@ export function TradeDeskToolbar({ symbol, timeframe, onTimeframeChange }: Props
       <TradeDeskLogo size="compact" />
       <SymbolSearch />
       <SymbolReadout symbol={symbol} detail={detail} />
-      <div className="ml-auto flex items-center gap-6">
+      <div className="ml-auto flex items-center gap-3">
+        <OpenZeroDteButton symbol={symbol} />
         <TimeframeSelector value={timeframe} onChange={onTimeframeChange} />
       </div>
     </header>
+  );
+}
+
+function OpenZeroDteButton({ symbol }: { symbol: string | null }) {
+  const mutation = useOpenZeroDteStraddle();
+  const action = useTradeIntent((s) => s.action);
+  const { data: marketStatus } = useMarketStatus();
+  const marketOpen = marketStatus?.status === "open";
+  // Reuse the same chain query the bottom panel uses — react-query
+  // dedupes so this is free. We only check for the strict-0DTE error
+  // to disable the button; price data isn't needed here.
+  const chainQuery = useChainTable(symbol);
+  const chainErrMsg =
+    chainQuery.isError ? (chainQuery.error as Error)?.message ?? "" : "";
+  const noZeroDteToday = chainErrMsg.startsWith("No 0DTE for");
+
+  const disabled =
+    !symbol || !marketOpen || noZeroDteToday || mutation.isPending;
+  const verb = action === "buy" ? "BUY" : "SELL";
+  const label = mutation.isPending ? "Opening…" : `${verb} STRADDLE`;
+  const title = !symbol
+    ? "Select a ticker first"
+    : !marketOpen
+      ? "Market closed — 0DTE trading opens 9:30 AM ET, Mon-Fri"
+      : noZeroDteToday
+        ? chainErrMsg
+        : action === "buy"
+          ? `Open ATM long straddle on ${symbol} expiring today (paper).`
+          : `Open ATM short straddle on ${symbol} expiring today (paper, credit).`;
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() =>
+          symbol && marketOpen && !noZeroDteToday && mutation.mutate({ symbol, action })
+        }
+        disabled={disabled}
+        className={[
+          "h-6 px-2 text-tiny uppercase tracking-label-up border",
+          disabled
+            ? "border-hairline text-fg-tertiary"
+            : "border-amber text-amber bg-tier-1 hover:bg-tier-2",
+        ].join(" ")}
+        style={{ borderRadius: 0 }}
+        title={title}
+      >
+        + {label}
+      </button>
+      {mutation.isError && (
+        <span
+          className="text-tiny text-bearish"
+          title={(mutation.error as Error).message}
+        >
+          {String((mutation.error as Error).message).slice(0, 30)}
+        </span>
+      )}
+    </div>
   );
 }
 

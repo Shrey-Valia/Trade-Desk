@@ -6,6 +6,9 @@ import { JournalPage } from "@/pages/JournalPage";
 import { PositionsPage } from "@/pages/PositionsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { WatchlistPage } from "@/pages/WatchlistPage";
+// ZeroDtePage retired from navigation; 0DTE entry now lives on the CHART
+// view via the toolbar's "0DTE STRADDLE" button. Page kept on disk for
+// rollback during the transition; not imported here.
 
 /**
  * Top-level routing.

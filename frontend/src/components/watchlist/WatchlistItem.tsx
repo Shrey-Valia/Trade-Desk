@@ -1,4 +1,3 @@
-import { TradingViewWebComponent } from "@/components/tradingview/TradingViewWebComponent";
 import type { WatchlistItem as Item } from "@/types/watchlist";
 
 interface Props {
@@ -7,33 +6,17 @@ interface Props {
   onSelect?: (symbol: string) => void;
 }
 
-// Most of our universe trades on NASDAQ; map the NYSE-listed ones explicitly.
-// Falling back to bare symbol works on TradingView too, but the prefix gives
-// the Ticker Tag deterministic resolution and skips its disambiguation step.
-const EXCHANGE_PREFIX: Record<string, string> = {
-  BA: "NYSE",
-  F: "NYSE",
-  SPY: "AMEX",
-};
-
-function tickerTagSymbol(sym: string): string {
-  const prefix = EXCHANGE_PREFIX[sym] ?? "NASDAQ";
-  return `${prefix}:${sym}`;
-}
-
 /**
- * Watchlist row — Ticker Tag pill + our subtitle.
+ * Sparse watchlist row — TradingView/Topstep aesthetic.
  *
- * The pill is TradingView's web component, so its font + colors are
- * TradingView's (we don't get to brand inside the iframe). We wrap it
- * with `pointer-events: none` so the pill stays decorative: hover-preview
- * and click-through to TradingView.com both go away, and the entire row
- * becomes one click target that selects the ticker locally. This is a
- * deliberate trade against the built-in mini-chart hover preview — the
- * row's selection behavior matters more than a TradingView popover.
+ *   AAPL                       182.43   +1.23%
  *
- * Selected state lives on the row container (amber left rule + tier-2
- * elevation) so it visually frames the foreign pill without touching it.
+ * One ticker = one tight row: symbol + price + signed change%. No news
+ * subtitle, no logo, no third-party widget. The aim is a calm scannable
+ * column of symbols, not a feed of news cards.
+ *
+ * Selected state lives on the row container: amber left rule + bg-tier-2.
+ * IBM Plex Mono, tabular-nums on every number per DESIGN.md.
  */
 export function WatchlistItem({ item, selected = false, onSelect }: Props) {
   const onClick = () => onSelect?.(item.symbol);
@@ -43,6 +26,9 @@ export function WatchlistItem({ item, selected = false, onSelect }: Props) {
       onClick();
     }
   };
+  const positive = item.change_pct >= 0;
+  const changeClass = positive ? "text-bullish" : "text-bearish";
+  const changeSign = positive ? "+" : "";
 
   return (
     <div
@@ -51,27 +37,40 @@ export function WatchlistItem({ item, selected = false, onSelect }: Props) {
       onClick={onClick}
       onKeyDown={onKeyDown}
       aria-pressed={selected}
-      aria-label={`${item.symbol}. ${item.subtitle}`}
+      aria-label={`${item.symbol} ${item.price.toFixed(2)} ${changeSign}${item.change_pct.toFixed(2)} percent`}
       className={[
-        "w-full px-3 py-1.5 text-left cursor-pointer transition-opacity duration-100 border-l-2",
+        "flex items-baseline justify-between gap-2 px-3 py-1 text-tiny cursor-pointer transition-opacity duration-100 border-l-2",
         selected
           ? "border-l-amber bg-tier-2"
           : "border-l-transparent hover:bg-tier-2",
       ].join(" ")}
     >
-      <div className="pointer-events-none">
-        <TradingViewWebComponent
-          scriptSrc="https://widgets.tradingview-widget.com/w/en/tv-ticker-tag.js"
-          tag="tv-ticker-tag"
-          attrs={{
-            symbol: tickerTagSymbol(item.symbol),
-            theme: "dark",
-            "is-transparent": "true",
-            "display-mode": "adaptive",
-          }}
-        />
-      </div>
-      <div className="text-tiny text-fg-tertiary truncate mt-0.5">{item.subtitle}</div>
+      <span
+        className={
+          selected ? "text-amber" : "text-fg-primary"
+        }
+      >
+        {item.symbol}
+      </span>
+      <span className="flex items-baseline gap-2 tabular-nums">
+        <span className="text-fg-primary">{formatPrice(item.price)}</span>
+        <span
+          className={`${changeClass}`}
+          style={{ minWidth: 56, textAlign: "right" }}
+        >
+          {changeSign}
+          {item.change_pct.toFixed(2)}%
+        </span>
+      </span>
     </div>
   );
+}
+
+function formatPrice(p: number): string {
+  if (!Number.isFinite(p)) return "—";
+  // Tight 2dp formatting; large prices already read well in monospace.
+  return p.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }

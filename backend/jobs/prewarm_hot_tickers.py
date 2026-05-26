@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
+from typing import Any, Coroutine
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -54,7 +56,7 @@ def prewarm_hot_tickers(force: bool = False) -> None:
 
     started = time.monotonic()
     try:
-        warmed = asyncio.run(_prewarm_async(symbols))
+        warmed = _run_async(_prewarm_async(symbols))
     except Exception:
         log.exception("prewarm_hot_tickers failed")
         return
@@ -141,3 +143,49 @@ def _warm_chart_and_metrics(sym: str) -> None:
         log.debug("metrics prewarm skipped for %s: %s", sym, exc.detail)
     except Exception:
         log.exception("metrics prewarm failed for %s", sym)
+
+
+def _run_async(coro: Coroutine[Any, Any, int]) -> int:
+    """Run `coro` to completion regardless of whether the caller is inside
+    a running event loop.
+
+    Two callers exercise this job:
+      * APScheduler's BackgroundScheduler worker thread — no event loop,
+        so asyncio.run() works directly.
+      * The FastAPI lifespan context — there IS a running loop on the
+        current thread, and asyncio.run() would raise
+        "RuntimeError: asyncio.run() cannot be called from a running
+        event loop". To stay compatible we drop into a dedicated worker
+        thread with its own loop in that case.
+
+    Returns the coroutine's result (warmed count); raises on inner error
+    so the caller's try/except logs it."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop on this thread — the simple case.
+        return asyncio.run(coro)
+
+    # A loop IS running here. Spin up a sibling thread with its own loop
+    # and block on the result. The lifespan caller is sync inside an
+    # async context, so blocking here blocks the lifespan — that's the
+    # SAME shape as the previous asyncio.run() call, no behavior change
+    # other than not raising. (Real fix to remove the lifespan block is
+    # in main.py: call this from a background asyncio.create_task.)
+    result: dict[str, Any] = {}
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            result["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001
+            result["error"] = exc
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join()
+    if "error" in result:
+        raise result["error"]  # type: ignore[misc]
+    return int(result.get("value", 0))
