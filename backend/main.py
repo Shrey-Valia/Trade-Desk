@@ -63,6 +63,16 @@ async def lifespan(app: FastAPI):
     else:
         log.info("seed_trades=False; skipping demo seed (set SEED_TRADES=1 to enable)")
 
+    # misfire_grace_time bounds how far past a missed scheduled time a
+    # job will still be allowed to fire. Without it, a tick that misses
+    # its slot (e.g. because the previous run ran long against a slow
+    # Alpaca/Finnhub call) is silently skipped indefinitely — the symptom
+    # is "the scheduler stops working" until restart. 30s gives us a
+    # one-half-cycle window: missed by up to 30s → re-fire; older than
+    # that → drop. Paired with max_instances=1 + coalesce=True so a
+    # missed run never stacks behind a still-running one.
+    _SCHED_GRACE = 30
+
     scheduler = BackgroundScheduler(timezone="America/New_York")
     scheduler.add_job(
         refresh_watchlist,
@@ -70,6 +80,7 @@ async def lifespan(app: FastAPI):
         id="refresh_watchlist",
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
     )
     scheduler.add_job(
         prewarm_hot_tickers,
@@ -77,6 +88,7 @@ async def lifespan(app: FastAPI):
         id="prewarm_hot_tickers",
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
     )
     scheduler.add_job(
         collect_options_chain,
@@ -89,6 +101,7 @@ async def lifespan(app: FastAPI):
         id="collect_options_chain",
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
     )
     scheduler.start()
     log.info("scheduler started")

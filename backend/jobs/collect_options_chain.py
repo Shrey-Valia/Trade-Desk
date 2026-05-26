@@ -20,9 +20,15 @@ from database import SessionLocal
 from models.options_snapshot import OptionsSnapshot
 from services.alpaca_client import get_chain_snapshot
 from services.market_calendar import is_market_open
+from services.timeouts import CallTimeout, run_with_timeout
 
 log = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
+
+# Chain snapshots can be large (hundreds of contracts × 15 symbols) and
+# the Alpaca SDK has no init-level request timeout. Bound each fetch so
+# one stuck symbol can't run the daily job past the next scheduler tick.
+_PER_SYMBOL_TIMEOUT_SECONDS = 20.0
 
 
 def collect_options_chain() -> None:
@@ -40,7 +46,16 @@ def collect_options_chain() -> None:
     with SessionLocal() as session:
         for symbol in settings.watchlist_universe:
             try:
-                rows = get_chain_snapshot(symbol, with_volume=True)
+                rows = run_with_timeout(
+                    get_chain_snapshot, symbol, True,
+                    timeout_s=_PER_SYMBOL_TIMEOUT_SECONDS,
+                )
+            except CallTimeout:
+                log.warning(
+                    "collect_options_chain: %s exceeded %.0fs; skipping",
+                    symbol, _PER_SYMBOL_TIMEOUT_SECONDS,
+                )
+                continue
             except Exception:
                 log.exception("collect_options_chain: fetch failed for %s; skipping", symbol)
                 continue
