@@ -76,7 +76,7 @@ export function ChainPanel() {
 
   return (
     <section className="border-t border-hairline bg-tier-0 shrink-0 flex flex-col">
-      <div className="flex items-center gap-3 px-4 py-1 border-b border-hairline bg-tier-1 shrink-0">
+      <div className="flex items-center gap-3 px-3 py-1 border-b border-hairline bg-tier-1 shrink-0">
         <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
           Trading ticket &amp; open positions
         </span>
