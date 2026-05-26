@@ -5,6 +5,7 @@ import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
 import { useTradeIntent } from "@/stores/tradeIntent";
+import { useUserSettings } from "@/stores/userSettings";
 import type { ChainStrikeRow } from "@/types/zerodte";
 
 /**
@@ -53,6 +54,7 @@ export function ChainTable({ symbol }: Props) {
   const legMutation = useOpenZeroDteLeg();
   const straddleMutation = useOpenZeroDteStraddle();
   const action = useTradeIntent((s) => s.action);
+  const defaultContracts = useUserSettings((s) => s.defaultContracts);
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
 
@@ -104,7 +106,7 @@ export function ChainTable({ symbol }: Props) {
       action,
       strike: row.strike,
       entry_price: row.call_price,
-      contracts: 1,
+      contracts: defaultContracts,
     });
   };
   const onClickPut = (row: ChainStrikeRow) => {
@@ -115,13 +117,17 @@ export function ChainTable({ symbol }: Props) {
       action,
       strike: row.strike,
       entry_price: row.put_price,
-      contracts: 1,
+      contracts: defaultContracts,
     });
   };
   const onClickStrike = (row: ChainStrikeRow) => {
     if (!marketOpen) return;
     if (row.is_atm) {
-      straddleMutation.mutate({ symbol: data.underlying, action });
+      straddleMutation.mutate({
+        symbol: data.underlying,
+        action,
+        contracts: defaultContracts,
+      });
       return;
     }
     legMutation.mutate({
@@ -130,7 +136,7 @@ export function ChainTable({ symbol }: Props) {
       action,
       strike: row.strike,
       entry_price: row.call_price,
-      contracts: 1,
+      contracts: defaultContracts,
     });
   };
 

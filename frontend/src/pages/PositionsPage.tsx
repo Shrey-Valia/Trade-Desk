@@ -13,6 +13,7 @@ import {
   useSelectedTicker,
   useSelectedTickerHasHydrated,
 } from "@/stores/selectedTicker";
+import { useUserSettings } from "@/stores/userSettings";
 import { isZeroDteTrade, STRATEGY_LABELS } from "@/types/journal";
 import type { ChartTimeframe } from "@/types/chart";
 
@@ -36,7 +37,9 @@ export function PositionsPage() {
   const hasHydrated = useSelectedTickerHasHydrated();
   const symbol = useSelectedTicker((s) => s.symbol);
   const setSymbol = useSelectedTicker((s) => s.setSymbol);
-  const [timeframe, setTimeframe] = useState<ChartTimeframe>("5D");
+  const defaultTimeframe = useUserSettings((s) => s.defaultTimeframe);
+  const defaultTicker = useUserSettings((s) => s.defaultTicker);
+  const [timeframe, setTimeframe] = useState<ChartTimeframe>(defaultTimeframe);
 
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const scrubberDte = useActivePosition((s) => s.scrubberDte);
@@ -71,16 +74,15 @@ export function PositionsPage() {
     elapsedHours,
   });
 
-  // Cold-open default — land on SPY (the canonical 0DTE name) so a
-  // first-time visitor immediately sees a tradeable chain. Honors the
-  // persisted symbol if there is one; only fires when nothing was
-  // selected. No localStorage flag needed: the persisted symbol IS the
-  // signal that the user has been here before.
+  // Cold-open default — the user's Settings default ticker (defaults to
+  // SPY). Honors the persisted symbol if there is one; only fires when
+  // nothing was selected. No localStorage flag needed: the persisted
+  // symbol IS the signal that the user has been here before.
   useEffect(() => {
     if (!hasHydrated) return;
     if (symbol) return;
-    setSymbol("SPY");
-  }, [hasHydrated, symbol, setSymbol]);
+    setSymbol(defaultTicker || "SPY");
+  }, [hasHydrated, symbol, setSymbol, defaultTicker]);
 
   // Build the chart overlay from the analytics payload. The overlay
   // only renders when the active trade's symbol matches the chart's

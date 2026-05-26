@@ -5,6 +5,7 @@ import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { formatPercent, formatPrice } from "@/lib/formatters";
 import { useTradeIntent } from "@/stores/tradeIntent";
+import { useUserSettings } from "@/stores/userSettings";
 import type { ChartTimeframe } from "@/types/chart";
 
 import { SymbolSearch } from "./SymbolSearch";
@@ -53,6 +54,7 @@ export function TradeDeskToolbar({ symbol, timeframe, onTimeframeChange }: Props
 function OpenZeroDteButton({ symbol }: { symbol: string | null }) {
   const mutation = useOpenZeroDteStraddle();
   const action = useTradeIntent((s) => s.action);
+  const defaultContracts = useUserSettings((s) => s.defaultContracts);
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
   // Reuse the same chain query the bottom panel uses — react-query
@@ -81,7 +83,10 @@ function OpenZeroDteButton({ symbol }: { symbol: string | null }) {
       <button
         type="button"
         onClick={() =>
-          symbol && marketOpen && !noZeroDteToday && mutation.mutate({ symbol, action })
+          symbol &&
+          marketOpen &&
+          !noZeroDteToday &&
+          mutation.mutate({ symbol, action, contracts: defaultContracts })
         }
         disabled={disabled}
         className={[
