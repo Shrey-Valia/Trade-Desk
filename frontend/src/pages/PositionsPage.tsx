@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
 import { ChainPanel } from "@/components/positions/chain/ChainPanel";
+import { ChartToolbar } from "@/components/positions/ChartToolbar";
 import { PositionRiskStrip } from "@/components/positions/PositionRiskStrip";
 import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
 import { WatchlistColumn } from "@/components/watchlist/WatchlistColumn";
-import type { ChartTimeframe as ChartTimeframeType } from "@/types/chart";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
@@ -126,7 +126,11 @@ export function PositionsPage() {
       )}
       <div className="flex flex-1 min-h-0">
         <main className="flex-1 min-w-0 flex flex-col">
-          <ChartChromeStub timeframe={timeframe} onTimeframeChange={setTimeframe} />
+          <ChartToolbar
+            symbol={symbol}
+            timeframe={timeframe}
+            onTimeframeChange={setTimeframe}
+          />
           {!hasHydrated ? (
             <div className="flex-1" />
           ) : symbol ? (
@@ -150,47 +154,6 @@ export function PositionsPage() {
         </div>
       </div>
       <ChainPanel />
-    </div>
-  );
-}
-
-/**
- * Phase-2 placeholder for the chart toolbar — single-row timeframe
- * selector. Phase 3 expands this into a full TradingView-style toolbar
- * (timeframes, candle type, drawing tools, indicators).
- */
-const TF_STUB: ChartTimeframeType[] = ["1D", "5D", "1M", "3M"];
-function ChartChromeStub({
-  timeframe,
-  onTimeframeChange,
-}: {
-  timeframe: ChartTimeframeType;
-  onTimeframeChange: (tf: ChartTimeframeType) => void;
-}) {
-  return (
-    <div
-      className="flex items-center gap-1 border-b border-hairline bg-tier-0 px-3 shrink-0"
-      style={{ height: 36 }}
-    >
-      {TF_STUB.map((tf) => {
-        const active = tf === timeframe;
-        return (
-          <button
-            key={tf}
-            type="button"
-            onClick={() => onTimeframeChange(tf)}
-            className={[
-              "px-2 py-0.5 text-tiny border",
-              active
-                ? "border-amber text-amber bg-tier-3"
-                : "border-hairline text-fg-tertiary-2 hover:bg-tier-2",
-            ].join(" ")}
-            style={{ borderRadius: 0 }}
-          >
-            {tf}
-          </button>
-        );
-      })}
     </div>
   );
 }

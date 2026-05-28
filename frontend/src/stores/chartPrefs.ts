@@ -28,8 +28,11 @@ interface ChartPrefsState {
 export const useChartPrefs = create<ChartPrefsState>()(
   persist(
     (set) => ({
-      showMarketAnnotations: true,
-      showLegend: true,
+      // Redesign: market-structure overlays default OFF. They live in
+      // the KEY LEVELS panel (bottom strip col 3) and the user toggles
+      // them onto the chart explicitly via "show on chart."
+      showMarketAnnotations: false,
+      showLegend: false,
       toggleMarketAnnotations: () =>
         set((s) => ({ showMarketAnnotations: !s.showMarketAnnotations })),
       toggleLegend: () => set((s) => ({ showLegend: !s.showLegend })),
