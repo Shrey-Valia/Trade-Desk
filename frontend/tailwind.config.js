@@ -13,11 +13,14 @@ export default {
         "tier-0": colors.bgTier0,
         "tier-1": colors.bgTier1,
         "tier-2": colors.bgTier2,
-        // Foreground tiers
+        "tier-3": colors.bgTier3,
+        // Foreground tiers — five-stop ramp.
         fg: {
           primary: colors.fgPrimary,
           secondary: colors.fgSecondary,
+          "tertiary-2": colors.fgTertiary2,
           tertiary: colors.fgTertiary,
+          disabled: colors.fgDisabled,
         },
         // Borders
         hairline: colors.borderHairline,
@@ -25,9 +28,12 @@ export default {
         // Semantic price
         bullish: colors.bullish,
         bearish: colors.bearish,
-        // Accents
+        // Accents — amber = ACTIVE/SELECTED, cyan = quiet, warning = alert.
         amber: colors.accentAmber,
         cyan: colors.accentCyan,
+        warning: colors.warning,
+        // User position highlight (entry triangle, BE lines).
+        position: colors.positionMagenta,
       },
       fontFamily: {
         // IBM Plex Mono only. `sans` aliased to mono so default body font

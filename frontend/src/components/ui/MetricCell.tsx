@@ -6,7 +6,7 @@ interface Props {
   valueColor?: "primary" | "bullish" | "bearish";
   subContext?: string;
   tooltip?: string;
-  /** Bottom border becomes 1px dashed amber instead of solid (model signals row). */
+  /** Bottom border becomes 1px dashed warning color (model signals row). */
   failingBaseline?: boolean;
   className?: string;
 }
@@ -34,7 +34,7 @@ export function MetricCell({
 
   const baseClasses = [
     "flex flex-col gap-0.5 py-1.5 px-3 min-w-0",
-    failingBaseline ? "border-b border-dashed border-amber" : "",
+    failingBaseline ? "border-b border-dashed border-warning" : "",
     className,
   ]
     .filter(Boolean)

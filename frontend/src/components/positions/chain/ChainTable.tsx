@@ -84,7 +84,7 @@ export function ChainTable({ symbol }: Props) {
     if (msg.startsWith("No 0DTE for")) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center gap-1 text-center px-4">
-          <span className="text-medium text-amber tabular-nums">{msg}</span>
+          <span className="text-medium text-warning tabular-nums">{msg}</span>
           <span
             className="uppercase tracking-label-up text-fg-tertiary"
             style={{ fontSize: 9, letterSpacing: "0.08em" }}

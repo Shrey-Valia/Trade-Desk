@@ -98,24 +98,25 @@ function DayHeader({ date, isToday }: { date: string; isToday: boolean }) {
 
 /**
  * Per-event-type left-rule color class. No backgrounds. Earnings = cyan,
- * FOMC/OPEX/economic-high = amber, fed-speak/low-importance = secondary,
- * OPEX uses dashed amber.
+ * FOMC/OPEX/economic-high = warning, fed-speak/low-importance = secondary,
+ * OPEX uses dashed warning. AMBER is reserved for "today" / active state
+ * elsewhere in the strip.
  */
 const eventBorderClass: Record<EventType, string> = {
   earnings: "border-l-2 border-cyan",
-  fomc: "border-l-2 border-amber",
-  fomc_minutes: "border-l-2 border-amber",
+  fomc: "border-l-2 border-warning",
+  fomc_minutes: "border-l-2 border-warning",
   fed_speak: "border-l-2 border-fg-secondary",
   economic: "border-l-2 border-fg-secondary", // overridden for high-importance below
-  opex: "border-l-2 border-dashed border-amber",
-  quad_witching: "border-l-2 border-amber",
+  opex: "border-l-2 border-dashed border-warning",
+  quad_witching: "border-l-2 border-warning",
 };
 
 function EventPill({ event, dateISO }: { event: CalendarEvent; dateISO: string }) {
-  // Economic releases get amber for high-importance, secondary otherwise.
+  // Economic releases get warning for high-importance, secondary otherwise.
   const borderClass =
     event.type === "economic" && event.importance === "high"
-      ? "border-l-2 border-amber"
+      ? "border-l-2 border-warning"
       : eventBorderClass[event.type as EventType] ?? "border-l-2 border-fg-secondary";
 
   // Quad-witching keeps the uppercase tracked treatment per DESIGN.md.

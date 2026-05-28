@@ -23,8 +23,8 @@ const TYPE_LABEL: Record<VerdictType, string> = {
 const TYPE_COLOR: Record<VerdictType, string> = {
   sell_premium: "text-bullish border-bullish",
   buy_premium: "text-cyan border-cyan",
-  directional_long: "text-amber border-amber",
-  directional_short: "text-amber border-amber",
+  directional_long: "text-bullish border-bullish",
+  directional_short: "text-bearish border-bearish",
   avoid: "text-bearish border-bearish",
   neutral: "text-fg-secondary border-hairline",
 };

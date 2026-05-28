@@ -84,7 +84,7 @@ export function PriceHeader({ detail }: Props) {
 
       {showER && (
         <span
-          className="border-l-2 border-amber pl-2 text-tiny uppercase tracking-label-up text-amber"
+          className="border-l-2 border-warning pl-2 text-tiny uppercase tracking-label-up text-warning"
           title={TOOLTIPS.er_badge}
         >
           ER {detail.days_to_earnings}d

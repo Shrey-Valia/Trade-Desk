@@ -83,7 +83,7 @@ export function ChainPanel() {
         <BuySellToggle action={action} onChange={setAction} />
         {!marketOpen && (
           <span
-            className="text-tiny text-amber tabular-nums"
+            className="text-tiny text-warning tabular-nums"
             style={{ fontSize: 10 }}
             title={
               marketStatus?.next_open

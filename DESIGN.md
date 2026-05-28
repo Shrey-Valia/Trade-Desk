@@ -18,20 +18,51 @@ The dashboard does not have a marketing surface. It does not have an onboarding 
 BG TIER 0 (deepest)        #0A0C12   graphite black, slight blue tint; body background
 BG TIER 1 (panel)          #0E1118   one tier up; main detail panel
 BG TIER 2 (elevated)       #11141C   two tiers up; selected ticker row, active tab, hover
+BG TIER 3 (active fill)    #161A24   selected control fill (e.g. selected timeframe button)
 
 FG PRIMARY                 #E8E8E0   warm off-white; default text, values
-FG SECONDARY               #8A8A82   labels, axis ticks, sub-context
-FG TERTIARY                #5A5A52   decorative tier only; axis ticks and separator chrome (see contrast table)
+FG SECONDARY               #C4C4BC   normal labels above values, legible at a glance
+FG TERTIARY-2              #8A8A82   muted labels, axis ticks, sub-context
+FG TERTIARY                #5A5A52   decorative tier only; separator chrome (FAILS AA — see contrast table)
+FG DISABLED                #3F3F3A   dead controls, disabled chain cells
 
 BORDER (hairline)          #1F222A   1px borders everywhere
 BORDER STRONG              #2A2E38   selected/focused panel boundaries
 
 BULLISH (price moves)      #4DD17C   never pure green; ONLY for positive %change / candle up
-BEARISH (price moves)      #E85C5C   never pure red; ONLY for negative %change / candle down
+BEARISH (price moves)      #E85C5C   never pure red; ONLY for negative %change / candle down / errors
 
-ACCENT AMBER               #F0A030   selected state, alert/warning, focus rings, OPEX, FOMC
-ACCENT CYAN                #4FB8C8   neutral level markers, expandable affordances, link state
+ACCENT AMBER               #F0A030   ACTIVE / SELECTED ONLY — see discipline below
+ACCENT CYAN                #4FB8C8   neutral level markers, expandable affordances, market-structure annotations
+WARNING                    #C97A3A   muted orange-red; alerts / advisories distinct from amber and bearish
+
+POSITION MAGENTA           #D946EF   the user's open-position highlight on the chart — entry triangle + BE lines
 ```
+
+### Color discipline (Trade Desk redesign)
+
+The palette stays small. The discipline of HOW each color is used is strict:
+
+- **AMBER (#F0A030)** — single meaning: "this thing is active / selected RIGHT NOW." Examples: the active ticker button (only one at a time), the active timeframe button, the ATM row highlight in the chain, focused/active state of any input or button, the wordmark cursor block, the scrubber position marker, the KEY LEVELS "show on chart" toggle when ON, today's column in CalendarStrip. **Nothing else gets amber.** Errors are not amber. Watchlist category labels are not amber. Market-structure annotation labels are not amber.
+
+- **WARNING (#C97A3A)** — alerts and advisories: "market closed — 0DTE opens at 9:30 AM ET," "no 0DTE listed for this symbol today," the failingBaseline dashed rule, mock-flow banner, the demo notice, ER badge, FOMC/OPEX/quad-witching calendar pills. **Warnings are not errors and not active.**
+
+- **BEARISH (#E85C5C)** — error states (409 conflict on trade open, "open failed" panel-strip), losing P&L, down candle bodies, negative %change.
+
+- **BULLISH (#4DD17C)** — winning P&L, up candle bodies, positive %change, "directional long" verdict.
+
+- **CYAN (#4FB8C8)** — neutral level markers (max pain, breakeven lines that aren't the user's own), earnings event pills, market-structure annotation labels when surfaced on the chart, expandable affordances, link state.
+
+- **POSITION MAGENTA (#D946EF)** — strictly the user's own open-position visualization: entry triangle, BE lines, BE labels on the right edge, BE drift preview, "BE range" callout in the open-position card.
+
+- **fg-secondary (#C4C4BC)** — normal labels above values (BAL, DLL, RP&L, UP&L, MKT, OPEN POSITION, KEY LEVELS, etc.)
+- **fg-tertiary-2 (#8A8A82)** — muted labels (timeframe label below toolbar, sub-context)
+- **fg-tertiary (#5A5A52)** — decorative chrome only (separator hints, dim glyphs)
+- **fg-disabled (#3F3F3A)** — disabled chain cells, dead controls, click-through-disabled states
+
+### Market-structure pills
+
+When the user toggles KEY LEVELS → "show on chart" ON, the market-structure overlays (CW, PW, MP, EM±, GF) appear on the right-edge label rail of the chart. They are **outlined, never solid-filled**, reduced saturation, visually quieter than candle bodies and quieter than the user's magenta position lines. Outline color uses cyan or fg-secondary; never amber.
 
 ### Legacy tokens (mapped during migration)
 
@@ -145,12 +176,15 @@ Focus ring            2px solid #F0A030, offset 1px (amber, replaces the legacy 
 | Token | Hex | Ratio | Verdict |
 |---|---|---|---|
 | FG PRIMARY | `#E8E8E0` | 14.5:1 | AAA ✓ |
-| FG SECONDARY | `#8A8A82` | 5.8:1 | AA ✓ |
+| FG SECONDARY | `#C4C4BC` | 11.4:1 | AAA ✓ |
+| FG TERTIARY-2 | `#8A8A82` | 5.8:1 | AA ✓ |
 | FG TERTIARY | `#5A5A52` | 2.9:1 | **FAIL AA for body text — decorative use only** |
+| FG DISABLED | `#3F3F3A` | 1.6:1 | **disabled controls only — not for live content** |
 | BULLISH | `#4DD17C` | 8.9:1 | AAA ✓ |
 | BEARISH | `#E85C5C` | 5.5:1 | AA ✓ |
 | AMBER | `#F0A030` | 9.3:1 | AAA ✓ |
 | CYAN | `#4FB8C8` | 8.1:1 | AAA ✓ |
+| WARNING | `#C97A3A` | 5.0:1 | AA ✓ |
 
 **FG TERTIARY restriction:** Never used for content the user must read. Allowed for: axis tick labels, separator chrome, prefix glyphs, disabled state, decorative count badges. Forbidden for: any text the user has to comprehend to understand the dashboard's state.
 
