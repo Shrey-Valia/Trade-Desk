@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
+import { BottomStrip } from "@/components/positions/BottomStrip";
 import { RightChain } from "@/components/positions/chain/RightChain";
 import { ChartToolbar } from "@/components/positions/ChartToolbar";
-import { PositionRiskStrip } from "@/components/positions/PositionRiskStrip";
 import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
 import { TradeTicket } from "@/components/positions/TradeTicket";
 import { useTradeTicket } from "@/stores/tradeTicket";
@@ -128,12 +128,6 @@ export function PositionsPage() {
   return (
     <div className="flex flex-col h-full min-h-0">
       <TradeDeskHeader symbol={symbol} onSymbolChange={setSymbol} />
-      {activeTrade && analyticsQuery.data && (
-        <PositionRiskStrip
-          analytics={analyticsQuery.data}
-          contextLabel={`${activeTrade.symbol} · ${STRATEGY_LABELS[activeTrade.strategy] ?? activeTrade.strategy}`}
-        />
-      )}
       <div className="flex flex-1 min-h-0">
         <main className="flex-1 min-w-0 flex flex-col">
           <ChartToolbar
@@ -170,13 +164,7 @@ export function PositionsPage() {
           </div>
         </div>
       </div>
-      {/* Bottom strip placeholder (Phase 6 builds the 4-column management strip). */}
-      <div
-        className="border-t border-hairline bg-tier-0 shrink-0 flex items-center text-fg-tertiary text-tiny px-3"
-        style={{ height: 32 }}
-      >
-        Bottom strip — Phase 6 will land the position / scrubber / key-levels / today columns here.
-      </div>
+      <BottomStrip />
     </div>
   );
 }
