@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
-import { ChainPanel } from "@/components/positions/chain/ChainPanel";
+import { RightChain } from "@/components/positions/chain/RightChain";
 import { ChartToolbar } from "@/components/positions/ChartToolbar";
 import { PositionRiskStrip } from "@/components/positions/PositionRiskStrip";
 import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
-import { WatchlistColumn } from "@/components/watchlist/WatchlistColumn";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
@@ -147,13 +146,29 @@ export function PositionsPage() {
           )}
         </main>
         <div
-          className="border-l border-hairline shrink-0 flex flex-col min-h-0"
-          style={{ width: 240, minWidth: 240 }}
+          className="border-l border-hairline shrink-0 flex flex-col min-h-0 bg-tier-0"
+          style={{ width: 452, minWidth: 452 }}
         >
-          <WatchlistColumn />
+          {/* Upper-right: the option chain. */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <RightChain symbol={symbol} />
+          </div>
+          {/* Lower-right: trade ticket placeholder (Phase 5 fills this). */}
+          <div
+            className="border-t border-hairline bg-tier-0 shrink-0 flex items-center justify-center text-fg-tertiary text-tiny px-3"
+            style={{ height: 184 }}
+          >
+            Trade ticket — Phase 5
+          </div>
         </div>
       </div>
-      <ChainPanel />
+      {/* Bottom strip placeholder (Phase 6 builds the 4-column management strip). */}
+      <div
+        className="border-t border-hairline bg-tier-0 shrink-0 flex items-center text-fg-tertiary text-tiny px-3"
+        style={{ height: 32 }}
+      >
+        Bottom strip — Phase 6 will land the position / scrubber / key-levels / today columns here.
+      </div>
     </div>
   );
 }
