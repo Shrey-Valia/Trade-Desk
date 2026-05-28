@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
 import { ChainPanel } from "@/components/positions/chain/ChainPanel";
-import { PaperAccountHeader } from "@/components/positions/PaperAccountHeader";
 import { PositionRiskStrip } from "@/components/positions/PositionRiskStrip";
-import { TradeDeskToolbar } from "@/components/positions/TradeDeskToolbar";
+import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
 import { WatchlistColumn } from "@/components/watchlist/WatchlistColumn";
+import type { ChartTimeframe as ChartTimeframeType } from "@/types/chart";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
@@ -115,18 +115,9 @@ export function PositionsPage() {
     };
   }, [activeTrade, analyticsQuery.data, symbol, isIntraday, elapsedHours]);
 
-  const showPaperHeader = !!(activeTrade && activeTrade.is_paper && isIntraday);
-
   return (
     <div className="flex flex-col h-full min-h-0">
-      <TradeDeskToolbar
-        symbol={symbol}
-        timeframe={timeframe}
-        onTimeframeChange={setTimeframe}
-      />
-      {showPaperHeader && (
-        <PaperAccountHeader upl={analyticsQuery.data?.unrealized_pnl ?? 0} />
-      )}
+      <TradeDeskHeader symbol={symbol} onSymbolChange={setSymbol} />
       {activeTrade && analyticsQuery.data && (
         <PositionRiskStrip
           analytics={analyticsQuery.data}
@@ -135,6 +126,7 @@ export function PositionsPage() {
       )}
       <div className="flex flex-1 min-h-0">
         <main className="flex-1 min-w-0 flex flex-col">
+          <ChartChromeStub timeframe={timeframe} onTimeframeChange={setTimeframe} />
           {!hasHydrated ? (
             <div className="flex-1" />
           ) : symbol ? (
@@ -146,7 +138,7 @@ export function PositionsPage() {
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-fg-tertiary text-xs2">
-              Search a ticker or pick one from the watchlist.
+              Pick a ticker from the header.
             </div>
           )}
         </main>
@@ -158,6 +150,47 @@ export function PositionsPage() {
         </div>
       </div>
       <ChainPanel />
+    </div>
+  );
+}
+
+/**
+ * Phase-2 placeholder for the chart toolbar — single-row timeframe
+ * selector. Phase 3 expands this into a full TradingView-style toolbar
+ * (timeframes, candle type, drawing tools, indicators).
+ */
+const TF_STUB: ChartTimeframeType[] = ["1D", "5D", "1M", "3M"];
+function ChartChromeStub({
+  timeframe,
+  onTimeframeChange,
+}: {
+  timeframe: ChartTimeframeType;
+  onTimeframeChange: (tf: ChartTimeframeType) => void;
+}) {
+  return (
+    <div
+      className="flex items-center gap-1 border-b border-hairline bg-tier-0 px-3 shrink-0"
+      style={{ height: 36 }}
+    >
+      {TF_STUB.map((tf) => {
+        const active = tf === timeframe;
+        return (
+          <button
+            key={tf}
+            type="button"
+            onClick={() => onTimeframeChange(tf)}
+            className={[
+              "px-2 py-0.5 text-tiny border",
+              active
+                ? "border-amber text-amber bg-tier-3"
+                : "border-hairline text-fg-tertiary-2 hover:bg-tier-2",
+            ].join(" ")}
+            style={{ borderRadius: 0 }}
+          >
+            {tf}
+          </button>
+        );
+      })}
     </div>
   );
 }
