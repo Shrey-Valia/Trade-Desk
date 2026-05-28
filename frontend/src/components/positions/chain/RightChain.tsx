@@ -2,10 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { useChainTable } from "@/hooks/useChainTable";
 import { useMarketStatus } from "@/hooks/useMarket";
-import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
-import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
-import { useTradeIntent } from "@/stores/tradeIntent";
-import { useUserSettings } from "@/stores/userSettings";
+import { useTradeTicket } from "@/stores/tradeTicket";
 import type { ChainStrikeRow } from "@/types/zerodte";
 
 /**
@@ -16,16 +13,15 @@ import type { ChainStrikeRow } from "@/types/zerodte";
  * Layout: CALL price (right) | STRIKE (center) | PUT price (left).
  * ATM row: amber left-border + bg-tier-1 fill + amber values.
  *
- * Click semantics (preserved from the legacy bottom-panel ChainPanel):
- *   - Call cell  → open one-leg call at that strike (current action)
- *   - Put cell   → open one-leg put at that strike
- *   - Strike cell on ATM row → open straddle
- *   - Strike cell off ATM → open one-leg call
+ * Click semantics (Phase 5 — select-only, no immediate fire):
+ *   - Call cell  → select call-leg at that strike in the ticket
+ *   - Put cell   → select put-leg at that strike in the ticket
+ *   - Strike cell on ATM row → select straddle at that strike
+ *   - Strike cell off ATM → select call-leg at that strike
  *
- * Phase 4 keeps the legacy click-to-trade behavior. Phase 5 will
- * intercept these clicks via a tradeTicket store so the action flows
- * through the new BUY/SELL ticket below the chain instead of firing
- * mutations directly.
+ * The actual BUY or SELL fires from the trade ticket below the chain,
+ * not from these clicks. Direction is which of the ticket's two
+ * buttons the user presses.
  *
  * Read-only states (dim cells, no-op clicks):
  *   - market closed
@@ -45,10 +41,8 @@ const GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
 export function RightChain({ symbol }: Props) {
   // Pull 8 strikes above + 8 below ATM ⇒ ask for 8 in each direction.
   const { data, isLoading, isError, error } = useChainTable(symbol, 8);
-  const legMutation = useOpenZeroDteLeg();
-  const straddleMutation = useOpenZeroDteStraddle();
-  const action = useTradeIntent((s) => s.action);
-  const defaultContracts = useUserSettings((s) => s.defaultContracts);
+  const setSelection = useTradeTicket((s) => s.setSelection);
+  const currentSelection = useTradeTicket((s) => s.selection);
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
 
@@ -70,43 +64,46 @@ export function RightChain({ symbol }: Props) {
 
   const onClickCall = (row: ChainStrikeRow) => {
     if (readOnly || !data) return;
-    legMutation.mutate({
-      symbol: data.underlying,
+    setSelection({
+      kind: "leg",
       side: "call",
-      action,
+      symbol: data.underlying,
       strike: row.strike,
-      entry_price: row.call_price,
-      contracts: defaultContracts,
+      price: row.call_price,
+      expiry: data.expiry,
     });
   };
   const onClickPut = (row: ChainStrikeRow) => {
     if (readOnly || !data) return;
-    legMutation.mutate({
-      symbol: data.underlying,
+    setSelection({
+      kind: "leg",
       side: "put",
-      action,
+      symbol: data.underlying,
       strike: row.strike,
-      entry_price: row.put_price,
-      contracts: defaultContracts,
+      price: row.put_price,
+      expiry: data.expiry,
     });
   };
   const onClickStrike = (row: ChainStrikeRow) => {
     if (readOnly || !data) return;
     if (row.is_atm) {
-      straddleMutation.mutate({
+      setSelection({
+        kind: "straddle",
         symbol: data.underlying,
-        action,
-        contracts: defaultContracts,
+        strike: row.strike,
+        // Straddle "price" = call + put premium (debit if long).
+        price: row.call_price + row.put_price,
+        expiry: data.expiry,
       });
       return;
     }
-    legMutation.mutate({
-      symbol: data.underlying,
+    setSelection({
+      kind: "leg",
       side: "call",
-      action,
+      symbol: data.underlying,
       strike: row.strike,
-      entry_price: row.call_price,
-      contracts: defaultContracts,
+      price: row.call_price,
+      expiry: data.expiry,
     });
   };
 
@@ -137,27 +134,37 @@ export function RightChain({ symbol }: Props) {
         )}
         {data && data.rows.length > 0 && (
           <div className="flex flex-col items-center">
-            {data.rows.map((row) => (
-              <Row
-                key={row.strike}
-                row={row}
-                action={action}
-                disabled={readOnly}
-                onClickCall={() => onClickCall(row)}
-                onClickPut={() => onClickPut(row)}
-                onClickStrike={() => onClickStrike(row)}
-              />
-            ))}
+            {data.rows.map((row) => {
+              const selStrike =
+                currentSelection?.symbol === data.underlying
+                  ? currentSelection.strike
+                  : null;
+              const selKind = currentSelection?.kind ?? null;
+              const selSide = currentSelection?.side ?? null;
+              return (
+                <Row
+                  key={row.strike}
+                  row={row}
+                  disabled={readOnly}
+                  selectedCall={
+                    selStrike === row.strike &&
+                    (selKind === "straddle" ||
+                      (selKind === "leg" && selSide === "call"))
+                  }
+                  selectedPut={
+                    selStrike === row.strike &&
+                    (selKind === "straddle" ||
+                      (selKind === "leg" && selSide === "put"))
+                  }
+                  onClickCall={() => onClickCall(row)}
+                  onClickPut={() => onClickPut(row)}
+                  onClickStrike={() => onClickStrike(row)}
+                />
+              );
+            })}
           </div>
         )}
       </div>
-      {(legMutation.isError || straddleMutation.isError) && (
-        <div className="px-3 py-1 border-t border-hairline bg-tier-1 text-tiny text-bearish">
-          {(legMutation.error as Error)?.message ??
-            (straddleMutation.error as Error)?.message ??
-            "open failed"}
-        </div>
-      )}
     </section>
   );
 }
@@ -237,19 +244,23 @@ function ColumnHeader() {
 
 function Row({
   row,
-  action,
   disabled,
+  selectedCall,
+  selectedPut,
   onClickCall,
   onClickPut,
   onClickStrike,
 }: {
   row: ChainStrikeRow;
-  action: "buy" | "sell";
   disabled: boolean;
+  selectedCall: boolean;
+  selectedPut: boolean;
   onClickCall: () => void;
   onClickPut: () => void;
   onClickStrike: () => void;
 }) {
+  // ATM row keeps its amber left-rule + tinted background. Selected
+  // call/put cells also get amber treatment within the row.
   const rowCls = row.is_atm
     ? "bg-tier-1 border-l-2 border-amber"
     : "border-l-2 border-transparent hover:bg-tier-1";
@@ -268,10 +279,10 @@ function Row({
         price={row.call_price}
         source={row.call_source}
         disabled={disabled || row.call_price <= 0}
-        action={action}
         side="call"
         strike={row.strike}
         isAtm={row.is_atm}
+        selected={selectedCall}
         onClick={onClickCall}
       />
       <button
@@ -289,8 +300,8 @@ function Row({
           disabled
             ? "Market closed or no 0DTE today"
             : row.is_atm
-              ? `${action === "buy" ? "Buy" : "Sell"} straddle at ${row.strike}`
-              : `${action === "buy" ? "Long" : "Short"} call at ${row.strike}`
+              ? `Select straddle at ${row.strike}`
+              : `Select call at ${row.strike}`
         }
       >
         {row.strike}
@@ -300,10 +311,10 @@ function Row({
         price={row.put_price}
         source={row.put_source}
         disabled={disabled || row.put_price <= 0}
-        action={action}
         side="put"
         strike={row.strike}
         isAtm={row.is_atm}
+        selected={selectedPut}
         onClick={onClickPut}
       />
     </div>
@@ -315,32 +326,33 @@ function Cell({
   price,
   source,
   disabled,
-  action,
   side,
   strike,
   isAtm,
+  selected,
   onClick,
 }: {
   align: "left" | "right";
   price: number;
   source: "quote" | "bs";
   disabled: boolean;
-  action: "buy" | "sell";
   side: "call" | "put";
   strike: number;
   isAtm: boolean;
+  selected: boolean;
   onClick: () => void;
 }) {
   const dim = source === "bs";
-  // Disabled cells render with fg-disabled per the redesign discipline.
   const baseColor = disabled
     ? "text-fg-disabled cursor-not-allowed"
-    : isAtm
+    : selected
       ? "text-amber"
-      : dim
-        ? "text-fg-tertiary-2"
-        : "text-fg-primary";
-  const verb = action === "buy" ? "Long" : "Short";
+      : isAtm
+        ? "text-amber"
+        : dim
+          ? "text-fg-tertiary-2"
+          : "text-fg-primary";
+  const bg = selected ? "bg-tier-3" : "";
   return (
     <button
       type="button"
@@ -350,12 +362,13 @@ function Cell({
         "h-full px-2 tabular-nums",
         align === "right" ? "text-right" : "text-left",
         baseColor,
+        bg,
         disabled ? "" : "hover:bg-tier-2",
       ].join(" ")}
       title={
         disabled
           ? "Market closed or no 0DTE today"
-          : `${verb} ${side} at ${strike} · ${
+          : `Select ${side} at ${strike} · ${
               source === "bs" ? "BS-model price (no live quote)" : "indicative quote"
             }`
       }

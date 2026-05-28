@@ -5,6 +5,8 @@ import { RightChain } from "@/components/positions/chain/RightChain";
 import { ChartToolbar } from "@/components/positions/ChartToolbar";
 import { PositionRiskStrip } from "@/components/positions/PositionRiskStrip";
 import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
+import { TradeTicket } from "@/components/positions/TradeTicket";
+import { useTradeTicket } from "@/stores/tradeTicket";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
@@ -38,7 +40,16 @@ export function PositionsPage() {
   const setSymbol = useSelectedTicker((s) => s.setSymbol);
   const defaultTimeframe = useUserSettings((s) => s.defaultTimeframe);
   const defaultTicker = useUserSettings((s) => s.defaultTicker);
+  const defaultContracts = useUserSettings((s) => s.defaultContracts);
+  const setTicketContracts = useTradeTicket((s) => s.setContracts);
   const [timeframe, setTimeframe] = useState<ChartTimeframe>(defaultTimeframe);
+
+  // Seed the trade ticket's contract count from the user's Settings
+  // default the first time we mount; preserves the click-and-fire
+  // ergonomics from the retired toolbar 0DTE button.
+  useEffect(() => {
+    setTicketContracts(defaultContracts);
+  }, [defaultContracts, setTicketContracts]);
 
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const scrubberDte = useActivePosition((s) => s.scrubberDte);
@@ -153,12 +164,9 @@ export function PositionsPage() {
           <div className="flex-1 min-h-0 flex flex-col">
             <RightChain symbol={symbol} />
           </div>
-          {/* Lower-right: trade ticket placeholder (Phase 5 fills this). */}
-          <div
-            className="border-t border-hairline bg-tier-0 shrink-0 flex items-center justify-center text-fg-tertiary text-tiny px-3"
-            style={{ height: 184 }}
-          >
-            Trade ticket — Phase 5
+          {/* Lower-right: trade ticket. */}
+          <div className="border-t border-hairline bg-tier-0 shrink-0">
+            <TradeTicket />
           </div>
         </div>
       </div>
