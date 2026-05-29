@@ -4,7 +4,6 @@ import {
   ColorType,
   CrosshairMode,
   HistogramSeries,
-  LineSeries,
   LineStyle,
   createChart,
   createSeriesMarkers,
@@ -172,7 +171,7 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
   const showMarketAnnotations = useChartPrefs((s) => s.showMarketAnnotations);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const annotationLinesRef = useRef<IPriceLine[]>([]);
   const positionLinesRef = useRef<IPriceLine[]>([]);
@@ -269,8 +268,6 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
       volumeRef.current = null;
     }
 
-    const useLine = timeframe === "1D";
-
     const volume = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "",
@@ -288,36 +285,31 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
     );
     volumeRef.current = volume;
 
-    if (useLine) {
-      const line = chart.addSeries(LineSeries, {
-        color: colors.fgPrimary,
-        lineWidth: 2,
-        priceLineVisible: false,
-        lastValueVisible: true,
-      });
-      line.setData(bars.map((b) => ({ time: toTime(b.t), value: b.c })));
-      seriesRef.current = line;
-    } else {
-      const candles = chart.addSeries(CandlestickSeries, {
-        upColor: colors.bullish,
-        downColor: colors.bearish,
-        wickUpColor: colors.bullish,
-        wickDownColor: colors.bearish,
-        borderVisible: false,
-        priceLineVisible: false,
-        lastValueVisible: true,
-      });
-      candles.setData(
-        bars.map((b) => ({
-          time: toTime(b.t),
-          open: b.o,
-          high: b.h,
-          low: b.l,
-          close: b.c,
-        })),
-      );
-      seriesRef.current = candles;
-    }
+    // Candles for every timeframe. The legacy code rendered the "1D"
+    // backend timeframe as a LineSeries (intended for 1-minute intraday
+    // bars). The Trade-Desk redesign routes every toolbar button — 1m
+    // through 1D — to the backend's daily bars via TF_REAL_MAP, so the
+    // line-mode branch turned every click into a line chart. The chart
+    // type stub in the toolbar will own line / area later.
+    const candles = chart.addSeries(CandlestickSeries, {
+      upColor: colors.bullish,
+      downColor: colors.bearish,
+      wickUpColor: colors.bullish,
+      wickDownColor: colors.bearish,
+      borderVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+    candles.setData(
+      bars.map((b) => ({
+        time: toTime(b.t),
+        open: b.o,
+        high: b.h,
+        low: b.l,
+        close: b.c,
+      })),
+    );
+    seriesRef.current = candles;
 
     // Market-structure annotations are managed by a separate effect
     // below so the toggle doesn't rebuild the candle series.
@@ -448,7 +440,7 @@ const ANNOT_LINE_ALPHA = "55";   // ~33% — dotted thin line, calm in the gutte
 const ANNOT_LABEL_BG_ALPHA = "40"; // ~25% — pill background; text reads via fgPrimary
 
 function buildPriceLines(
-  series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">,
+  series: ISeriesApi<"Candlestick">,
   a: ChartAnnotations,
 ): IPriceLine[] {
   const lines: IPriceLine[] = [];
