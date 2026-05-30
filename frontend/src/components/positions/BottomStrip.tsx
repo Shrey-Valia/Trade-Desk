@@ -40,6 +40,22 @@ export function BottomStrip() {
   });
   const analytics = analyticsQuery.data ?? null;
 
+  // No active position → collapsed single-row strip: just KEY LEVELS
+  // inline + a TODAY summary row. Hides OPEN POSITION and THETA
+  // SCRUBBER entirely (they're empty placeholders when no trade is
+  // active) and gives the freed vertical space back to the chart.
+  if (!activeTrade) {
+    return (
+      <div
+        className="border-t border-hairline bg-tier-0 shrink-0 flex flex-col"
+        style={{ height: 80 }}
+      >
+        <KeyLevelsInline symbol={symbol} />
+        <TodayInline trades={trades} />
+      </div>
+    );
+  }
+
   return (
     <div
       className="grid border-t border-hairline bg-tier-0 shrink-0"
@@ -60,6 +76,103 @@ export function BottomStrip() {
       <Column>
         <TodayCol trades={trades} activeTradeId={activeTradeId} />
       </Column>
+    </div>
+  );
+}
+
+// -- collapsed single-row variants (no active position) ----------------------
+
+function KeyLevelsInline({ symbol }: { symbol: string | null }) {
+  const annotations = useTickerAnnotations(symbol, "1D");
+  const metrics = useTickerMetrics(symbol);
+  const a = annotations.data?.annotations;
+  const m = metrics.data;
+  const showOnChart = useChartPrefs((s) => s.showMarketAnnotations);
+  const toggle = useChartPrefs((s) => s.toggleMarketAnnotations);
+
+  return (
+    <div
+      className="flex items-center gap-3 px-3 border-b border-hairline tabular-nums"
+      style={{ height: 44 }}
+    >
+      <span className="text-tiny uppercase tracking-label-up text-fg-secondary shrink-0">
+        Key levels
+      </span>
+      <span className="text-tiny text-fg-tertiary-2 shrink-0" style={{ fontSize: 10 }}>
+        {symbol ?? ""}
+      </span>
+      <InlineLevel label="EM↑" value={fmtPrice(a?.expected_move_upper)} />
+      <InlineLevel label="EM↓" value={fmtPrice(a?.expected_move_lower)} />
+      <InlineLevel label="CW" value={a?.call_wall ? `$${a.call_wall.strike.toFixed(2)}` : "—"} />
+      <InlineLevel label="PW" value={a?.put_wall ? `$${a.put_wall.strike.toFixed(2)}` : "—"} />
+      <InlineLevel label="MP" value={fmtPrice(a?.max_pain)} />
+      <InlineLevel label="GF" value={fmtPrice(a?.gamma_flip)} />
+      <InlineLevel
+        label="IV"
+        value={m?.iv_rank == null ? "—" : `${m.iv_rank.toFixed(0)}`}
+      />
+      <div className="ml-auto flex items-center gap-1.5 shrink-0">
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2"
+          style={{ fontSize: 9 }}
+        >
+          show on chart
+        </span>
+        <ToggleSwitch on={showOnChart} onClick={toggle} />
+      </div>
+    </div>
+  );
+}
+
+function InlineLevel({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="inline-flex items-baseline gap-1 text-tiny tabular-nums">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 9 }}
+      >
+        {label}
+      </span>
+      <span className="text-fg-secondary">{value}</span>
+    </span>
+  );
+}
+
+function TodayInline({ trades }: { trades: Trade[] }) {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const { net, count } = useMemo(() => {
+    let n = 0;
+    let c = 0;
+    for (const t of trades) {
+      if (t.status === "closed" && t.exit_date?.startsWith(todayIso)) {
+        n += t.realized_pnl ?? 0;
+        c += 1;
+      } else if (t.status === "open" && t.entry_date.startsWith(todayIso)) {
+        c += 1;
+      }
+    }
+    return { net: n, count: c };
+  }, [trades, todayIso]);
+  const netCls =
+    net > 0 ? "text-bullish" : net < 0 ? "text-bearish" : "text-fg-secondary";
+  return (
+    <div
+      className="flex items-center gap-3 px-3 tabular-nums"
+      style={{ height: 36 }}
+    >
+      <span className="text-tiny uppercase tracking-label-up text-fg-secondary shrink-0">
+        Today
+      </span>
+      <span className={`text-tiny ${netCls}`}>{formatSignedDollar(net)}</span>
+      <span className="text-tiny text-fg-tertiary-2">
+        {count} trade{count === 1 ? "" : "s"}
+      </span>
+      <Link
+        to="/journal"
+        className="ml-auto text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber"
+      >
+        view full journal →
+      </Link>
     </div>
   );
 }

@@ -39,8 +39,10 @@ const PUT_W = 168;
 const GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
 
 export function RightChain({ symbol }: Props) {
-  // Pull 8 strikes above + 8 below ATM ⇒ ask for 8 in each direction.
-  const { data, isLoading, isError, error } = useChainTable(symbol, 8);
+  // Pull 5 strikes above + 5 below ATM ⇒ ~11 rows visible without
+  // scrolling. The previous redesign asked for 16; the simplification
+  // pass dropped that to reduce the right column's visual weight.
+  const { data, isLoading, isError, error } = useChainTable(symbol, 5);
   const setSelection = useTradeTicket((s) => s.setSelection);
   const currentSelection = useTradeTicket((s) => s.selection);
   const { data: marketStatus } = useMarketStatus();

@@ -1,6 +1,6 @@
 import { colors } from "@/lib/design";
 
-type LogoSize = "compact" | "full";
+type LogoSize = "mini" | "compact" | "full";
 
 interface Props {
   size?: LogoSize;
@@ -29,7 +29,16 @@ interface Props {
  */
 export function TradeDeskLogo({ size = "compact", noBlink }: Props) {
   const config =
-    size === "compact"
+    size === "mini"
+      ? {
+          fontSize: 10,
+          cursorH: 8,
+          cursorW: 5,
+          tracking: "0.16em",
+          bracketGap: 3,
+          wordGap: 4,
+        }
+      : size === "compact"
       ? {
           fontSize: 14,
           cursorH: 11,
@@ -76,7 +85,7 @@ export function TradeDeskLogo({ size = "compact", noBlink }: Props) {
     </span>
   );
 
-  if (size === "compact") return Line;
+  if (size === "compact" || size === "mini") return Line;
 
   return (
     <span className="inline-flex flex-col gap-1 select-none" aria-label="Trade Desk">

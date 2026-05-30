@@ -36,10 +36,10 @@ interface Props {
 export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
   return (
     <header
-      className="flex items-center gap-6 border-b border-hairline bg-tier-0 px-4 shrink-0"
-      style={{ height: 56 }}
+      className="flex items-center gap-3 border-b border-hairline bg-tier-0 px-3 shrink-0"
+      style={{ height: 40 }}
     >
-      <TradeDeskLogo size="compact" />
+      <TradeDeskLogo size="mini" />
       <TickerSwitcher value={symbol} onChange={onSymbolChange} />
       <PriceReadout symbol={symbol} />
       <div className="ml-auto" />
@@ -61,7 +61,7 @@ function TickerSwitcher({
       className="flex"
       role="group"
       aria-label="Ticker"
-      style={{ gap: 4 }}
+      style={{ gap: 2 }}
     >
       {TICKERS.map((t) => {
         const active = value === t;
@@ -72,7 +72,7 @@ function TickerSwitcher({
             onClick={() => onChange(t)}
             aria-pressed={active}
             className={[
-              "h-7 px-3 text-xs2 uppercase tracking-label-up tabular-nums border",
+              "h-5 px-2 text-tiny uppercase tracking-label-up tabular-nums border",
               active
                 ? "border-amber text-amber bg-tier-3"
                 : "border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary",
@@ -92,7 +92,7 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
   if (!symbol) return null;
   if (!detail) {
     return (
-      <span className="text-xs2 text-fg-tertiary tabular-nums">
+      <span className="text-tiny text-fg-tertiary tabular-nums">
         {symbol} —
       </span>
     );
@@ -101,11 +101,11 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
   const changeClass = positive ? "text-bullish" : "text-bearish";
   const sign = positive ? "+" : "";
   return (
-    <div className="flex items-baseline gap-3 tabular-nums">
-      <span className="text-display font-medium text-fg-primary">
+    <div className="flex items-baseline gap-1.5 tabular-nums">
+      <span className="text-medium font-medium text-fg-primary">
         {formatPrice(detail.price)}
       </span>
-      <span className={`text-xs2 ${changeClass}`}>
+      <span className={`text-tiny ${changeClass}`} style={{ fontSize: 10 }}>
         {sign}
         {detail.change_dollar.toFixed(2)} ({formatPercent(detail.change_pct)})
       </span>
@@ -156,7 +156,7 @@ function AccountCluster() {
   const bal = STARTING_BALANCE + todayRpl + upl;
 
   return (
-    <div className="flex items-stretch gap-5 tabular-nums">
+    <div className="flex items-stretch gap-2 tabular-nums">
       <MetricLabelValue label="BAL" value={formatDollar(bal)} />
       <MetricLabelValue label="DLL" value="—" muted />
       <MetricLabelValue label="RP&L" value={formatSigned(todayRpl)} signed={todayRpl} />
@@ -187,14 +187,19 @@ function MetricLabelValue({
         ? "text-fg-tertiary-2"
         : "text-fg-primary";
   return (
-    <div className="flex flex-col items-end leading-tight">
+    <div
+      className="flex flex-col items-end leading-tight px-1"
+      style={{ minWidth: 72 }}
+    >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
         style={{ fontSize: 9, letterSpacing: "0.08em" }}
       >
         {label}
       </span>
-      <span className={`text-medium font-medium ${valueClass}`}>{value}</span>
+      <span className={`text-tiny font-medium ${valueClass}`} style={{ fontSize: 12 }}>
+        {value}
+      </span>
     </div>
   );
 }
@@ -219,7 +224,7 @@ function MarketCell() {
     return status.label;
   }, [status, isOpen]);
   return (
-    <div className="flex flex-col items-end leading-tight">
+    <div className="flex flex-col items-end leading-tight px-1">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
         style={{ fontSize: 9, letterSpacing: "0.08em" }}
@@ -227,8 +232,8 @@ function MarketCell() {
         MKT
       </span>
       <span
-        className={`inline-flex items-center gap-1 px-1.5 py-px border text-tiny uppercase tracking-label-up tabular-nums ${cls}`}
-        style={{ borderRadius: 0, fontSize: 10 }}
+        className={`inline-flex items-center gap-1 px-1 border uppercase tracking-label-up tabular-nums ${cls}`}
+        style={{ borderRadius: 0, fontSize: 9 }}
         title={status?.label}
       >
         {isOpen ? "OPEN" : "CLOSED"}
