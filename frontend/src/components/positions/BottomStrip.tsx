@@ -110,32 +110,37 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
 
   return (
     <div
-      className="flex items-center gap-3 px-3 border-b border-hairline tabular-nums"
-      style={{ height: 44 }}
+      className="flex items-center px-3 border-b border-hairline bg-tier-1 tabular-nums"
+      style={{ height: 44, gap: 16 }}
     >
-      <span className="text-tiny uppercase tracking-label-up text-fg-secondary shrink-0">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary shrink-0"
+        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+      >
         Key levels
       </span>
-      <span className="text-tiny text-fg-tertiary-2 shrink-0" style={{ fontSize: 10 }}>
+      <span className="text-fg-tertiary-2 shrink-0" style={{ fontSize: 11 }}>
         {symbol ?? ""}
       </span>
       {items.length === 0 ? (
-        <span className="text-tiny text-fg-tertiary-2">
+        <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
           No levels for {symbol ?? "—"} today
         </span>
       ) : (
-        items.map((it) => (
-          <InlineLevel key={it.label} label={it.label} value={it.value} />
-        ))
+        <div className="flex items-center" style={{ gap: 16 }}>
+          {items.map((it) => (
+            <InlineLevel key={it.label} label={it.label} value={it.value} />
+          ))}
+        </div>
       )}
-      <div className="ml-auto flex items-center gap-1.5 shrink-0">
+      <div className="ml-auto flex items-center gap-2 shrink-0">
         <span
-          className="uppercase tracking-label-up text-fg-tertiary-2"
-          style={{ fontSize: 9 }}
+          className="uppercase tracking-label-up text-fg-tertiary"
+          style={{ fontSize: 10, letterSpacing: "0.08em" }}
         >
           show on chart
         </span>
-        <ToggleSwitch on={showOnChart} onClick={toggle} />
+        <PillToggle on={showOnChart} onClick={toggle} />
       </div>
     </div>
   );
@@ -143,15 +148,58 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
 
 function InlineLevel({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex items-baseline gap-1 text-tiny tabular-nums">
+    <span className="inline-flex items-baseline gap-1.5 tabular-nums">
       <span
-        className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        className="uppercase tracking-label-up text-fg-tertiary"
+        style={{ fontSize: 10, letterSpacing: "0.06em" }}
       >
         {label}
       </span>
-      <span className="text-fg-secondary">{value}</span>
+      <span
+        className="text-fg-primary font-medium"
+        style={{ fontSize: 11 }}
+      >
+        {value}
+      </span>
     </span>
+  );
+}
+
+/**
+ * Rounded pill toggle — 24×14, amber when on. Replaces the previous
+ * 7×4 hairline-edged box used elsewhere; the cleaner KEY LEVELS strip
+ * is the right place for the new affordance.
+ */
+function PillToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      aria-label="Show market-structure overlays on chart"
+      className="relative shrink-0"
+      style={{
+        width: 24,
+        height: 14,
+        borderRadius: 9999,
+        background: on ? "#F0A030" : "#2A3142",
+        transition: "background 100ms ease-out",
+      }}
+    >
+      <span
+        aria-hidden
+        className="absolute"
+        style={{
+          top: 2,
+          left: on ? 12 : 2,
+          width: 10,
+          height: 10,
+          borderRadius: 9999,
+          background: "#FFFFFF",
+          transition: "left 100ms ease-out",
+        }}
+      />
+    </button>
   );
 }
 

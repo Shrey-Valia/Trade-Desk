@@ -57,7 +57,7 @@ export function ChartToolbar({ symbol, timeframe, onTimeframeChange }: Props) {
     REAL_TO_VISUAL[timeframe] ?? "1D",
   );
   return (
-    <div className="shrink-0 bg-tier-0 border-b border-hairline">
+    <div className="shrink-0 bg-tier-1 border-b border-hairline">
       <Toolbar
         timeframe={timeframe}
         visualTf={visualTf}
@@ -130,12 +130,19 @@ function Toolbar({
 }
 
 function Separator() {
-  // Single 1px hairline between toolbar groups.
+  // Visual rework: short vertical hairline centered in the row, 16px
+  // tall, hairline color. Wraps in a flex item with horizontal margin
+  // so adjacent buttons don't crowd the divider.
   return (
     <span
       aria-hidden
-      className="self-stretch border-l border-hairline"
-      style={{ marginInline: 8, width: 0 }}
+      className="self-center"
+      style={{
+        width: 1,
+        height: 16,
+        background: "#2F3545",
+        marginInline: 8,
+      }}
     />
   );
 }

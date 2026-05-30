@@ -31,8 +31,9 @@ interface Props {
   symbol: string | null;
 }
 
-// 16 strike rows visible at 18px each = 288px of chain body.
-const ROW_HEIGHT = 18;
+// Topstep DOM-style ladder — taller rows (20px), wider center strike
+// column anchored with a subtle bg-tier-1 tint, hairline every 5 rows.
+const ROW_HEIGHT = 20;
 const CALL_W = 168;
 const STRIKE_W = 88;
 const PUT_W = 168;
@@ -136,28 +137,29 @@ export function RightChain({ symbol }: Props) {
         )}
         {data && data.rows.length > 0 && (
           <div className="flex flex-col items-center">
-            {data.rows.map((row) => {
+            {data.rows.map((row, idx) => {
               const selStrike =
                 currentSelection?.symbol === data.underlying
                   ? currentSelection.strike
                   : null;
               const selKind = currentSelection?.kind ?? null;
               const selSide = currentSelection?.side ?? null;
+              const selectedCall =
+                selStrike === row.strike &&
+                (selKind === "straddle" ||
+                  (selKind === "leg" && selSide === "call"));
+              const selectedPut =
+                selStrike === row.strike &&
+                (selKind === "straddle" ||
+                  (selKind === "leg" && selSide === "put"));
               return (
                 <Row
                   key={row.strike}
                   row={row}
                   disabled={readOnly}
-                  selectedCall={
-                    selStrike === row.strike &&
-                    (selKind === "straddle" ||
-                      (selKind === "leg" && selSide === "call"))
-                  }
-                  selectedPut={
-                    selStrike === row.strike &&
-                    (selKind === "straddle" ||
-                      (selKind === "leg" && selSide === "put"))
-                  }
+                  selectedCall={selectedCall}
+                  selectedPut={selectedPut}
+                  showBottomRule={(idx + 1) % 5 === 0}
                   onClickCall={() => onClickCall(row)}
                   onClickPut={() => onClickPut(row)}
                   onClickStrike={() => onClickStrike(row)}
@@ -195,8 +197,8 @@ function Header({
           0DTE · exp {expiry ?? "today"}
         </span>
         <span
-          className="ml-auto uppercase tracking-label-up text-fg-tertiary-2"
-          style={{ fontSize: 9 }}
+          className="ml-auto text-fg-tertiary-2"
+          style={{ fontSize: 10 }}
         >
           indicative pricing
         </span>
@@ -249,6 +251,7 @@ function Row({
   disabled,
   selectedCall,
   selectedPut,
+  showBottomRule,
   onClickCall,
   onClickPut,
   onClickStrike,
@@ -257,24 +260,30 @@ function Row({
   disabled: boolean;
   selectedCall: boolean;
   selectedPut: boolean;
+  /** Hairline divider below this row — only every 5th, for ladder grouping. */
+  showBottomRule: boolean;
   onClickCall: () => void;
   onClickPut: () => void;
   onClickStrike: () => void;
 }) {
-  // ATM row keeps its amber left-rule (3px) + tinted background. The
-  // ATM treatment is visible even when cells are disabled (market
-  // closed) so the row stays identifiable.
-  const rowCls = row.is_atm
-    ? "bg-tier-1 border-l-[3px] border-amber"
-    : "border-l-[3px] border-transparent hover:bg-tier-1";
+  // ATM row: 4px amber left rule + bg-tier-2 across, amber values
+  // (visible even in disabled state).
+  // Selected row (any cell): persistent bg-tier-3 + 2px amber outline.
+  // Default row: 4px transparent left rule + bg-tier-3 fill on hover.
+  const anySelected = selectedCall || selectedPut;
+  const baseClass = anySelected
+    ? "bg-tier-3 border-l-[4px] border-amber relative ring-1 ring-amber"
+    : row.is_atm
+      ? "bg-tier-2 border-l-[4px] border-amber"
+      : "border-l-[4px] border-transparent hover:bg-tier-3";
+  const bottomBorder = showBottomRule ? "border-b border-hairline" : "";
   return (
     <div
       data-strike={row.strike}
-      className={`grid items-center text-tiny tabular-nums border-b border-hairline ${rowCls}`}
+      className={`grid items-center tabular-nums ${baseClass} ${bottomBorder}`}
       style={{
         gridTemplateColumns: GRID,
         height: ROW_HEIGHT,
-        fontSize: 11,
       }}
     >
       <Cell
@@ -293,14 +302,19 @@ function Row({
         onClick={onClickStrike}
         disabled={disabled}
         className={[
-          "text-center px-1 h-full border-l border-r border-hairline",
+          "text-center px-1 h-full tabular-nums",
+          // Subtle bg tint on the strike column to anchor the ladder
+          // center. ATM/selected rows already have their own fills;
+          // the column tint only shows on the default rows.
+          anySelected || row.is_atm ? "" : "bg-tier-1",
           row.is_atm ? "text-amber font-medium" : "text-fg-primary",
           disabled
             ? row.is_atm
               ? "text-amber cursor-not-allowed"
               : "text-fg-disabled cursor-not-allowed"
-            : "hover:bg-tier-3",
+            : "hover:text-amber",
         ].join(" ")}
+        style={{ fontSize: 13, fontWeight: row.is_atm ? 500 : 400 }}
         title={
           disabled
             ? "Market closed or no 0DTE today"
@@ -361,19 +375,18 @@ function Cell({
         : dim
           ? "text-fg-tertiary-2"
           : "text-fg-primary";
-  const bg = selected ? "bg-tier-3" : "";
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
       className={[
-        "h-full px-2 tabular-nums",
+        "h-full px-2 tabular-nums font-medium",
         align === "right" ? "text-right" : "text-left",
         baseColor,
-        bg,
-        disabled ? "" : "hover:bg-tier-3",
+        disabled ? "" : "hover:text-amber",
       ].join(" ")}
+      style={{ fontSize: 12, fontWeight: 500 }}
       title={
         disabled
           ? "Market closed or no 0DTE today"
