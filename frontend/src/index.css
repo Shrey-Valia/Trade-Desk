@@ -12,11 +12,14 @@ body {
   @apply text-fg-primary font-mono antialiased;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  /* Subtle radial — slightly lifted in the center, darker at the
-   * edges. Tier-0 (#131722) at center, fading to a touch deeper at
-   * the corners. Restrained enough that text stays crisp; CSS
-   * background-attachment:fixed locks it to the viewport. */
   background-color: #131722;
+}
+
+/* Subtle radial gradient — slightly lifted in the center, darker at
+ * the edges. Toggled via html[data-bg-gradient] from the userSettings
+ * store. Defaults to "on" in the absence of the attribute so first
+ * paint matches the new aesthetic. */
+html:not([data-bg-gradient="off"]) body {
   background-image: radial-gradient(
     circle at 50% 38%,
     #161B26 0%,

@@ -81,6 +81,8 @@ export function SettingsPage() {
               onChange={setDefaultTimeframe}
             />
           </SettingRow>
+
+          <ChartAppearanceSection />
         </section>
 
         <p
@@ -420,6 +422,120 @@ function TimeframePicker({
           {tf}
         </UIButton>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Chart Appearance — visual rework adds four customizable knobs.
+ * Each persists to userSettings and applies live (the chart subscribes
+ * to bullishColor/bearishColor/gridOpacity directly; bgGradient is
+ * routed via App.tsx → html[data-bg-gradient]).
+ */
+function ChartAppearanceSection() {
+  const bullishColor = useUserSettings((s) => s.bullishColor);
+  const setBullishColor = useUserSettings((s) => s.setBullishColor);
+  const bearishColor = useUserSettings((s) => s.bearishColor);
+  const setBearishColor = useUserSettings((s) => s.setBearishColor);
+  const bgGradient = useUserSettings((s) => s.bgGradient);
+  const setBgGradient = useUserSettings((s) => s.setBgGradient);
+  const gridOpacity = useUserSettings((s) => s.gridOpacity);
+  const setGridOpacity = useUserSettings((s) => s.setGridOpacity);
+  return (
+    <div className="border-t border-hairline">
+      <div className="px-3 pt-3 pb-1">
+        <div
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        >
+          Chart appearance
+        </div>
+        <div
+          className="text-fg-tertiary mt-0.5"
+          style={{ fontSize: 11, lineHeight: 1.35 }}
+        >
+          Customize the candle palette, grid density, and background. All
+          changes apply live and persist locally.
+        </div>
+      </div>
+      <SettingRow label="Bullish candle color" help="Color used for up candles + volume bars on up bars.">
+        <ColorSwatch value={bullishColor} onChange={setBullishColor} />
+      </SettingRow>
+      <SettingRow label="Bearish candle color" help="Color used for down candles + volume bars on down bars.">
+        <ColorSwatch value={bearishColor} onChange={setBearishColor} />
+      </SettingRow>
+      <SettingRow
+        label="Background gradient"
+        help="Soft radial gradient behind the dashboard. Turn off for a flat fill."
+      >
+        <Toggle on={bgGradient} onChange={() => setBgGradient(!bgGradient)} />
+      </SettingRow>
+      <SettingRow
+        label="Chart grid line opacity"
+        help="0% hides the grid entirely; the default 30% reads as a faint reference."
+      >
+        <OpacitySlider value={gridOpacity} onChange={setGridOpacity} />
+      </SettingRow>
+    </div>
+  );
+}
+
+function ColorSwatch({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (hex: string) => void;
+}) {
+  return (
+    <label className="inline-flex items-center gap-2 cursor-pointer">
+      <span
+        aria-hidden
+        className="rounded-btn border border-tier-3"
+        style={{ width: 32, height: 32, background: value }}
+      />
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="sr-only"
+        aria-label="Color"
+      />
+      <span
+        className="text-fg-tertiary-2 tabular-nums uppercase"
+        style={{ fontSize: 11 }}
+      >
+        {value}
+      </span>
+    </label>
+  );
+}
+
+function OpacitySlider({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2" style={{ width: 200 }}>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={5}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="flex-1 accent-amber"
+        aria-label="Grid opacity"
+      />
+      <span
+        className="text-fg-secondary tabular-nums"
+        style={{ fontSize: 12, minWidth: 36, textAlign: "right" }}
+      >
+        {value}%
+      </span>
     </div>
   );
 }

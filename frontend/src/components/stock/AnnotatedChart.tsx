@@ -19,6 +19,7 @@ import {
 import { useTickerAnnotations, useTickerChart } from "@/hooks/useTickerChart";
 import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
+import { useUserSettings } from "@/stores/userSettings";
 import type { BarPoint, ChartAnnotations, ChartTimeframe } from "@/types/chart";
 
 import { ChartLegend } from "./ChartLegend";
@@ -169,6 +170,9 @@ interface ChartProps {
 
 function LightweightChart({ bars, annotations, timeframe, position }: ChartProps) {
   const showMarketAnnotations = useChartPrefs((s) => s.showMarketAnnotations);
+  const userBullish = useUserSettings((s) => s.bullishColor);
+  const userBearish = useUserSettings((s) => s.bearishColor);
+  const gridOpacity = useUserSettings((s) => s.gridOpacity);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -197,8 +201,14 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
         attributionLogo: false,
       },
       grid: {
-        vertLines: { visible: false },
-        horzLines: { visible: false },
+        vertLines: {
+          visible: gridOpacity > 0,
+          color: alphaHex(colors.borderHairline, gridOpacity / 100),
+        },
+        horzLines: {
+          visible: gridOpacity > 0,
+          color: alphaHex(colors.borderHairline, gridOpacity / 100),
+        },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -245,7 +255,21 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
       chart.remove();
       chartRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Live grid opacity updates without recreating the chart.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const c = alphaHex(colors.borderHairline, gridOpacity / 100);
+    chart.applyOptions({
+      grid: {
+        vertLines: { visible: gridOpacity > 0, color: c },
+        horzLines: { visible: gridOpacity > 0, color: c },
+      },
+    });
+  }, [gridOpacity]);
 
   // Bars + market-level annotations. Recreates series when bars/tf
   // changes (which is rare — outer key on symbol+tf already remounts
@@ -280,7 +304,7 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
       bars.map((b) => ({
         time: toTime(b.t),
         value: b.v,
-        color: b.c >= b.o ? `${colors.bullish}80` : `${colors.bearish}80`,
+        color: b.c >= b.o ? `${userBullish}80` : `${userBearish}80`,
       })),
     );
     volumeRef.current = volume;
@@ -292,10 +316,10 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
     // line-mode branch turned every click into a line chart. The chart
     // type stub in the toolbar will own line / area later.
     const candles = chart.addSeries(CandlestickSeries, {
-      upColor: colors.bullish,
-      downColor: colors.bearish,
-      wickUpColor: colors.bullish,
-      wickDownColor: colors.bearish,
+      upColor: userBullish,
+      downColor: userBearish,
+      wickUpColor: userBullish,
+      wickDownColor: userBearish,
       borderVisible: false,
       priceLineVisible: false,
       lastValueVisible: true,
@@ -316,7 +340,7 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
     annotationLinesRef.current = [];
 
     chart.timeScale().fitContent();
-  }, [bars, annotations, timeframe]);
+  }, [bars, annotations, timeframe, userBullish, userBearish]);
 
   // Market-structure annotation overlay — toggle-aware.
   useEffect(() => {
@@ -480,6 +504,18 @@ function buildPriceLines(
 
 function toTime(iso: string): UTCTimestamp {
   return Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp;
+}
+
+/** Compose a #RRGGBBAA from #RRGGBB + 0..1 opacity. Falls back to the
+ *  base hex if input doesn't parse. */
+function alphaHex(hex: string, opacity: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const a = Math.max(0, Math.min(1, opacity));
+  const aa = Math.round(a * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `#${m[1]}${aa}`;
 }
 
 function ChartSkeleton({ symbol }: { symbol: string }) {

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { RailShell } from "@/components/layout/RailShell";
@@ -6,6 +7,7 @@ import { JournalPage } from "@/pages/JournalPage";
 import { PositionsPage } from "@/pages/PositionsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { WatchlistPage } from "@/pages/WatchlistPage";
+import { useUserSettings } from "@/stores/userSettings";
 // ZeroDtePage retired from navigation; 0DTE entry now lives on the CHART
 // view via the toolbar's "0DTE STRADDLE" button. Page kept on disk for
 // rollback during the transition; not imported here.
@@ -23,6 +25,12 @@ import { WatchlistPage } from "@/pages/WatchlistPage";
  * unambiguous product home.
  */
 export default function App() {
+  // Apply the background-gradient preference at the document level so
+  // the radial in index.css can opt out via [data-bg-gradient="off"].
+  const bgGradient = useUserSettings((s) => s.bgGradient);
+  useEffect(() => {
+    document.documentElement.dataset.bgGradient = bgGradient ? "on" : "off";
+  }, [bgGradient]);
   return (
     <BrowserRouter>
       <Routes>
