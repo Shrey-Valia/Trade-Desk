@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 
+import { UIButton } from "@/components/ui/UIButton";
 import { useTickerChart } from "@/hooks/useTickerChart";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import type { ChartTimeframe } from "@/types/chart";
@@ -87,33 +88,28 @@ function Toolbar({
       aria-label="Chart toolbar"
     >
       {/* Timeframes — tight group, no internal separator. */}
-      <div className="flex" style={{ gap: 1 }}>
+      <div className="flex" style={{ gap: 4 }}>
         {TF_VISUAL.map((tf) => {
           const active = visualTf === tf;
           return (
-            <button
+            <UIButton
               key={tf}
-              type="button"
+              size="sm"
+              active={active}
+              aria-pressed={active}
               onClick={() => {
                 onVisualChange(tf);
                 onTimeframeChange(TF_REAL_MAP[tf]);
               }}
-              aria-pressed={active}
               title={
                 tf === "1D"
                   ? "Daily bars"
                   : `${tf} intraday — falls back to 1D bars until intraday timeframes are wired up`
               }
-              className={[
-                "px-2 text-tiny tabular-nums border",
-                active
-                  ? "border-amber text-amber bg-tier-3"
-                  : "border-hairline text-fg-tertiary-2 hover:bg-tier-2 hover:text-fg-primary",
-              ].join(" ")}
-              style={{ height: 22, borderRadius: 0 }}
+              className="min-w-[36px]"
             >
               {tf}
-            </button>
+            </UIButton>
           );
         })}
       </div>
@@ -146,20 +142,19 @@ function Separator() {
 
 function CandleTypeStub() {
   return (
-    <button
-      type="button"
+    <UIButton
+      size="sm"
       title="Chart type — candles (line/area types coming later)"
-      className="px-2 text-tiny text-fg-tertiary-2 border border-hairline hover:bg-tier-2 hover:text-fg-primary inline-flex items-center gap-1"
-      style={{ height: 22, borderRadius: 0 }}
+      className="min-w-[80px]"
     >
       candles <span style={{ fontSize: 9 }}>▾</span>
-    </button>
+    </UIButton>
   );
 }
 
 function DrawingToolStubs() {
   return (
-    <div className="flex items-center" style={{ gap: 1 }}>
+    <div className="flex items-center" style={{ gap: 4 }}>
       <DrawIcon glyph="／" label="Trend line (stub)" />
       <DrawIcon glyph="—" label="Horizontal line (stub)" />
       <DrawIcon glyph="▭" label="Rectangle (stub)" />
@@ -169,28 +164,26 @@ function DrawingToolStubs() {
 
 function DrawIcon({ glyph, label }: { glyph: string; label: string }) {
   return (
-    <button
-      type="button"
+    <UIButton
+      size="sm"
       title={label}
       aria-label={label}
-      className="px-2 text-tiny text-fg-tertiary-2 border border-hairline hover:bg-tier-2 hover:text-fg-primary"
-      style={{ height: 22, borderRadius: 0, fontSize: 11 }}
+      className="w-[28px] px-0"
     >
-      {glyph}
-    </button>
+      <span style={{ fontSize: 11 }}>{glyph}</span>
+    </UIButton>
   );
 }
 
 function IndicatorsStub() {
   return (
-    <button
-      type="button"
+    <UIButton
+      size="sm"
       title="Indicators — RSI/MACD/EMA coming later"
-      className="px-2 text-tiny text-fg-tertiary-2 border border-hairline hover:bg-tier-2 hover:text-fg-primary inline-flex items-center gap-1"
-      style={{ height: 22, borderRadius: 0 }}
+      className="min-w-[90px]"
     >
       indicators <span style={{ fontSize: 9 }}>▾</span>
-    </button>
+    </UIButton>
   );
 }
 
@@ -203,21 +196,17 @@ function LegendToggle() {
   const show = useChartPrefs((s) => s.showLegend);
   const toggle = useChartPrefs((s) => s.toggleLegend);
   return (
-    <button
-      type="button"
+    <UIButton
+      size="sm"
+      variant="ghost"
+      active={show}
       onClick={toggle}
       title={show ? "Hide chart legend" : "Show chart legend"}
       aria-pressed={show}
-      className={[
-        "px-2 text-tiny uppercase tracking-label-up border",
-        show
-          ? "border-amber text-amber bg-tier-3"
-          : "border-hairline text-fg-tertiary-2 hover:bg-tier-2",
-      ].join(" ")}
-      style={{ height: 22, borderRadius: 0, fontSize: 9 }}
+      className="uppercase tracking-label-up"
     >
-      legend
-    </button>
+      <span style={{ fontSize: 10 }}>legend</span>
+    </UIButton>
   );
 }
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { PageHeader } from "@/components/layout/PageHeader";
+import { UIButton } from "@/components/ui/UIButton";
 import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
@@ -264,23 +265,23 @@ function ConfirmSwitch({
           its own trade history and high-water mark.
         </div>
         <div className="flex gap-2 mt-3 justify-end">
-          <button
-            type="button"
+          <UIButton
+            size="sm"
+            variant="ghost"
             onClick={onCancel}
-            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2"
-            style={{ borderRadius: 0 }}
+            className="uppercase tracking-label-up"
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </UIButton>
+          <UIButton
+            size="sm"
+            active
             onClick={onConfirm}
             disabled={pending}
-            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-2 hover:bg-tier-3 disabled:opacity-50"
-            style={{ borderRadius: 0 }}
+            className="uppercase tracking-label-up"
           >
             {pending ? "Switching…" : `Switch to ${target.key}`}
-          </button>
+          </UIButton>
         </div>
       </div>
     </div>
@@ -345,37 +346,34 @@ function NumberStepper({
   onChange: (n: number) => void;
 }) {
   return (
-    <div className="flex items-stretch border border-hairline">
-      <button
-        type="button"
+    <div className="flex items-center" style={{ gap: 4 }}>
+      <UIButton
+        size="sm"
         onClick={() => onChange(value - 1)}
         disabled={value <= min}
-        className="h-7 w-7 text-xs2 text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-40"
-        style={{ borderRadius: 0 }}
+        className="w-[28px] px-0"
         aria-label="Decrease contract quantity"
       >
         −
-      </button>
+      </UIButton>
       <input
         type="number"
         value={value}
         min={min}
         max={max}
         onChange={(e) => onChange(Number(e.target.value) || min)}
-        className="h-7 w-12 text-center font-mono tabular-nums bg-tier-1 border-l border-r border-hairline text-fg-primary"
-        style={{ borderRadius: 0 }}
+        className="h-[26px] w-[48px] text-center font-mono tabular-nums bg-tier-2 border border-tier-3 text-fg-primary rounded-btn"
         aria-label="Contract quantity"
       />
-      <button
-        type="button"
+      <UIButton
+        size="sm"
         onClick={() => onChange(value + 1)}
         disabled={value >= max}
-        className="h-7 w-7 text-xs2 text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-40"
-        style={{ borderRadius: 0 }}
+        className="w-[28px] px-0"
         aria-label="Increase contract quantity"
       >
         +
-      </button>
+      </UIButton>
     </div>
   );
 }
@@ -388,21 +386,16 @@ function Toggle({
   onChange: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <UIButton
       role="switch"
       aria-checked={on}
       onClick={onChange}
-      className={[
-        "h-7 px-3 text-xs2 uppercase tracking-label-up border",
-        on
-          ? "border-amber text-amber bg-tier-1"
-          : "border-hairline text-fg-tertiary hover:bg-tier-2",
-      ].join(" ")}
-      style={{ borderRadius: 0, minWidth: 64 }}
+      active={on}
+      size="sm"
+      className="uppercase tracking-label-up min-w-[64px]"
     >
       {on ? "On" : "Off"}
-    </button>
+    </UIButton>
   );
 }
 
@@ -414,27 +407,19 @@ function TimeframePicker({
   onChange: (tf: ChartTimeframe) => void;
 }) {
   return (
-    <div className="flex gap-px">
-      {TIMEFRAMES.map((tf) => {
-        const active = tf === value;
-        return (
-          <button
-            key={tf}
-            type="button"
-            onClick={() => onChange(tf)}
-            className={[
-              "h-7 px-2 text-xs2 border tabular-nums",
-              active
-                ? "border-amber text-amber bg-tier-1"
-                : "border-hairline text-fg-tertiary hover:bg-tier-2",
-            ].join(" ")}
-            style={{ borderRadius: 0 }}
-            aria-pressed={active}
-          >
-            {tf}
-          </button>
-        );
-      })}
+    <div className="flex" style={{ gap: 4 }}>
+      {TIMEFRAMES.map((tf) => (
+        <UIButton
+          key={tf}
+          size="sm"
+          active={tf === value}
+          onClick={() => onChange(tf)}
+          aria-pressed={tf === value}
+          className="min-w-[44px]"
+        >
+          {tf}
+        </UIButton>
+      ))}
     </div>
   );
 }
