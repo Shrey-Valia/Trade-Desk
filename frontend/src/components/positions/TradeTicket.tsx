@@ -127,20 +127,20 @@ function CompactEmpty({ marketOpen }: { marketOpen: boolean }) {
       <span className="text-tiny text-fg-tertiary-2 tabular-nums">
         {label}
       </span>
-      <div className="grid grid-cols-2 gap-2" style={{ height: 28 }}>
+      <div className="grid grid-cols-2 gap-2" style={{ height: 32 }}>
         <button
           type="button"
           disabled
-          className="border border-hairline text-fg-disabled uppercase tracking-label-up cursor-not-allowed"
-          style={{ borderRadius: 0, fontSize: 11 }}
+          className="rounded-btn bg-tier-1 text-fg-disabled font-semibold cursor-not-allowed"
+          style={{ fontSize: 12 }}
         >
           BUY
         </button>
         <button
           type="button"
           disabled
-          className="border border-hairline text-fg-disabled uppercase tracking-label-up cursor-not-allowed"
-          style={{ borderRadius: 0, fontSize: 11 }}
+          className="rounded-btn bg-tier-1 text-fg-disabled font-semibold cursor-not-allowed"
+          style={{ fontSize: 12 }}
         >
           SELL
         </button>
@@ -225,44 +225,33 @@ function QuantityRow({
   contracts: number;
   setContracts: (n: number) => void;
 }) {
-  const presets = [1, 3, 5, 10];
+  // Topstep preset ladder: − [VALUE] +  |  [1] [3] [5] [10] [15]
+  const presets = [1, 3, 5, 10, 15];
   return (
-    <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0">
-      <span
-        className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
-      >
-        QTY
-      </span>
-      <div className="flex items-stretch border border-hairline" style={{ height: 22 }}>
-        <button
-          type="button"
-          onClick={() => setContracts(contracts - 1)}
-          disabled={contracts <= 1}
-          className="px-2 text-tiny text-fg-secondary hover:bg-tier-2 disabled:text-fg-disabled disabled:cursor-not-allowed"
-          style={{ borderRadius: 0 }}
+    <div className="flex items-center gap-3 px-3 pb-1 tabular-nums shrink-0">
+      <div className="flex items-center" style={{ gap: 4 }}>
+        <StepperButton
           aria-label="Decrease quantity"
+          disabled={contracts <= 1}
+          onClick={() => setContracts(contracts - 1)}
         >
           −
-        </button>
-        <span
-          className="px-3 text-tiny tabular-nums text-fg-primary border-l border-r border-hairline flex items-center"
-          style={{ minWidth: 32, justifyContent: "center" }}
+        </StepperButton>
+        <div
           aria-live="polite"
+          className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums flex items-center justify-center"
+          style={{ width: 60, height: 32, fontSize: 16, fontWeight: 500 }}
         >
           {contracts}
-        </span>
-        <button
-          type="button"
-          onClick={() => setContracts(contracts + 1)}
-          className="px-2 text-tiny text-fg-secondary hover:bg-tier-2"
-          style={{ borderRadius: 0 }}
+        </div>
+        <StepperButton
           aria-label="Increase quantity"
+          onClick={() => setContracts(contracts + 1)}
         >
           +
-        </button>
+        </StepperButton>
       </div>
-      <div className="flex" style={{ gap: 1 }}>
+      <div className="flex" style={{ gap: 4 }}>
         {presets.map((n) => {
           const active = contracts === n;
           return (
@@ -270,14 +259,20 @@ function QuantityRow({
               key={n}
               type="button"
               onClick={() => setContracts(n)}
-              className={[
-                "px-2 text-tiny tabular-nums border",
-                active
-                  ? "border-amber text-amber bg-tier-3"
-                  : "border-hairline text-fg-tertiary-2 hover:bg-tier-2 hover:text-fg-primary",
-              ].join(" ")}
-              style={{ height: 22, borderRadius: 0 }}
               aria-pressed={active}
+              className={[
+                "tabular-nums transition-colors duration-100 font-medium",
+                "flex items-center justify-center select-none",
+                active
+                  ? "bg-tier-3 border border-amber text-amber"
+                  : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+              ].join(" ")}
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: "50%",
+                fontSize: 12,
+              }}
             >
               {n}
             </button>
@@ -285,6 +280,37 @@ function QuantityRow({
         })}
       </div>
     </div>
+  );
+}
+
+function StepperButton({
+  children,
+  disabled,
+  onClick,
+  "aria-label": ariaLabel,
+}: {
+  children: React.ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+  "aria-label": string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      className={[
+        "rounded-btn flex items-center justify-center select-none",
+        "transition-colors duration-100",
+        disabled
+          ? "bg-tier-1 text-fg-disabled cursor-not-allowed border border-tier-2"
+          : "bg-tier-2 border border-tier-3 text-fg-primary hover:bg-tier-3",
+      ].join(" ")}
+      style={{ width: 32, height: 32, fontSize: 16, lineHeight: 1 }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -303,19 +329,20 @@ function Actions({
   onBuy: () => void;
   onSell: () => void;
 }) {
-  // Two-line button labels (BUY/SELL on line 1, side+cost on line 2).
+  // Topstep idiom: "BUY +N" / "SELL -N" main label, small action sub
+  // line below.
   const cost = selection ? selection.price * 100 * contracts : 0;
   const sideLabel = selection
     ? selection.kind === "straddle"
       ? "straddle"
       : (selection.side ?? "call")
     : "—";
-  const buyLine2 = selection
+  const buySub = selection
     ? `long ${sideLabel} · $${cost.toFixed(2)} debit`
     : marketOpen
       ? "pick a strike ↑"
       : "market closed";
-  const sellLine2 = selection
+  const sellSub = selection
     ? `short ${sideLabel} · $${cost.toFixed(2)} credit`
     : marketOpen
       ? "pick a strike ↑"
@@ -324,15 +351,15 @@ function Actions({
     <div className="grid grid-cols-2 gap-2 px-3 pb-2 mt-auto" style={{ height: 56 }}>
       <ActionButton
         intent="buy"
-        line1="BUY"
-        line2={buyLine2}
+        label={`BUY +${contracts}`}
+        sub={buySub}
         disabled={disabled}
         onClick={onBuy}
       />
       <ActionButton
         intent="sell"
-        line1="SELL"
-        line2={sellLine2}
+        label={`SELL -${contracts}`}
+        sub={sellSub}
         disabled={disabled}
         onClick={onSell}
       />
@@ -342,49 +369,52 @@ function Actions({
 
 function ActionButton({
   intent,
-  line1,
-  line2,
+  label,
+  sub,
   disabled,
   onClick,
 }: {
   intent: "buy" | "sell";
-  line1: string;
-  line2: string;
+  label: string;
+  sub: string;
   disabled: boolean;
   onClick: () => void;
 }) {
-  const palette =
-    intent === "buy"
-      ? disabled
-        ? "border-hairline text-fg-disabled cursor-not-allowed"
-        : "border-bullish text-bullish hover:bg-tier-2"
-      : disabled
-        ? "border-hairline text-fg-disabled cursor-not-allowed"
-        : "border-bearish text-bearish hover:bg-tier-2";
-  // Subtle background tint when enabled — uses the existing color via
-  // alpha overlay so we don't need a new palette token.
+  // Topstep aesthetic: solid action color fill, white-ish text, no
+  // border, slight rounded corners. NOT bullish/bearish (those are
+  // P&L colors); these are the action-affordance hues from
+  // palette.actionBuy / palette.actionSell.
   const bg = disabled
-    ? "bg-tier-0"
+    ? "bg-tier-1"
     : intent === "buy"
-      ? "bg-bullish/[0.06]"
-      : "bg-bearish/[0.06]";
+      ? "bg-action-buy hover:bg-action-buy-hover active:bg-action-buy-active"
+      : "bg-action-sell hover:bg-action-sell-hover active:bg-action-sell-active";
+  const textColor = disabled ? "text-fg-disabled" : "text-white";
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
       className={[
-        "border flex flex-col items-center justify-center px-2 leading-tight",
-        palette,
+        "rounded-btn flex flex-col items-center justify-center px-2 leading-tight",
+        "transition-colors duration-100",
         bg,
+        textColor,
+        disabled ? "cursor-not-allowed" : "",
       ].join(" ")}
-      style={{ borderRadius: 0 }}
     >
-      <span className="uppercase tracking-label-up font-medium" style={{ fontSize: 14 }}>
-        {line1}
+      <span className="font-semibold tracking-wide" style={{ fontSize: 14 }}>
+        {label}
       </span>
-      <span className="text-tiny tabular-nums text-fg-tertiary-2" style={{ fontSize: 9 }}>
-        {line2}
+      <span
+        className="tabular-nums"
+        style={{
+          fontSize: 10,
+          opacity: disabled ? 1 : 0.78,
+          marginTop: 2,
+        }}
+      >
+        {sub}
       </span>
     </button>
   );
