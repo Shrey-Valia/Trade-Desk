@@ -45,6 +45,10 @@ import { SignalVerdictSchema, type SignalVerdict } from "@/types/signal";
 import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
 import { WatchlistResponseSchema, type WatchlistResponse } from "@/types/watchlist";
 import { AccountStateSchema, type AccountState } from "@/types/account";
+import {
+  TickerSearchResponseSchema,
+  type TickerSearchResponse,
+} from "@/types/search";
 
 const API_BASE = "";
 
@@ -174,6 +178,12 @@ export const createTrade = (input: TradeInput): Promise<Trade> =>
 
 export const fetchAccountState = (): Promise<AccountState> =>
   request("/api/account/state", AccountStateSchema);
+
+export const searchTickers = (q: string): Promise<TickerSearchResponse> =>
+  request(
+    `/api/ticker/search?q=${encodeURIComponent(q)}`,
+    TickerSearchResponseSchema,
+  );
 
 export const switchAccountTier = (tier: string): Promise<AccountState> =>
   mutate("/api/account/state/switch", AccountStateSchema, {

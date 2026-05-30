@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 
-import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
+import { TickerSearchBox } from "@/components/positions/TickerSearchBox";
 import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
@@ -12,22 +12,18 @@ import { isZeroDteTrade } from "@/types/journal";
 import type { TierSpec } from "@/types/account";
 
 /**
- * Persistent Trade-Desk top header (40px).
+ * Persistent Trade-Desk top header (64px).
  *
- *   left   : wordmark + combine-tier pill (50K / 100K / 150K)
- *   mid    : SPY / QQQ / IWM ticker switcher + live price + change
- *   right  : account metrics — BAL · MLL · RP&L · UP&L · MKT
+ *   left   : combine-tier pill (50K COMBINE ▾) — slightly larger,
+ *            bg-tier-2 fill, 4px radius, monospace.
+ *   mid    : ticker search box (replaces SPY/QQQ/IWM buttons) +
+ *            live price + change%.
+ *   right  : Topstep-style metric pills — BAL · MLL · RP&L · UP&L · MKT.
  *
- * BAL / MLL / RP&L track the active combine tier via /api/account/state.
- * MLL color-codes by proximity: fg-primary when comfortably above,
- * warning when within 25% of trailing distance, bearish when within
- * 10%, bright bearish + "MLL BREACHED" pill when balance < MLL.
- *
- * No enforcement — display only. Trades can still open if MLL is
- * breached. That's a deliberate scope choice for this phase.
+ * The Trade Desk wordmark is RETIRED from the header — the new
+ * TradeDeskMark sits in the left rail. The header is for trading
+ * state, not branding.
  */
-const TICKERS = ["SPY", "QQQ", "IWM"] as const;
-
 interface Props {
   symbol: string | null;
   onSymbolChange: (s: string) => void;
@@ -36,21 +32,20 @@ interface Props {
 export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
   return (
     <header
-      className="flex items-center gap-3 border-b border-hairline bg-tier-0 px-3 shrink-0 relative"
-      style={{ height: 40 }}
+      className="flex items-center gap-3 border-b border-hairline bg-tier-1 px-3 shrink-0 relative"
+      style={{ height: 64 }}
     >
-      <TradeDeskLogo size="mini" />
       <TierPill />
-      <TickerSwitcher value={symbol} onChange={onSymbolChange} />
+      <TickerSearchBox symbol={symbol} onSelect={onSymbolChange} />
       <PriceReadout symbol={symbol} />
-      <div className="ml-auto" />
-      <AccountCluster />
-      <MarketCell />
+      <div className="ml-auto flex items-center" style={{ gap: 8 }}>
+        <MetricPills />
+      </div>
     </header>
   );
 }
 
-/** Combine-tier indicator + switcher. Click to open a 3-option menu. */
+/** Combine-tier indicator + switcher. Restyled to the new pill chrome. */
 function TierPill() {
   const { data } = useAccountState();
   const switchTier = useSwitchTier();
@@ -64,26 +59,27 @@ function TierPill() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={[
-          "h-5 px-2 border uppercase tracking-label-up tabular-nums",
+          "h-10 px-3 rounded-btn uppercase tracking-label-up tabular-nums",
+          "flex items-center gap-2 transition-colors duration-100",
           breached
-            ? "border-bearish text-bearish bg-tier-1"
-            : "border-fg-tertiary text-fg-primary bg-tier-1 hover:bg-tier-2",
+            ? "bg-tier-2 border border-bearish text-bearish"
+            : "bg-tier-2 border border-tier-3 text-fg-primary hover:bg-tier-3",
         ].join(" ")}
-        style={{ borderRadius: 0, fontSize: 10, fontWeight: 500 }}
+        style={{ fontSize: 12, fontWeight: 500 }}
         aria-haspopup="listbox"
         aria-expanded={open}
         title="Active combine tier — click to switch"
       >
-        {tierKey} COMBINE
-        <span className="text-fg-tertiary-2 ml-1.5" style={{ fontSize: 8 }}>
+        <span>{tierKey} Combine</span>
+        <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
           ▾
         </span>
       </button>
       {open && tiers.length > 0 && (
         <div
           role="listbox"
-          className="absolute left-0 top-full mt-1 z-30 border border-hairline bg-tier-1 shadow-none"
-          style={{ borderRadius: 0, minWidth: 160 }}
+          className="absolute left-0 top-full mt-1 z-30 bg-tier-2 border border-tier-3 rounded-btn overflow-hidden"
+          style={{ minWidth: 180 }}
         >
           {tiers.map((t: TierSpec) => {
             const active = t.key === tierKey;
@@ -96,62 +92,21 @@ function TierPill() {
                   setOpen(false);
                 }}
                 className={[
-                  "w-full text-left px-2 py-1 text-tiny tabular-nums border-b border-hairline last:border-b-0",
-                  active
-                    ? "text-amber bg-tier-2"
-                    : "text-fg-secondary hover:bg-tier-2 hover:text-fg-primary",
+                  "w-full text-left px-3 py-1.5 text-tiny tabular-nums",
+                  active ? "text-amber bg-tier-3" : "text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
                 ].join(" ")}
-                style={{ borderRadius: 0 }}
               >
-                <div className="uppercase tracking-label-up" style={{ fontSize: 10 }}>
+                <div className="uppercase tracking-label-up" style={{ fontSize: 11 }}>
                   {t.key} Combine
                 </div>
-                <div className="text-fg-tertiary-2" style={{ fontSize: 9 }}>
-                  ${(t.starting_balance / 1000).toFixed(0)}K · −${(t.trailing_distance).toLocaleString()} MLL
+                <div className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+                  ${(t.starting_balance / 1000).toFixed(0)}K · −${t.trailing_distance.toLocaleString()} MLL
                 </div>
               </button>
             );
           })}
         </div>
       )}
-    </div>
-  );
-}
-
-function TickerSwitcher({
-  value,
-  onChange,
-}: {
-  value: string | null;
-  onChange: (s: string) => void;
-}) {
-  return (
-    <div
-      className="flex"
-      role="group"
-      aria-label="Ticker"
-      style={{ gap: 2 }}
-    >
-      {TICKERS.map((t) => {
-        const active = value === t;
-        return (
-          <button
-            key={t}
-            type="button"
-            onClick={() => onChange(t)}
-            aria-pressed={active}
-            className={[
-              "h-5 px-2 text-tiny uppercase tracking-label-up tabular-nums border",
-              active
-                ? "border-amber text-amber bg-tier-3"
-                : "border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary",
-            ].join(" ")}
-            style={{ borderRadius: 0, fontWeight: active ? 500 : 400 }}
-          >
-            {t}
-          </button>
-        );
-      })}
     </div>
   );
 }
@@ -170,11 +125,17 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
   const changeClass = positive ? "text-bullish" : "text-bearish";
   const sign = positive ? "+" : "";
   return (
-    <div className="flex items-baseline gap-1.5 tabular-nums">
-      <span className="text-medium font-medium text-fg-primary">
+    <div className="flex items-baseline gap-2 tabular-nums">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 10 }}
+      >
+        {symbol}
+      </span>
+      <span className="text-fg-primary font-medium" style={{ fontSize: 16 }}>
         {formatPrice(detail.price)}
       </span>
-      <span className={`text-tiny ${changeClass}`} style={{ fontSize: 10 }}>
+      <span className={changeClass} style={{ fontSize: 11 }}>
         {sign}
         {detail.change_dollar.toFixed(2)} ({formatPercent(detail.change_pct)})
       </span>
@@ -183,17 +144,12 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
 }
 
 /**
- * BAL / MLL / RP&L / UP&L cluster.
+ * Topstep-style metric pills cluster — BAL / MLL / RP&L / UP&L / MKT.
  *
- * BAL  = active tier's balance (starting + realized) + active position's UPL
- * MLL  = trailing maximum-loss-limit from /api/account/state; color
- *        graded by proximity (see mllToneClass).
- * RP&L = today's closed-trade realized P&L (paper, active tier)
- * UP&L = active position's unrealized_pnl
- *
- * Color-coding: RP&L/UP&L green if >0, red if <0, fg-secondary at 0.
+ * Each pill is bg-tier-2 with a 1px bg-tier-3 border, 4px radius,
+ * ~110×44. Label (10px uppercase) top-left, value (15px) below.
  */
-function AccountCluster() {
+function MetricPills() {
   const { data: account } = useAccountState();
   const { data: tradesData } = useTrades();
   const activeTradeId = useActivePosition((s) => s.tradeId);
@@ -212,8 +168,6 @@ function AccountCluster() {
   });
   const upl = analyticsQuery.data?.unrealized_pnl ?? 0;
 
-  // Today's realized — same math as before, but filter by the active
-  // tier so switching combines doesn't double-count history.
   const activeTier = account?.active_tier ?? "50K";
   const todayRpl = useMemo(() => {
     if (!tradesData?.trades) return 0;
@@ -228,7 +182,6 @@ function AccountCluster() {
     }, 0);
   }, [tradesData, activeTier]);
 
-  // Balance: server-computed (starting + realized) plus client-side UPL.
   const bal = (account?.balance ?? 0) + upl;
   const mll = account?.mll ?? 0;
   const trailing =
@@ -237,24 +190,30 @@ function AccountCluster() {
   const breached = bal < mll;
 
   return (
-    <div className="flex items-stretch gap-2 tabular-nums">
-      <MetricLabelValue label="BAL" value={formatDollar(bal)} />
-      <MetricLabelValue label="MLL" value={formatDollar(mll)} valueClass={mllTone} />
-      {breached && <BreachedPill />}
-      <MetricLabelValue label="RP&L" value={formatSigned(todayRpl)} signed={todayRpl} />
-      <MetricLabelValue label="UP&L" value={formatSigned(upl)} signed={upl} />
-    </div>
+    <>
+      <MetricPill label="BAL" value={formatDollar(bal)} />
+      <MetricPill label="MLL" value={formatDollar(mll)} valueClass={mllTone}>
+        {breached && (
+          <span
+            className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
+            style={{ fontSize: 8, height: 14 }}
+            title="Balance is below the trailing maximum-loss limit."
+          >
+            BREACH
+          </span>
+        )}
+      </MetricPill>
+      <MetricPill
+        label="RP&L"
+        value={formatSigned(todayRpl)}
+        signed={todayRpl}
+      />
+      <MetricPill label="UP&L" value={formatSigned(upl)} signed={upl} />
+      <MarketPill />
+    </>
   );
 }
 
-/**
- * Distance from current balance to MLL graded as a fraction of the
- * tier's trailing distance:
- *   ≥25% of trail → safe (fg-primary)
- *   <25%          → warning
- *   <10%          → bearish
- *   <0%           → bright bearish (breach state — pill rendered separately)
- */
 function mllToneClass(balance: number, mll: number, trailing: number): string {
   if (balance < mll) return "text-bearish font-medium";
   const cushion = balance - mll;
@@ -264,32 +223,21 @@ function mllToneClass(balance: number, mll: number, trailing: number): string {
   return "text-fg-primary";
 }
 
-function BreachedPill() {
-  return (
-    <span
-      className="self-center px-1.5 py-0.5 border border-bearish text-bearish uppercase tracking-label-up"
-      style={{ borderRadius: 0, fontSize: 9, fontWeight: 500 }}
-      title="Balance is below the trailing maximum-loss limit."
-    >
-      MLL BREACHED
-    </span>
-  );
-}
-
-function MetricLabelValue({
-  label,
-  value,
-  signed,
-  muted,
-  valueClass: valueClassOverride,
-}: {
+interface MetricPillProps {
   label: string;
   value: string;
   signed?: number;
-  muted?: boolean;
-  /** Tailwind class override; wins over signed/muted defaults. */
   valueClass?: string;
-}) {
+  children?: React.ReactNode;
+}
+
+function MetricPill({
+  label,
+  value,
+  signed,
+  valueClass: valueClassOverride,
+  children,
+}: MetricPillProps) {
   const valueClass =
     valueClassOverride ??
     (signed !== undefined
@@ -298,33 +246,32 @@ function MetricLabelValue({
         : signed < 0
           ? "text-bearish"
           : "text-fg-primary"
-      : muted
-        ? "text-fg-tertiary-2"
-        : "text-fg-primary");
+      : "text-fg-primary");
   return (
     <div
-      className="flex flex-col items-end leading-tight px-1"
-      style={{ minWidth: 72 }}
+      className="bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex flex-col leading-tight"
+      style={{ height: 44, minWidth: 110 }}
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        style={{ fontSize: 10, letterSpacing: "0.08em" }}
       >
         {label}
       </span>
-      <span className={`text-tiny font-medium ${valueClass}`} style={{ fontSize: 12 }}>
+      <span
+        className={`tabular-nums font-medium ${valueClass}`}
+        style={{ fontSize: 15, marginTop: 2 }}
+      >
         {value}
+        {children}
       </span>
     </div>
   );
 }
 
-function MarketCell() {
+function MarketPill() {
   const { data: status } = useMarketStatus();
   const isOpen = status?.status === "open";
-  const cls = isOpen
-    ? "text-bullish border-bullish"
-    : "text-bearish border-bearish";
   const detail = useMemo(() => {
     if (!status) return "—";
     if (isOpen) {
@@ -338,24 +285,26 @@ function MarketCell() {
     }
     return status.label;
   }, [status, isOpen]);
+  const tone = isOpen ? "text-bullish" : "text-bearish";
   return (
-    <div className="flex flex-col items-end leading-tight px-1">
+    <div
+      className="bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex flex-col leading-tight"
+      style={{ height: 44, minWidth: 150 }}
+      title={status?.label}
+    >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        style={{ fontSize: 10, letterSpacing: "0.08em" }}
       >
         MKT
       </span>
       <span
-        className={`inline-flex items-center gap-1 px-1 border uppercase tracking-label-up tabular-nums ${cls}`}
-        style={{ borderRadius: 0, fontSize: 9 }}
-        title={status?.label}
+        className={`tabular-nums font-medium uppercase tracking-label-up ${tone}`}
+        style={{ fontSize: 11, marginTop: 4 }}
       >
         {isOpen ? "OPEN" : "CLOSED"}
-        <span className="text-fg-tertiary-2">·</span>
-        <span className={isOpen ? "text-bullish" : "text-bearish"}>
-          {detail}
-        </span>
+        <span className="text-fg-tertiary-2 mx-1">·</span>
+        <span style={{ textTransform: "lowercase" }}>{detail}</span>
       </span>
     </div>
   );
