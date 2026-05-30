@@ -1,11 +1,12 @@
 import { NavLink } from "react-router-dom";
 
+import { TradeDeskMark } from "@/components/branding/TradeDeskMark";
+
 import {
   AnalyticsIcon,
   ChartIcon,
   JournalIcon,
   SettingsIcon,
-  WatchlistIcon,
 } from "./RailIcons";
 
 interface RailItem {
@@ -14,11 +15,13 @@ interface RailItem {
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
 }
 
+// Visual rework: WATCH dropped from the rail. The /watchlist route is
+// still reachable directly; we just don't surface it as a destination
+// in the primary nav until the watchlist concept comes back online.
 const TOP_ITEMS: RailItem[] = [
   { to: "/positions", label: "Chart", icon: ChartIcon },
   { to: "/journal", label: "Journal", icon: JournalIcon },
   { to: "/analytics", label: "Analytics", icon: AnalyticsIcon },
-  { to: "/watchlist", label: "Watch", icon: WatchlistIcon },
 ];
 
 const BOTTOM_ITEMS: RailItem[] = [
@@ -26,28 +29,30 @@ const BOTTOM_ITEMS: RailItem[] = [
 ];
 
 /**
- * Persistent left navigation rail — Topstep / TradingView pattern.
+ * Persistent left navigation rail.
  *
- * 56px wide, full-height, bg-tier-1 with a hairline right border.
- * Each destination is an icon + 9px uppercase label. Active state:
- * amber left accent bar (2px), amber icon + label, bg-tier-2.
- * Inactive: fg-secondary icon, no accent. Hover: bg-tier-2 with the
- * 100ms opacity transition the rest of the app uses (reduced-motion
- * stripped at the global CSS level).
+ * 48px wide, full-height, bg-tier-1, hairline right border. New
+ * Trade Desk mark sits at the top (centered, ~16px below the top
+ * edge) with a hairline divider beneath it; nav icons follow.
  *
- * The rail is app-level chrome — rendered by RailShell, not per-route.
+ * Active state: amber 3px left rule + amber icon + amber label.
+ * Inactive: fg-secondary icon, fg-tertiary-2 label.
+ * Hover: bg-tier-2 on the whole entry.
+ *
+ * Rail is app-level chrome — rendered by RailShell, not per-route.
  */
 export function LeftRail() {
   return (
     <nav
       aria-label="Primary"
       className="flex flex-col items-stretch border-r border-hairline bg-tier-1 shrink-0"
-      style={{ width: 56 }}
+      style={{ width: 48 }}
     >
-      {/* pt-4 (16px) gives the icons breathing room from the viewport
-       *  edge so the rail doesn't read as top-heavy. Settings stays
-       *  pinned to the bottom via mt-auto below. */}
-      <ul className="flex flex-col pt-4">
+      <div className="flex justify-center pt-4 pb-3">
+        <TradeDeskMark size={28} />
+      </div>
+      <div className="mx-auto w-6 border-t border-hairline" />
+      <ul className="flex flex-col pt-3">
         {TOP_ITEMS.map((item) => (
           <RailEntry key={item.to} item={item} />
         ))}
@@ -87,13 +92,16 @@ function RailEntry({ item }: { item: RailItem }) {
               <span
                 aria-hidden
                 className="absolute left-0 top-0 bottom-0 bg-amber"
-                style={{ width: 2 }}
+                style={{ width: 3 }}
               />
             )}
             <Icon />
             <span
-              className="text-tiny uppercase tracking-label-up"
-              style={{ fontSize: 9, letterSpacing: "0.04em" }}
+              className={[
+                "uppercase tracking-label-up",
+                isActive ? "text-amber" : "text-fg-tertiary-2",
+              ].join(" ")}
+              style={{ fontSize: 8, letterSpacing: "0.06em" }}
             >
               {item.label}
             </span>

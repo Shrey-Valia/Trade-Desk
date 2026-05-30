@@ -34,6 +34,13 @@ export default {
         warning: colors.warning,
         // User position highlight (entry triangle, BE lines).
         position: colors.positionMagenta,
+        // Action affordance (BUY / SELL filled buttons).
+        "action-buy": colors.actionBuy,
+        "action-buy-hover": colors.actionBuyHover,
+        "action-buy-active": colors.actionBuyActive,
+        "action-sell": colors.actionSell,
+        "action-sell-hover": colors.actionSellHover,
+        "action-sell-active": colors.actionSellActive,
       },
       fontFamily: {
         // IBM Plex Mono only. `sans` aliased to mono so default body font
@@ -58,10 +65,10 @@ export default {
         display: ["19px", "24px"],
       },
       borderRadius: {
-        // Bloomberg caps at 2px. Tailwind's default `rounded-none` and
-        // `rounded-sm` (2px) cover everything; only `rounded-hair` is
-        // exposed as a named convenience.
         hair: "2px",
+        // Visual rework: 4px radius for the Topstep-style filled
+        // buttons. Hairline panels keep 0; only buttons opt into 4px.
+        btn: "4px",
       },
       letterSpacing: {
         // Uppercase labels per DESIGN.md type spec.

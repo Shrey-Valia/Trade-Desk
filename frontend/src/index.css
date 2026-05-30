@@ -9,9 +9,21 @@ body,
 }
 
 body {
-  @apply bg-tier-0 text-fg-primary font-mono antialiased;
+  @apply text-fg-primary font-mono antialiased;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+  /* Subtle radial — slightly lifted in the center, darker at the
+   * edges. Tier-0 (#131722) at center, fading to a touch deeper at
+   * the corners. Restrained enough that text stays crisp; CSS
+   * background-attachment:fixed locks it to the viewport. */
+  background-color: #131722;
+  background-image: radial-gradient(
+    circle at 50% 38%,
+    #161B26 0%,
+    #131722 55%,
+    #0F121B 100%
+  );
+  background-attachment: fixed;
 }
 
 /* Global keyboard focus ring — amber per DESIGN.md.
@@ -119,7 +131,7 @@ body {
   -webkit-appearance: none;
   appearance: none;
   height: 4px;
-  background: #1F222A;
+  background: #2F3545;
   outline: none;
   cursor: pointer;
   margin: 0;
@@ -127,13 +139,13 @@ body {
 }
 .theta-scrubber::-webkit-slider-runnable-track {
   height: 4px;
-  background: #1F222A;
-  border: 1px solid #2A2D36;
+  background: #2F3545;
+  border: 1px solid #3A4258;
 }
 .theta-scrubber::-moz-range-track {
   height: 4px;
-  background: #1F222A;
-  border: 1px solid #2A2D36;
+  background: #2F3545;
+  border: 1px solid #3A4258;
 }
 .theta-scrubber::-webkit-slider-thumb {
   -webkit-appearance: none;
