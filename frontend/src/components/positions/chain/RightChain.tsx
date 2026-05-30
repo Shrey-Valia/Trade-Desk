@@ -110,7 +110,7 @@ export function RightChain({ symbol }: Props) {
   };
 
   return (
-    <section className="flex flex-col h-full min-h-0 bg-tier-0">
+    <section className="flex flex-col bg-tier-0">
       <Header
         symbol={data?.underlying ?? symbol ?? "—"}
         expiry={data?.expiry ?? null}
@@ -121,8 +121,8 @@ export function RightChain({ symbol }: Props) {
       <ColumnHeader />
       <div
         ref={bodyRef}
-        className="flex-1 min-h-0 overflow-y-auto"
-        style={{ scrollbarGutter: "stable" }}
+        className="overflow-y-auto"
+        style={{ scrollbarGutter: "stable", maxHeight: 360 }}
       >
         {!symbol && <EmptyMessage>Pick a ticker in the header.</EmptyMessage>}
         {symbol && isLoading && !data && (
@@ -226,7 +226,7 @@ function SubItem({ label, value }: { label: string; value: string }) {
 
 function ColumnHeader() {
   return (
-    <div className="flex justify-center border-b border-hairline bg-tier-0 shrink-0">
+    <div className="flex justify-center border-b border-hairline-strong bg-tier-1 shrink-0">
       <div
         className="grid items-center text-tiny uppercase tracking-label-up text-fg-tertiary-2"
         style={{
@@ -261,11 +261,12 @@ function Row({
   onClickPut: () => void;
   onClickStrike: () => void;
 }) {
-  // ATM row keeps its amber left-rule + tinted background. Selected
-  // call/put cells also get amber treatment within the row.
+  // ATM row keeps its amber left-rule (3px) + tinted background. The
+  // ATM treatment is visible even when cells are disabled (market
+  // closed) so the row stays identifiable.
   const rowCls = row.is_atm
-    ? "bg-tier-1 border-l-2 border-amber"
-    : "border-l-2 border-transparent hover:bg-tier-1";
+    ? "bg-tier-1 border-l-[3px] border-amber"
+    : "border-l-[3px] border-transparent hover:bg-tier-1";
   return (
     <div
       data-strike={row.strike}
@@ -295,8 +296,10 @@ function Row({
           "text-center px-1 h-full border-l border-r border-hairline",
           row.is_atm ? "text-amber font-medium" : "text-fg-primary",
           disabled
-            ? "text-fg-disabled cursor-not-allowed"
-            : "hover:bg-tier-2",
+            ? row.is_atm
+              ? "text-amber cursor-not-allowed"
+              : "text-fg-disabled cursor-not-allowed"
+            : "hover:bg-tier-3",
         ].join(" ")}
         title={
           disabled
@@ -345,8 +348,12 @@ function Cell({
   onClick: () => void;
 }) {
   const dim = source === "bs";
+  // ATM row keeps its amber values even in disabled state (the row
+  // identity should remain visible while market is closed).
   const baseColor = disabled
-    ? "text-fg-disabled cursor-not-allowed"
+    ? isAtm
+      ? "text-amber cursor-not-allowed"
+      : "text-fg-disabled cursor-not-allowed"
     : selected
       ? "text-amber"
       : isAtm
@@ -365,7 +372,7 @@ function Cell({
         align === "right" ? "text-right" : "text-left",
         baseColor,
         bg,
-        disabled ? "" : "hover:bg-tier-2",
+        disabled ? "" : "hover:bg-tier-3",
       ].join(" ")}
       title={
         disabled

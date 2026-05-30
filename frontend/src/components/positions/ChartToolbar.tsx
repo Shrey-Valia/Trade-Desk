@@ -81,12 +81,12 @@ function Toolbar({
 }) {
   return (
     <div
-      className="flex items-center gap-2 px-3"
-      style={{ height: 36 }}
+      className="flex items-center px-3"
+      style={{ height: 36, gap: 0 }}
       role="toolbar"
       aria-label="Chart toolbar"
     >
-      {/* Timeframes */}
+      {/* Timeframes — tight group, no internal separator. */}
       <div className="flex" style={{ gap: 1 }}>
         {TF_VISUAL.map((tf) => {
           const active = visualTf === tf;
@@ -120,10 +120,11 @@ function Toolbar({
       <Separator />
       <CandleTypeStub />
       <Separator />
+      {/* Drawing tools — tight group. */}
       <DrawingToolStubs />
-      <div className="ml-auto flex items-center gap-2">
-        <IndicatorsStub />
-        <Separator />
+      <Separator />
+      <IndicatorsStub />
+      <div className="ml-auto flex items-center" style={{ gap: 6 }}>
         <LegendToggle />
         <MarketStructToggleHint />
       </div>
@@ -133,18 +134,13 @@ function Toolbar({
 }
 
 function Separator() {
+  // Single 1px hairline between toolbar groups.
   return (
     <span
       aria-hidden
-      className="self-stretch"
-      style={{
-        width: 1,
-        background: "var(--tw-hairline, #1F222A)",
-        marginInline: 4,
-      }}
-    >
-      <span className="block h-full border-l border-hairline" />
-    </span>
+      className="self-stretch border-l border-hairline"
+      style={{ marginInline: 8, width: 0 }}
+    />
   );
 }
 

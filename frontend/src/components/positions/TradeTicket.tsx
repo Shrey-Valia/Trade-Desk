@@ -81,10 +81,23 @@ export function TradeTicket() {
     );
   };
 
+  // Compressed empty state: no selection → skip Summary's big block,
+  // skip QTY entirely, render small disabled buttons. ~half the
+  // vertical footprint of the full ticket.
+  if (!selection) {
+    return (
+      <section
+        className="flex flex-col bg-tier-0"
+        aria-label="Trade ticket"
+      >
+        <Header />
+        <CompactEmpty marketOpen={marketOpen} />
+      </section>
+    );
+  }
   return (
     <section
       className="flex flex-col bg-tier-0"
-      style={{ height: 184 }}
       aria-label="Trade ticket"
     >
       <Header />
@@ -104,6 +117,35 @@ export function TradeTicket() {
         </div>
       )}
     </section>
+  );
+}
+
+function CompactEmpty({ marketOpen }: { marketOpen: boolean }) {
+  const label = marketOpen ? "Click a strike in the chain ↑" : "market closed";
+  return (
+    <div className="flex flex-col gap-1.5 px-3 pt-1 pb-2">
+      <span className="text-tiny text-fg-tertiary-2 tabular-nums">
+        {label}
+      </span>
+      <div className="grid grid-cols-2 gap-2" style={{ height: 28 }}>
+        <button
+          type="button"
+          disabled
+          className="border border-hairline text-fg-disabled uppercase tracking-label-up cursor-not-allowed"
+          style={{ borderRadius: 0, fontSize: 11 }}
+        >
+          BUY
+        </button>
+        <button
+          type="button"
+          disabled
+          className="border border-hairline text-fg-disabled uppercase tracking-label-up cursor-not-allowed"
+          style={{ borderRadius: 0, fontSize: 11 }}
+        >
+          SELL
+        </button>
+      </div>
+    </div>
   );
 }
 

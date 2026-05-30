@@ -154,14 +154,14 @@ export function PositionsPage() {
           className="border-l border-hairline shrink-0 flex flex-col min-h-0 bg-tier-0"
           style={{ width: 452, minWidth: 452 }}
         >
-          {/* Upper-right: the option chain. */}
-          <div className="flex-1 min-h-0 flex flex-col">
-            <RightChain symbol={symbol} />
-          </div>
-          {/* Lower-right: trade ticket. */}
+          {/* Upper-right: option chain (natural height, no flex-grow). */}
+          <RightChain symbol={symbol} />
+          {/* Lower-right: trade ticket sits flush under the chain. */}
           <div className="border-t border-hairline bg-tier-0 shrink-0">
             <TradeTicket />
           </div>
+          {/* Spacer absorbs any leftover vertical space below the ticket. */}
+          <div className="flex-1 bg-tier-0" />
         </div>
       </div>
       <BottomStrip />

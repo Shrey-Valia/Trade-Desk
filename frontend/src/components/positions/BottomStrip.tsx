@@ -90,6 +90,24 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
   const showOnChart = useChartPrefs((s) => s.showMarketAnnotations);
   const toggle = useChartPrefs((s) => s.toggleMarketAnnotations);
 
+  // Only render the items that actually have a value. Six dashes in a
+  // row was visual noise; better to drop empties and keep the row tight.
+  const items: { label: string; value: string }[] = [];
+  if (a?.expected_move_upper != null)
+    items.push({ label: "EM↑", value: fmtPrice(a.expected_move_upper) });
+  if (a?.expected_move_lower != null)
+    items.push({ label: "EM↓", value: fmtPrice(a.expected_move_lower) });
+  if (a?.call_wall)
+    items.push({ label: "CW", value: `$${a.call_wall.strike.toFixed(2)}` });
+  if (a?.put_wall)
+    items.push({ label: "PW", value: `$${a.put_wall.strike.toFixed(2)}` });
+  if (a?.max_pain != null)
+    items.push({ label: "MP", value: fmtPrice(a.max_pain) });
+  if (a?.gamma_flip != null)
+    items.push({ label: "GF", value: fmtPrice(a.gamma_flip) });
+  if (m?.iv_rank != null)
+    items.push({ label: "IV", value: `${m.iv_rank.toFixed(0)}` });
+
   return (
     <div
       className="flex items-center gap-3 px-3 border-b border-hairline tabular-nums"
@@ -101,16 +119,15 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
       <span className="text-tiny text-fg-tertiary-2 shrink-0" style={{ fontSize: 10 }}>
         {symbol ?? ""}
       </span>
-      <InlineLevel label="EM↑" value={fmtPrice(a?.expected_move_upper)} />
-      <InlineLevel label="EM↓" value={fmtPrice(a?.expected_move_lower)} />
-      <InlineLevel label="CW" value={a?.call_wall ? `$${a.call_wall.strike.toFixed(2)}` : "—"} />
-      <InlineLevel label="PW" value={a?.put_wall ? `$${a.put_wall.strike.toFixed(2)}` : "—"} />
-      <InlineLevel label="MP" value={fmtPrice(a?.max_pain)} />
-      <InlineLevel label="GF" value={fmtPrice(a?.gamma_flip)} />
-      <InlineLevel
-        label="IV"
-        value={m?.iv_rank == null ? "—" : `${m.iv_rank.toFixed(0)}`}
-      />
+      {items.length === 0 ? (
+        <span className="text-tiny text-fg-tertiary-2">
+          No levels for {symbol ?? "—"} today
+        </span>
+      ) : (
+        items.map((it) => (
+          <InlineLevel key={it.label} label={it.label} value={it.value} />
+        ))
+      )}
       <div className="ml-auto flex items-center gap-1.5 shrink-0">
         <span
           className="uppercase tracking-label-up text-fg-tertiary-2"
