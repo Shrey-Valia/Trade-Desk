@@ -1,7 +1,11 @@
+import { useState } from "react";
+
 import { PageHeader } from "@/components/layout/PageHeader";
+import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useUserSettings } from "@/stores/userSettings";
+import type { TierSpec } from "@/types/account";
 import type { ChartTimeframe } from "@/types/chart";
 
 const TIMEFRAMES: ChartTimeframe[] = ["1D", "5D", "1M", "3M"];
@@ -36,6 +40,7 @@ export function SettingsPage() {
       <PageHeader title="Settings" />
       <main className="flex-1 min-h-0 overflow-y-auto border-t border-hairline">
         <section className="max-w-2xl">
+          <CombineTierSection />
           <SettingRow
             label="Default ticker"
             help="The symbol the chart loads on cold open. Restricted to the 0DTE-eligible allowlist."
@@ -120,6 +125,164 @@ function SettingRow({
         </div>
       </div>
       <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Combine tier section — picks one of three industry-standard sizes.
+ * Highlights the active tier with amber; switching opens a confirm
+ * prompt so a stray click doesn't swap accounts.
+ */
+function CombineTierSection() {
+  const { data: account, isLoading } = useAccountState();
+  const switchTier = useSwitchTier();
+  const [confirmTier, setConfirmTier] = useState<TierSpec | null>(null);
+  if (isLoading || !account) {
+    return (
+      <div className="px-3 py-3 border-b border-hairline text-tiny text-fg-tertiary-2">
+        Loading combine state…
+      </div>
+    );
+  }
+  const activeKey = account.active_tier;
+  return (
+    <div className="border-b border-hairline">
+      <div className="px-3 pt-3 pb-1">
+        <div
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        >
+          Combine tier
+        </div>
+        <div
+          className="text-fg-tertiary mt-0.5"
+          style={{ fontSize: 11, lineHeight: 1.35 }}
+        >
+          Pick a prop-firm-style combine. Each tier keeps its own balance,
+          high-water mark, and trade history. Switching saves progress on the
+          tier you're leaving.
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2 px-3 pb-3 pt-1">
+        {account.tiers.map((t) => {
+          const active = t.key === activeKey;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => {
+                if (!active) setConfirmTier(t);
+              }}
+              className={[
+                "flex flex-col items-start gap-1 p-2 border text-left tabular-nums",
+                active
+                  ? "border-amber bg-tier-2"
+                  : "border-hairline bg-tier-1 hover:bg-tier-2",
+              ].join(" ")}
+              style={{ borderRadius: 0 }}
+              aria-pressed={active}
+            >
+              <span
+                className={[
+                  "uppercase tracking-label-up font-medium",
+                  active ? "text-amber" : "text-fg-primary",
+                ].join(" ")}
+                style={{ fontSize: 11 }}
+              >
+                {t.key} Combine
+              </span>
+              <span className="text-fg-secondary" style={{ fontSize: 11 }}>
+                Start ${t.starting_balance.toLocaleString()}
+              </span>
+              <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+                Trail ${t.trailing_distance.toLocaleString()} · MLL $
+                {t.initial_mll.toLocaleString()}
+              </span>
+              {active && (
+                <span
+                  className="mt-0.5 uppercase tracking-label-up text-amber"
+                  style={{ fontSize: 9 }}
+                >
+                  active
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {confirmTier && (
+        <ConfirmSwitch
+          target={confirmTier}
+          pending={switchTier.isPending}
+          onCancel={() => setConfirmTier(null)}
+          onConfirm={() => {
+            switchTier.mutate(confirmTier.key, {
+              onSettled: () => setConfirmTier(null),
+            });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ConfirmSwitch({
+  target,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  target: TierSpec;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-tier-0/80"
+      onClick={onCancel}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="border border-hairline-strong bg-tier-1 px-4 py-3 max-w-md"
+        style={{ borderRadius: 0 }}
+      >
+        <div
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 9 }}
+        >
+          Switch combine?
+        </div>
+        <div className="text-fg-primary mt-1" style={{ fontSize: 13 }}>
+          Switch to the {target.key} combine?
+        </div>
+        <div className="text-fg-tertiary-2 mt-1" style={{ fontSize: 11 }}>
+          Your current tier's progress is saved automatically. Each tier keeps
+          its own trade history and high-water mark.
+        </div>
+        <div className="flex gap-2 mt-3 justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2"
+            style={{ borderRadius: 0 }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-2 hover:bg-tier-3 disabled:opacity-50"
+            style={{ borderRadius: 0 }}
+          >
+            {pending ? "Switching…" : `Switch to ${target.key}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -44,6 +44,7 @@ import {
 import { SignalVerdictSchema, type SignalVerdict } from "@/types/signal";
 import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
 import { WatchlistResponseSchema, type WatchlistResponse } from "@/types/watchlist";
+import { AccountStateSchema, type AccountState } from "@/types/account";
 
 const API_BASE = "";
 
@@ -169,6 +170,15 @@ export const createTrade = (input: TradeInput): Promise<Trade> =>
   mutate("/api/journal/trades", TradeOutSchema, {
     method: "POST",
     body: JSON.stringify(input),
+  });
+
+export const fetchAccountState = (): Promise<AccountState> =>
+  request("/api/account/state", AccountStateSchema);
+
+export const switchAccountTier = (tier: string): Promise<AccountState> =>
+  mutate("/api/account/state/switch", AccountStateSchema, {
+    method: "POST",
+    body: JSON.stringify({ tier }),
   });
 
 export const updateTrade = (id: number, patch: TradeUpdateInput): Promise<Trade> =>

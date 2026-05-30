@@ -39,6 +39,11 @@ class Trade(Base):
     is_paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Combine tier this trade was opened on (50K / 100K / 150K).
+    # Switching tiers later doesn't reshuffle history — each tier owns
+    # its own trade list. Defaults to "50K" for the fresh-install case.
+    tier: Mapped[str] = mapped_column(String(8), nullable=False, default="50K")
+
     # Phase 2 (overnight polish) — metadata enrichment. All fields below
     # are NULLABLE and DEFAULTED so existing trade rows keep working
     # without migration; new trades opt in by filling them.

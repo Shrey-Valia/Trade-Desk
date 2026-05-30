@@ -127,6 +127,9 @@ class TradeOut(BaseModel):
     realized_pnl: float | None = None
     is_paper: bool
     notes: str | None = None
+    # Combine-tier introduction. Trades tagged with the tier they were
+    # opened on; older rows (none exist post-wipe) default to "50K".
+    tier: str = "50K"
     # Phase 2 enrichment.
     tags: list[str] = Field(default_factory=list)
     mistake_tags: list[str] = Field(default_factory=list)

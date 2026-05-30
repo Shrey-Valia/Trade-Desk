@@ -57,6 +57,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 def init_db() -> None:
     # Import models so SQLAlchemy registers them before create_all.
     from models import (  # noqa: F401
+        account_state,
         historical_earnings_event,
         options_snapshot,
         trade,
@@ -65,6 +66,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _additive_migrate_trades()
+    _seed_account_state()
 
 
 # Single-user SQLite — Alembic would be overkill, but we DO need to
@@ -82,6 +84,10 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("risk_amount", "FLOAT"),
     ("screenshot_url", "TEXT"),
     ("review_note", "TEXT"),
+    # Combine-tier introduction — trades opened before tiers existed
+    # were on the legacy $10K paper account. We wipe those legacy rows
+    # immediately after adding the column (see _wipe_legacy_trades).
+    ("tier", "VARCHAR(8) NOT NULL DEFAULT '50K'"),
 ]
 
 
@@ -93,12 +99,31 @@ def _additive_migrate_trades() -> None:
     pending = [
         (name, ddl) for name, ddl in _TRADE_COLUMN_ADDITIONS if name not in existing
     ]
+    needs_wipe = "tier" in {name for name, _ in pending}
     if not pending:
         return
     with engine.connect() as conn:
         for name, ddl in pending:
             conn.execute(text(f"ALTER TABLE trades ADD COLUMN {name} {ddl}"))
+        # Legacy $10K-paper-account rows pre-date the tier model and
+        # would otherwise pollute the 50K combine's history. Wipe them.
+        if needs_wipe:
+            conn.execute(text("DELETE FROM trades"))
         conn.commit()
+
+
+def _seed_account_state() -> None:
+    """Ensure exactly one AccountState row exists (id=1) with default
+    values. Idempotent — does nothing if the row already exists.
+    """
+    from models.account_state import AccountState
+
+    with SessionLocal() as session:
+        existing = session.get(AccountState, 1)
+        if existing is not None:
+            return
+        session.add(AccountState(id=1))
+        session.commit()
 
 
 def get_session() -> Generator[Session, None, None]:

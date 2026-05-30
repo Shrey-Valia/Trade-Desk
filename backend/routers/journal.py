@@ -37,6 +37,7 @@ from calculations.position_analytics import (
     compute_analytics,
 )
 from database import get_session
+from models.account_state import AccountState
 from models.trade import Trade
 from schemas.calendar_journal import (
     CalendarDayOut,
@@ -78,6 +79,8 @@ def create_trade(
         else compute_net_debit_credit(payload.legs)
     )
 
+    state = session.get(AccountState, 1)
+    active_tier = state.active_tier if state else "50K"
     trade = Trade(
         symbol=payload.symbol,
         strategy=payload.strategy,
@@ -92,6 +95,7 @@ def create_trade(
         planned_exit=payload.planned_exit,
         risk_amount=payload.risk_amount,
         screenshot_url=payload.screenshot_url,
+        tier=active_tier,
     )
     trade.legs = [leg.model_dump(mode="json") for leg in payload.legs]
     trade.tags = list(payload.tags)
@@ -617,6 +621,7 @@ def _to_out(trade: Trade) -> TradeOut:
         realized_pnl=trade.realized_pnl,
         is_paper=trade.is_paper,
         notes=trade.notes,
+        tier=trade.tier,
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
         confidence=trade.confidence,

@@ -36,6 +36,7 @@ from calculations.intraday_analytics import (
 )
 from calculations.position_analytics import DEFAULT_IV
 from database import get_session
+from models.account_state import AccountState
 from models.trade import Trade
 from schemas.journal import TradeOut, compute_net_debit_credit
 from services.alpaca_client import get_chain_snapshot, get_quotes
@@ -467,6 +468,7 @@ def open_zerodte_straddle(
         else "0DTE short straddle · indicative credit"
     )
 
+    active_tier = _current_tier(session)
     trade = Trade(
         symbol=sym,
         strategy=strategy,
@@ -476,6 +478,7 @@ def open_zerodte_straddle(
         status="open",
         is_paper=True,
         notes=notes,
+        tier=active_tier,
     )
     trade.legs = legs_json
     trade.tags = ["0dte"]
@@ -545,6 +548,7 @@ def open_zerodte_leg(
     from schemas.journal import TradeLeg
     net = compute_net_debit_credit([TradeLeg(**leg_json)])
 
+    active_tier = _current_tier(session)
     trade = Trade(
         symbol=sym,
         strategy=strategy,
@@ -554,6 +558,7 @@ def open_zerodte_leg(
         status="open",
         is_paper=True,
         notes=notes,
+        tier=active_tier,
     )
     trade.legs = [leg_json]
     trade.tags = ["0dte"]
@@ -562,6 +567,14 @@ def open_zerodte_leg(
     session.commit()
     session.refresh(trade)
     return _trade_to_out(trade)
+
+
+def _current_tier(session: Session) -> str:
+    """Look up the active combine tier from AccountState. Defaults to
+    50K if no state row exists (fresh-install fallback).
+    """
+    state = session.get(AccountState, 1)
+    return state.active_tier if state else "50K"
 
 
 def _trade_to_out(trade: Trade) -> TradeOut:
@@ -581,6 +594,7 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         realized_pnl=trade.realized_pnl,
         is_paper=trade.is_paper,
         notes=trade.notes,
+        tier=trade.tier,
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
         confidence=trade.confidence,

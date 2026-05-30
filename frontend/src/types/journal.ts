@@ -27,6 +27,8 @@ export const TradeOutSchema = z.object({
   realized_pnl: z.number().nullable().optional(),
   is_paper: z.boolean(),
   notes: z.string().nullable().optional(),
+  /** Combine tier this trade was opened on (50K / 100K / 150K). */
+  tier: z.string().default("50K"),
   // Phase 2 metadata.
   tags: z.array(z.string()).default([]),
   mistake_tags: z.array(z.string()).default([]),
