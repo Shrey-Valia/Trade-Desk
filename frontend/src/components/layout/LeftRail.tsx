@@ -48,8 +48,8 @@ export function LeftRail() {
       className="flex flex-col items-stretch border-r border-hairline bg-tier-1 shrink-0"
       style={{ width: 48 }}
     >
-      <div className="flex justify-center pt-4 pb-3">
-        <TradeDeskMark size={28} />
+      <div className="flex justify-center pt-3 pb-3">
+        <TradeDeskMark size={36} />
       </div>
       <div className="mx-auto w-6 border-t border-hairline" />
       <ul className="flex flex-col pt-3">
