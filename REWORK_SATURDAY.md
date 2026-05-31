@@ -135,7 +135,7 @@ the very next tick.
 ---
 
 ## Phase 3 — Polish
-Commit: `cb88ae5` (after this write)
+Commit: `101553f`
 
 ### 3a. AUDIT P-001 — restyle CLOSE button to match SELL
 `frontend/src/components/positions/BottomStrip.tsx:449-477`
@@ -225,7 +225,7 @@ These remain open and intentional. Listed for the record:
 
 ```
 $ git log --oneline -3
-cb88ae5  Phase 3: Polish — CLOSE button restyle, Settings footer, vol-proxy tooltips
+101553f  Phase 3: Polish — CLOSE button restyle, Settings footer copy, vol-proxy tooltips
 96b6681  Phase 2: Trade integrity — double-click guard, tier reset on switch, account state invalidation
 070fb28  Phase 1: Chart honesty — drop ghost BE line, fix 1D 404, hide toolbar stubs, restrict timeframes to real backend support
 ```
