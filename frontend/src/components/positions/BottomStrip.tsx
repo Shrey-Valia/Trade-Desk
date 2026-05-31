@@ -92,19 +92,35 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
 
   // Only render the items that actually have a value. Six dashes in a
   // row was visual noise; better to drop empties and keep the row tight.
-  const items: { label: string; value: string }[] = [];
+  const items: { label: string; value: string; tooltip?: string }[] = [];
   if (a?.expected_move_upper != null)
     items.push({ label: "EM↑", value: fmtPrice(a.expected_move_upper) });
   if (a?.expected_move_lower != null)
     items.push({ label: "EM↓", value: fmtPrice(a.expected_move_lower) });
   if (a?.call_wall)
-    items.push({ label: "CW", value: `$${a.call_wall.strike.toFixed(2)}` });
+    items.push({
+      label: "CW",
+      value: `$${a.call_wall.strike.toFixed(2)}`,
+      tooltip: INLINE_VOL_TOOLTIP.CW,
+    });
   if (a?.put_wall)
-    items.push({ label: "PW", value: `$${a.put_wall.strike.toFixed(2)}` });
+    items.push({
+      label: "PW",
+      value: `$${a.put_wall.strike.toFixed(2)}`,
+      tooltip: INLINE_VOL_TOOLTIP.PW,
+    });
   if (a?.max_pain != null)
-    items.push({ label: "MP", value: fmtPrice(a.max_pain) });
+    items.push({
+      label: "MP",
+      value: fmtPrice(a.max_pain),
+      tooltip: INLINE_VOL_TOOLTIP.MP,
+    });
   if (a?.gamma_flip != null)
-    items.push({ label: "GF", value: fmtPrice(a.gamma_flip) });
+    items.push({
+      label: "GF",
+      value: fmtPrice(a.gamma_flip),
+      tooltip: INLINE_VOL_TOOLTIP.GF,
+    });
   if (m?.iv_rank != null)
     items.push({ label: "IV", value: `${m.iv_rank.toFixed(0)}` });
 
@@ -129,7 +145,12 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
       ) : (
         <div className="flex items-center" style={{ gap: 16 }}>
           {items.map((it) => (
-            <InlineLevel key={it.label} label={it.label} value={it.value} />
+            <InlineLevel
+              key={it.label}
+              label={it.label}
+              value={it.value}
+              tooltip={it.tooltip}
+            />
           ))}
         </div>
       )}
@@ -146,9 +167,20 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
   );
 }
 
-function InlineLevel({ label, value }: { label: string; value: string }) {
+function InlineLevel({
+  label,
+  value,
+  tooltip,
+}: {
+  label: string;
+  value: string;
+  tooltip?: string;
+}) {
   return (
-    <span className="inline-flex items-baseline gap-1.5 tabular-nums">
+    <span
+      className="inline-flex items-baseline gap-1.5 tabular-nums"
+      title={tooltip}
+    >
       <span
         className="uppercase tracking-label-up text-fg-tertiary"
         style={{ fontSize: 10, letterSpacing: "0.06em" }}
@@ -164,6 +196,15 @@ function InlineLevel({ label, value }: { label: string; value: string }) {
     </span>
   );
 }
+
+// Same disclosure copy as the full-column tooltip; pinned here so the
+// inline strip can reach it without importing from the lower section.
+const INLINE_VOL_TOOLTIP = {
+  CW: "Call wall — computed from today's volume as OI proxy (free tier limitation)",
+  PW: "Put wall — computed from today's volume as OI proxy (free tier limitation)",
+  MP: "Max pain — computed from today's volume as OI proxy (free tier limitation)",
+  GF: "Gamma flip — computed from today's volume as OI proxy (free tier limitation)",
+};
 
 /**
  * Rounded pill toggle — 24×14, amber when on. Replaces the previous
@@ -458,21 +499,24 @@ function CloseButton({
   upl: number;
   onClick: () => void;
 }) {
-  const tone = upl > 0 ? "text-bullish" : upl < 0 ? "text-bearish" : "text-fg-secondary";
+  // Filled bearish-red treatment to match the SELL action button —
+  // smaller (h-8) since CLOSE doesn't need to compete with BUY/SELL
+  // for visual weight, just sit beside them with the same chrome.
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
       className={[
-        "w-full border h-7 text-tiny uppercase tracking-label-up tabular-nums",
+        "w-full h-8 rounded-btn font-semibold tabular-nums uppercase",
+        "transition-colors duration-100",
         disabled
-          ? "border-hairline text-fg-disabled cursor-not-allowed"
-          : "border-bearish text-bearish hover:bg-tier-2",
+          ? "bg-tier-1 text-fg-disabled cursor-not-allowed"
+          : "bg-action-sell hover:bg-action-sell-hover active:bg-action-sell-active text-white",
       ].join(" ")}
-      style={{ borderRadius: 0 }}
+      style={{ fontSize: 12, letterSpacing: "0.04em" }}
     >
-      CLOSE · realize <span className={`ml-1 ${disabled ? "" : tone}`}>
+      CLOSE · realize <span className="ml-1">
         {formatSignedDollar(upl)}
       </span>
     </button>
@@ -792,13 +836,23 @@ function KeyLevelsCol({ symbol }: { symbol: string | null }) {
         <LevelRow
           label="CW"
           value={a?.call_wall ? `$${a.call_wall.strike.toFixed(2)}` : "—"}
+          tooltip={VOL_PROXY_TOOLTIP.CW}
         />
         <LevelRow
           label="PW"
           value={a?.put_wall ? `$${a.put_wall.strike.toFixed(2)}` : "—"}
+          tooltip={VOL_PROXY_TOOLTIP.PW}
         />
-        <LevelRow label="MP" value={fmtPrice(a?.max_pain)} />
-        <LevelRow label="GF" value={fmtPrice(a?.gamma_flip)} />
+        <LevelRow
+          label="MP"
+          value={fmtPrice(a?.max_pain)}
+          tooltip={VOL_PROXY_TOOLTIP.MP}
+        />
+        <LevelRow
+          label="GF"
+          value={fmtPrice(a?.gamma_flip)}
+          tooltip={VOL_PROXY_TOOLTIP.GF}
+        />
         <div className="border-t border-hairline my-1.5" />
         <LevelRow
           label="IV rank"
@@ -822,9 +876,20 @@ function KeyLevelsCol({ symbol }: { symbol: string | null }) {
   );
 }
 
-function LevelRow({ label, value }: { label: string; value: string }) {
+function LevelRow({
+  label,
+  value,
+  tooltip,
+}: {
+  label: string;
+  value: string;
+  tooltip?: string;
+}) {
   return (
-    <div className="flex items-baseline justify-between text-tiny">
+    <div
+      className="flex items-baseline justify-between text-tiny"
+      title={tooltip}
+    >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
         style={{ fontSize: 9 }}
@@ -835,6 +900,18 @@ function LevelRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+// Disclosure for the four volume-derived KEY LEVELS values. The free
+// Alpaca tier doesn't expose open_interest, so call wall / put wall /
+// max pain / gamma flip are computed against today's per-contract
+// VOLUME as an OI proxy. EM±/IV are NOT volume-derived and don't
+// carry this disclosure.
+const VOL_PROXY_TOOLTIP = {
+  CW: "Call wall — computed from today's volume as OI proxy (free tier limitation)",
+  PW: "Put wall — computed from today's volume as OI proxy (free tier limitation)",
+  MP: "Max pain — computed from today's volume as OI proxy (free tier limitation)",
+  GF: "Gamma flip — computed from today's volume as OI proxy (free tier limitation)",
+};
 
 function ToggleSwitch({ on, onClick }: { on: boolean; onClick: () => void }) {
   return (

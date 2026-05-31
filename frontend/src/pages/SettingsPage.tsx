@@ -93,8 +93,8 @@ export function SettingsPage() {
           className="px-3 py-3 text-fg-tertiary border-t border-hairline"
           style={{ fontSize: 9 }}
         >
-          Changes persist locally; no Save needed. Reload the page to apply
-          settings that affect cold-open behavior (default ticker, timeframe).
+          Most settings apply immediately. Default ticker and default timeframe
+          take effect on next reload.
         </p>
       </main>
     </div>
