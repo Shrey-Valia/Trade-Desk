@@ -7,6 +7,7 @@ import { ChartToolbar } from "@/components/positions/ChartToolbar";
 import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
 import { TradeTicket } from "@/components/positions/TradeTicket";
 import { useTradeTicket } from "@/stores/tradeTicket";
+import { useAccountState } from "@/hooks/useAccountState";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
@@ -54,11 +55,20 @@ export function PositionsPage() {
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const scrubberDte = useActivePosition((s) => s.scrubberDte);
   const elapsedHours = useActivePosition((s) => s.elapsedHours);
+  const { data: account } = useAccountState();
+  const activeTier = account?.active_tier ?? "50K";
   const { data: tradesData } = useTrades();
   const trades = tradesData?.trades ?? [];
+  // Filter active-trade resolution by the current tier — a trade
+  // opened on tier A must not surface as the active position on
+  // tier B's screen. Paired with useSwitchTier clearing the
+  // activePosition store, this gives a clean tier boundary.
   const activeTrade = useMemo(
-    () => trades.find((t) => t.id === activeTradeId) ?? null,
-    [trades, activeTradeId],
+    () =>
+      trades.find(
+        (t) => t.id === activeTradeId && (t.tier ?? "50K") === activeTier,
+      ) ?? null,
+    [trades, activeTradeId, activeTier],
   );
   const isIntraday = useMemo(() => isZeroDteTrade(activeTrade), [activeTrade]);
 

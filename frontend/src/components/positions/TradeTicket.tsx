@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
@@ -51,8 +51,20 @@ export function TradeTicket() {
   const hasSelection = !!selection;
   const canFire = hasSelection && marketOpen && !pending;
 
+  // Synchronous double-click guard. The button's disabled prop tracks
+  // mutation.isPending after react renders — but two synchronous clicks
+  // within one frame both see isPending=false in the closure and both
+  // dispatch a mutation. The ref flips IN the handler (before the
+  // mutation queues) so the second click bails immediately, even
+  // before react has rendered the disabled state.
+  const submittingRef = useRef(false);
+
   const fire = (action: "buy" | "sell") => {
-    if (!canFire || !selection) return;
+    if (submittingRef.current || !canFire || !selection) return;
+    submittingRef.current = true;
+    const onSettled = () => {
+      submittingRef.current = false;
+    };
     if (selection.kind === "straddle") {
       straddleMutation.mutate(
         {
@@ -62,6 +74,7 @@ export function TradeTicket() {
         },
         {
           onSuccess: () => clear(),
+          onSettled,
         },
       );
       return;
@@ -77,6 +90,7 @@ export function TradeTicket() {
       },
       {
         onSuccess: () => clear(),
+        onSettled,
       },
     );
   };

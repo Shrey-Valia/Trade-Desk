@@ -14,6 +14,9 @@ export function useOpenZeroDteLeg() {
     mutationFn: openZeroDteLeg,
     onSuccess: (trade) => {
       queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      // Account state polls every 5s; invalidating here makes the
+      // header BAL/MLL/RP&L update immediately instead of lagging.
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       setActiveTradeId(trade.id);
     },
   });

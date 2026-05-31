@@ -31,6 +31,9 @@ export function useOpenZeroDteStraddle() {
       // — that's the bug that made successful opens look stuck. Match
       // the prefix and the open-positions list refreshes immediately.
       queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      // Account state polls every 5s; invalidate so the header
+      // BAL/MLL/RP&L update immediately.
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       setActiveTradeId(trade.id);
     },
   });

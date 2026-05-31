@@ -273,6 +273,9 @@ function OpenPositionCol({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      // Account state polls every 5s; invalidate so the header
+      // BAL/MLL/RP&L update immediately after the close books P&L.
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       setActiveTradeId(null);
     },
   });

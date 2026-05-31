@@ -155,20 +155,28 @@ function MetricPills() {
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const scrubberDte = useActivePosition((s) => s.scrubberDte);
   const elapsedHours = useActivePosition((s) => s.elapsedHours);
+  const activeTier = account?.active_tier ?? "50K";
 
+  // Tier-filtered active trade. If the active trade was opened on a
+  // different combine than the one currently selected, it must not
+  // contribute its UPL to this tier's header — clear the analytics
+  // query's enabling condition by treating it as no-trade.
   const activeTrade = useMemo(
     () =>
-      (tradesData?.trades ?? []).find((t) => t.id === activeTradeId) ?? null,
-    [tradesData, activeTradeId],
+      (tradesData?.trades ?? []).find(
+        (t) => t.id === activeTradeId && (t.tier ?? "50K") === activeTier,
+      ) ?? null,
+    [tradesData, activeTradeId, activeTier],
   );
   const isIntraday = useMemo(() => isZeroDteTrade(activeTrade), [activeTrade]);
-  const analyticsQuery = useTradeAnalytics(activeTradeId, scrubberDte, {
+  // Only fetch + use analytics when the active trade matches the
+  // active tier. Passing null disables the query — UPL stays at 0.
+  const analyticsTradeId = activeTrade ? activeTradeId : null;
+  const analyticsQuery = useTradeAnalytics(analyticsTradeId, scrubberDte, {
     intraday: isIntraday,
     elapsedHours,
   });
   const upl = analyticsQuery.data?.unrealized_pnl ?? 0;
-
-  const activeTier = account?.active_tier ?? "50K";
   const todayRpl = useMemo(() => {
     if (!tradesData?.trades) return 0;
     const todayIso = new Date().toISOString().slice(0, 10);
