@@ -62,12 +62,12 @@ export function PositionsPage() {
   );
   const isIntraday = useMemo(() => isZeroDteTrade(activeTrade), [activeTrade]);
 
-  // 0DTE: also auto-switch the chart timeframe to 1D so we see the
-  // intraday session bars. Other timeframes wouldn't make sense for a
-  // same-day position. Only nudge once per active-trade selection.
-  useEffect(() => {
-    if (isIntraday && timeframe !== "1D") setTimeframe("1D");
-  }, [activeTradeId, isIntraday]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 1D auto-switch retired alongside the toolbar's 1D button — the
+  // backend's 1D minute-bar route 404s off-hours, and routing an
+  // intraday active trade into a 404 was worse than leaving the chart
+  // on the user's chosen timeframe. 5D / 1M / 3M still render fine for
+  // the same intraday position; the entry marker is clamped into the
+  // visible band regardless.
 
   // When the user opens a position on a symbol that isn't the currently
   // selected ticker (e.g. they searched AAPL but clicked 0DTE on SPY by

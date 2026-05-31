@@ -9,7 +9,11 @@ import { useUserSettings } from "@/stores/userSettings";
 import type { TierSpec } from "@/types/account";
 import type { ChartTimeframe } from "@/types/chart";
 
-const TIMEFRAMES: ChartTimeframe[] = ["1D", "5D", "1M", "3M"];
+// 1D is intentionally excluded — the backend's 1D bars (today's minute
+// bars) return 404 outside market hours; the toolbar dropped it for
+// the same reason. Settings stays in lockstep so a stale default
+// doesn't cold-open into a 404 over the weekend.
+const TIMEFRAMES: ChartTimeframe[] = ["5D", "1M", "3M"];
 
 /**
  * Settings — four persisted preferences that affect how the app opens.

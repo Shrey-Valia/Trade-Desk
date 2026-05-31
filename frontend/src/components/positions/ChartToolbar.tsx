@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { UIButton } from "@/components/ui/UIButton";
 import { useTickerChart } from "@/hooks/useTickerChart";
@@ -30,54 +30,28 @@ interface Props {
   onTimeframeChange: (tf: ChartTimeframe) => void;
 }
 
-// Visual-only timeframe ladder. The "intraday" entries (1m..4h) are
-// stubs — backend serves 1D/5D/1M/3M today. The map below routes a
-// stub click to the closest real timeframe so the chart keeps drawing.
-type StubTimeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1D";
-const TF_VISUAL: StubTimeframe[] = ["1m", "5m", "15m", "1h", "4h", "1D"];
-const TF_REAL_MAP: Record<StubTimeframe, ChartTimeframe> = {
-  "1m": "1D",
-  "5m": "1D",
-  "15m": "1D",
-  "1h": "1D",
-  "4h": "1D",
-  "1D": "1D",
-};
-// Mapping back so the highlighted visual TF reflects the backend TF
-// reasonably (1D backend → "1D" visual default).
-const REAL_TO_VISUAL: Record<ChartTimeframe, StubTimeframe> = {
-  "1D": "1D",
-  "5D": "1D",
-  "1M": "1D",
-  "3M": "1D",
-};
+// Real timeframes the backend serves reliably. The prior "intraday
+// stub" ladder (1m..4h) was removed — those routed to "1D" minute
+// bars which return 404 off-hours and looked broken on user click.
+// "1D" backend ALSO 404s on weekends/holidays (no today minute bars),
+// so we drop it from the toolbar too; the remaining set works
+// regardless of session. Matches Settings TimeframePicker.
+const TF_OPTIONS: ChartTimeframe[] = ["5D", "1M", "3M"];
 
 export function ChartToolbar({ symbol, timeframe, onTimeframeChange }: Props) {
-  const [visualTf, setVisualTf] = useState<StubTimeframe>(
-    REAL_TO_VISUAL[timeframe] ?? "1D",
-  );
   return (
     <div className="shrink-0 bg-tier-1 border-b border-hairline">
-      <Toolbar
-        timeframe={timeframe}
-        visualTf={visualTf}
-        onVisualChange={setVisualTf}
-        onTimeframeChange={onTimeframeChange}
-      />
-      <OhlcStrip symbol={symbol} timeframe={timeframe} visualTf={visualTf} />
+      <Toolbar timeframe={timeframe} onTimeframeChange={onTimeframeChange} />
+      <OhlcStrip symbol={symbol} timeframe={timeframe} />
     </div>
   );
 }
 
 function Toolbar({
   timeframe,
-  visualTf,
-  onVisualChange,
   onTimeframeChange,
 }: {
   timeframe: ChartTimeframe;
-  visualTf: StubTimeframe;
-  onVisualChange: (tf: StubTimeframe) => void;
   onTimeframeChange: (tf: ChartTimeframe) => void;
 }) {
   return (
@@ -89,23 +63,16 @@ function Toolbar({
     >
       {/* Timeframes — tight group, no internal separator. */}
       <div className="flex" style={{ gap: 4 }}>
-        {TF_VISUAL.map((tf) => {
-          const active = visualTf === tf;
+        {TF_OPTIONS.map((tf) => {
+          const active = timeframe === tf;
           return (
             <UIButton
               key={tf}
               size="sm"
               active={active}
               aria-pressed={active}
-              onClick={() => {
-                onVisualChange(tf);
-                onTimeframeChange(TF_REAL_MAP[tf]);
-              }}
-              title={
-                tf === "1D"
-                  ? "Daily bars"
-                  : `${tf} intraday — falls back to 1D bars until intraday timeframes are wired up`
-              }
+              onClick={() => onTimeframeChange(tf)}
+              title={`${tf} bars`}
               className="min-w-[36px]"
             >
               {tf}
@@ -113,13 +80,6 @@ function Toolbar({
           );
         })}
       </div>
-      <Separator />
-      <CandleTypeStub />
-      <Separator />
-      {/* Drawing tools — tight group. */}
-      <DrawingToolStubs />
-      <Separator />
-      <IndicatorsStub />
       <div className="ml-auto flex items-center" style={{ gap: 6 }}>
         <LegendToggle />
         <MarketStructToggleHint />
@@ -129,31 +89,28 @@ function Toolbar({
   );
 }
 
+/* eslint-disable */
+// Stubs retired from the toolbar before YC submission. Kept on disk
+// (block-commented to satisfy tsc noUnusedLocals) so they can be
+// restored intact once the underlying features are real:
+//   - candle-type selector (line/area chart-type menu)
+//   - drawing tool icons (trend line / horizontal / rectangle)
+//   - indicators dropdown (RSI / MACD / EMA / ...)
+// Re-mount inside the Toolbar component above to restore.
+/*
 function Separator() {
-  // Visual rework: short vertical hairline centered in the row, 16px
-  // tall, hairline color. Wraps in a flex item with horizontal margin
-  // so adjacent buttons don't crowd the divider.
   return (
     <span
       aria-hidden
       className="self-center"
-      style={{
-        width: 1,
-        height: 16,
-        background: "#2F3545",
-        marginInline: 8,
-      }}
+      style={{ width: 1, height: 16, background: "#2F3545", marginInline: 8 }}
     />
   );
 }
 
 function CandleTypeStub() {
   return (
-    <UIButton
-      size="sm"
-      title="Chart type — candles (line/area types coming later)"
-      className="min-w-[80px]"
-    >
+    <UIButton size="sm" title="Chart type — candles (line/area types coming later)" className="min-w-[80px]">
       candles <span style={{ fontSize: 9 }}>▾</span>
     </UIButton>
   );
@@ -171,12 +128,7 @@ function DrawingToolStubs() {
 
 function DrawIcon({ glyph, label }: { glyph: string; label: string }) {
   return (
-    <UIButton
-      size="sm"
-      title={label}
-      aria-label={label}
-      className="w-[28px] px-0"
-    >
+    <UIButton size="sm" title={label} aria-label={label} className="w-[28px] px-0">
       <span style={{ fontSize: 11 }}>{glyph}</span>
     </UIButton>
   );
@@ -184,15 +136,13 @@ function DrawIcon({ glyph, label }: { glyph: string; label: string }) {
 
 function IndicatorsStub() {
   return (
-    <UIButton
-      size="sm"
-      title="Indicators — RSI/MACD/EMA coming later"
-      className="min-w-[90px]"
-    >
+    <UIButton size="sm" title="Indicators — RSI/MACD/EMA coming later" className="min-w-[90px]">
       indicators <span style={{ fontSize: 9 }}>▾</span>
     </UIButton>
   );
 }
+*/
+/* eslint-enable */
 
 /**
  * Compact legend toggle. The chart legend was an on-chart overlay; the
@@ -237,11 +187,9 @@ function MarketStructToggleHint() {
 function OhlcStrip({
   symbol,
   timeframe,
-  visualTf,
 }: {
   symbol: string | null;
   timeframe: ChartTimeframe;
-  visualTf: StubTimeframe;
 }) {
   const { data } = useTickerChart(symbol, timeframe);
   const ohlc = useMemo(() => {
@@ -266,7 +214,7 @@ function OhlcStrip({
       style={{ height: 20, fontSize: 10 }}
     >
       <span className="uppercase tracking-label-up text-fg-tertiary-2">
-        {symbol ?? "—"} · {visualTf}
+        {symbol ?? "—"} · {timeframe}
       </span>
       {ohlc ? (
         <>

@@ -406,12 +406,18 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
       markersRef.current.setMarkers(markers);
     }
 
-    // Breakeven price lines at the scrubber's DTE (the live one). Drawn
-    // as solid magenta — distinctively NOT in the amber/red/green/cyan
-    // palette used for market-structure annotations. The title carries
-    // the live UPL ("BE +$42.18") so the right-axis pill IS the P&L
-    // readout — moves with the line as theta widens it. The scrubber
-    // state is surfaced separately in the panel below.
+    // Live (theta-adjusted) breakeven price lines. Drawn as solid
+    // magenta — distinctively NOT in the amber/red/green/cyan palette
+    // used for market-structure annotations. The title carries the
+    // live UPL ("BE +$42.18") so the right-axis pill IS the P&L
+    // readout — moves with the line as theta widens it.
+    //
+    // Only `breakevensToday` is drawn. The prior expiration ghost
+    // ("BE✕") was removed because a single-leg position would render
+    // two magenta lines (live BE + expiration BE), which read as
+    // two breakevens and undermined the moving-breakeven narrative.
+    // The today BE converges to the expiration BE as theta decays —
+    // that motion IS the point. Showing both was redundant.
     const beTitle = position.uplLabel
       ? `BE ${position.uplLabel}`
       : "BE";
@@ -426,29 +432,6 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
           title: beTitle,
         }),
       );
-    }
-
-    // Optional expiration BE — drawn as a faint dotted ghost so the eye
-    // can see how far the live BE has moved due to theta. We don't show
-    // it if it overlaps the live BE (scrubber == 0 or position has no
-    // time value left).
-    if (position.breakevensExpiration && position.breakevensExpiration.length > 0) {
-      for (const be of position.breakevensExpiration) {
-        const closeToLive = position.breakevensToday.some(
-          (live) => Math.abs(live - be) < 0.05,
-        );
-        if (closeToLive) continue;
-        positionLinesRef.current.push(
-          series.createPriceLine({
-            price: be,
-            color: POSITION_COLOR,
-            lineStyle: LineStyle.Dotted,
-            lineWidth: 1,
-            axisLabelVisible: true,
-            title: "BE✕",
-          }),
-        );
-      }
     }
   }, [position, bars]);
 
