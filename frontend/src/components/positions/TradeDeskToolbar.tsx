@@ -10,7 +10,10 @@ import type { ChartTimeframe } from "@/types/chart";
 
 import { SymbolSearch } from "./SymbolSearch";
 
-const TIMEFRAMES: ChartTimeframe[] = ["1D", "5D", "1M", "3M"];
+// Retired component (replaced by TradeDeskHeader + ChartToolbar). Kept
+// on disk for rollback during the redesign. Sync the ladder so tsc
+// stops failing on a now-narrowed ChartTimeframe.
+const TIMEFRAMES: ChartTimeframe[] = ["1m", "5m", "15m", "1h", "4h", "1D"];
 
 interface Props {
   symbol: string | null;

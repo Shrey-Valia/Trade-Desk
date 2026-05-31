@@ -136,7 +136,7 @@ def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
 
 
 @router.get("/{symbol}/bars", response_model=ChartResponse)
-def get_ticker_bars(symbol: str, timeframe: str = "5D") -> ChartResponse:
+def get_ticker_bars(symbol: str, timeframe: str = "5m") -> ChartResponse:
     """Lightweight bars-only endpoint. Returns the same envelope as
     /chart for schema reuse but with empty annotations and a "bars" oi
     source — used by the frontend's fast-path chart query so candles
@@ -163,7 +163,7 @@ def get_ticker_bars(symbol: str, timeframe: str = "5D") -> ChartResponse:
 
 
 @router.get("/{symbol}/chart", response_model=ChartResponse)
-def get_ticker_chart(symbol: str, timeframe: str = "5D") -> ChartResponse:
+def get_ticker_chart(symbol: str, timeframe: str = "5m") -> ChartResponse:
     """Full chart payload — bars PLUS annotations (EM, walls, max pain,
     gamma flip). Kept for backward compat and for the annotation overlay
     query; the frontend's fast-path chart uses /bars and overlays the

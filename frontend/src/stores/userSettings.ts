@@ -1,7 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import type { ChartTimeframe } from "@/types/chart";
+import {
+  DEFAULT_CHART_TIMEFRAME,
+  isChartTimeframe,
+  type ChartTimeframe,
+} from "@/types/chart";
 
 /**
  * User-tunable defaults exposed in the Settings page.
@@ -43,7 +47,7 @@ export const useUserSettings = create<UserSettingsState>()(
     (set) => ({
       defaultTicker: "SPY",
       defaultContracts: 1,
-      defaultTimeframe: "5D",
+      defaultTimeframe: DEFAULT_CHART_TIMEFRAME,
       bullishColor: "#4DD17C",
       bearishColor: "#E85C5C",
       bgGradient: true,
@@ -51,13 +55,31 @@ export const useUserSettings = create<UserSettingsState>()(
       setDefaultTicker: (s) => set({ defaultTicker: s.toUpperCase().trim() }),
       setDefaultContracts: (n) =>
         set({ defaultContracts: Math.max(1, Math.min(100, Math.floor(n))) }),
-      setDefaultTimeframe: (tf) => set({ defaultTimeframe: tf }),
+      setDefaultTimeframe: (tf) =>
+        set({
+          defaultTimeframe: isChartTimeframe(tf) ? tf : DEFAULT_CHART_TIMEFRAME,
+        }),
       setBullishColor: (hex) => set({ bullishColor: hex }),
       setBearishColor: (hex) => set({ bearishColor: hex }),
       setBgGradient: (on) => set({ bgGradient: on }),
       setGridOpacity: (pct) =>
         set({ gridOpacity: Math.max(0, Math.min(100, Math.round(pct))) }),
     }),
-    { name: "td:user-settings" },
+    {
+      name: "td:user-settings",
+      // Schema bump 2 — the chart timeframe ladder swapped from
+      // lookback-range buttons ("1D"/"5D"/"1M"/"3M") to candle-
+      // interval buttons ("1m"/"5m"/"15m"/"1h"/"4h"/"1D"). Anyone
+      // with a persisted defaultTimeframe outside the new ladder
+      // gets normalized to DEFAULT_CHART_TIMEFRAME on next load.
+      version: 2,
+      migrate: (persisted, fromVersion) => {
+        const draft = (persisted ?? {}) as Partial<UserSettingsState>;
+        if (fromVersion < 2 && !isChartTimeframe(draft.defaultTimeframe)) {
+          draft.defaultTimeframe = DEFAULT_CHART_TIMEFRAME;
+        }
+        return draft;
+      },
+    },
   ),
 );

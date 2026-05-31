@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { UIButton } from "@/components/ui/UIButton";
 import { useTickerChart } from "@/hooks/useTickerChart";
 import { useChartPrefs } from "@/stores/chartPrefs";
-import type { ChartTimeframe } from "@/types/chart";
+import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 
 /**
  * TradingView-style chart chrome — toolbar (36px) + OHLC strip (20px).
@@ -30,13 +30,12 @@ interface Props {
   onTimeframeChange: (tf: ChartTimeframe) => void;
 }
 
-// Real timeframes the backend serves reliably. The prior "intraday
-// stub" ladder (1m..4h) was removed — those routed to "1D" minute
-// bars which return 404 off-hours and looked broken on user click.
-// "1D" backend ALSO 404s on weekends/holidays (no today minute bars),
-// so we drop it from the toolbar too; the remaining set works
-// regardless of session. Matches Settings TimeframePicker.
-const TF_OPTIONS: ChartTimeframe[] = ["5D", "1M", "3M"];
+// Standard TradingView/Topstep timeframe ladder. Each button is the
+// candle interval; backend's _TIMEFRAME_CONFIG handles the lookback
+// window auto-scaling. Single source of truth lives in types/chart.ts
+// so the toolbar, Settings picker, and persisted-store normalize off
+// the same list.
+const TF_OPTIONS: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
 
 export function ChartToolbar({ symbol, timeframe, onTimeframeChange }: Props) {
   return (

@@ -465,22 +465,41 @@ def _safe_int(v) -> int | None:
         return None
 
 
-# Timeframe configuration. Each entry: (TimeFrame, lookback_days, cache_ttl_s,
-# rth_only). RTH filter only sensibly applies to the 1D minute view — for
-# multi-day grains the boundary handling adds complexity for no visual gain.
+# Timeframe configuration. Each entry: (TimeFrame, lookback_days,
+# cache_ttl_s, rth_only). TradingView/Topstep convention: the timeframe
+# button = the candle INTERVAL, not the lookback range. Lookback is
+# auto-scaled per interval to put ~90–390 bars in view.
+#
+# RTH filter applies to intraday minute/hour grains so pre-market and
+# post-market sparse bars don't pad the left edge with low-volume
+# noise. 4h bars and daily bars are not filtered (Alpaca already
+# aggregates them sensibly across the session boundary).
+#
+# Lookback windows are CALENDAR-day windows generous enough to cover
+# the trading-day target (~1 = 3cal, ~3 = 5cal, ~5 = 7cal, ~20 = 28cal,
+# ~60 = 90cal, ~120 = 180cal).
 _TIMEFRAME_CONFIG: dict[str, tuple[TimeFrame, int, int, bool]] = {
-    "1D": (TimeFrame.Minute, 1, 60, True),
-    "5D": (TimeFrame(15, TimeFrameUnit.Minute), 7, 300, False),
-    "1M": (TimeFrame.Day, 35, 3600, False),
-    "3M": (TimeFrame.Day, 100, 3600, False),
+    "1m":  (TimeFrame.Minute,                 3,    30, True),
+    "5m":  (TimeFrame(5, TimeFrameUnit.Minute),  5,    60, True),
+    "15m": (TimeFrame(15, TimeFrameUnit.Minute), 7,   120, True),
+    "1h":  (TimeFrame.Hour,                  28,   300, True),
+    "4h":  (TimeFrame(4, TimeFrameUnit.Hour),    90,   600, False),
+    "1D":  (TimeFrame.Day,                  180,  3600, False),
 }
+
+# Default when a caller passes an unknown timeframe (legacy "5D" / "1M" /
+# "3M" from a stale persisted setting, or a typo). "5m" matches the
+# default Settings picker selection.
+_DEFAULT_TIMEFRAME = "5m"
 
 
 def get_bars(symbol: str, timeframe: str) -> list | None:
     """Bars sized to a chart timeframe. See _TIMEFRAME_CONFIG for the grid."""
     if timeframe not in _TIMEFRAME_CONFIG:
-        log.warning("unknown timeframe %r, defaulting to 5D", timeframe)
-        timeframe = "5D"
+        log.warning(
+            "unknown timeframe %r, defaulting to %s", timeframe, _DEFAULT_TIMEFRAME,
+        )
+        timeframe = _DEFAULT_TIMEFRAME
     tf, lookback_days, ttl, rth_only = _TIMEFRAME_CONFIG[timeframe]
 
     today_et = datetime.now(_ET).date()

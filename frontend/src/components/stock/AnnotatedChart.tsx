@@ -20,11 +20,17 @@ import { useTickerAnnotations, useTickerChart } from "@/hooks/useTickerChart";
 import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useUserSettings } from "@/stores/userSettings";
-import type { BarPoint, ChartAnnotations, ChartTimeframe } from "@/types/chart";
+import {
+  CHART_TIMEFRAMES,
+  DEFAULT_CHART_TIMEFRAME,
+  type BarPoint,
+  type ChartAnnotations,
+  type ChartTimeframe,
+} from "@/types/chart";
 
 import { ChartLegend } from "./ChartLegend";
 
-const TIMEFRAMES: ChartTimeframe[] = ["1D", "5D", "1M", "3M"];
+const TIMEFRAMES: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
 
 // Trade Desk position overlay — magenta is reserved for "MY POSITION"
 // markers so it can't be confused with the six options-level annotations
@@ -75,7 +81,9 @@ interface Props {
  * than 1-min candles); multi-day timeframes render as candles.
  */
 export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, position }: Props) {
-  const [internalTimeframe, setInternalTimeframe] = useState<ChartTimeframe>("5D");
+  const [internalTimeframe, setInternalTimeframe] = useState<ChartTimeframe>(
+    DEFAULT_CHART_TIMEFRAME,
+  );
   const timeframe = controlledTimeframe?.value ?? internalTimeframe;
   const setTimeframe = controlledTimeframe?.onChange ?? setInternalTimeframe;
   const showInternalSelector = controlledTimeframe === undefined;

@@ -7,13 +7,12 @@ import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useUserSettings } from "@/stores/userSettings";
 import type { TierSpec } from "@/types/account";
-import type { ChartTimeframe } from "@/types/chart";
+import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 
-// 1D is intentionally excluded — the backend's 1D bars (today's minute
-// bars) return 404 outside market hours; the toolbar dropped it for
-// the same reason. Settings stays in lockstep so a stale default
-// doesn't cold-open into a 404 over the weekend.
-const TIMEFRAMES: ChartTimeframe[] = ["5D", "1M", "3M"];
+// Standard candle-interval ladder. Default selection "5m" matches the
+// toolbar's cold-open. Picker and toolbar share CHART_TIMEFRAMES so
+// the two stay in lockstep automatically.
+const TIMEFRAMES: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
 
 /**
  * Settings — four persisted preferences that affect how the app opens.

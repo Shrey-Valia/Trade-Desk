@@ -36,4 +36,31 @@ export type ChartResponse = z.infer<typeof ChartResponseSchema>;
 export type ChartAnnotations = z.infer<typeof ChartAnnotationsSchema>;
 export type BarPoint = z.infer<typeof BarPointSchema>;
 export type WallLevel = z.infer<typeof WallLevelSchema>;
-export type ChartTimeframe = "1D" | "5D" | "1M" | "3M";
+/**
+ * Standard TradingView/Topstep timeframe ladder. The value IS the
+ * candle interval — backend's _TIMEFRAME_CONFIG owns the matching
+ * lookback window and Alpaca TimeFrame mapping. Default selection
+ * (cold open + Settings picker default): "5m".
+ */
+export type ChartTimeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1D";
+
+export const CHART_TIMEFRAMES: readonly ChartTimeframe[] = [
+  "1m",
+  "5m",
+  "15m",
+  "1h",
+  "4h",
+  "1D",
+] as const;
+
+export const DEFAULT_CHART_TIMEFRAME: ChartTimeframe = "5m";
+
+/** True when the value is one of the currently-supported timeframes.
+ *  Useful for narrowing a persisted-localStorage value back into the
+ *  union after a ladder change. */
+export function isChartTimeframe(v: unknown): v is ChartTimeframe {
+  return (
+    typeof v === "string" &&
+    (CHART_TIMEFRAMES as readonly string[]).includes(v)
+  );
+}
