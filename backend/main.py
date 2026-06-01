@@ -28,6 +28,7 @@ from routers import ticker as ticker_router
 from routers import ticker_search as ticker_search_router
 from routers import watchlist as watchlist_router
 from routers import zerodte as zerodte_router
+from services import symbol_catalog
 
 logging.basicConfig(
     level=settings.log_level,
@@ -105,6 +106,24 @@ async def lifespan(app: FastAPI):
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,
     )
+    # Symbol catalog refresh — daily at 09:35 ET (5 min after open) so
+    # any newly-listed symbols become searchable by the time the
+    # session is running. APScheduler keeps the prior catalog in
+    # memory if the call fails, so a flaky network doesn't blank the
+    # search.
+    scheduler.add_job(
+        symbol_catalog.refresh,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=9,
+            minute=35,
+            timezone="America/New_York",
+        ),
+        id="symbol_catalog_refresh",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
     scheduler.start()
     log.info("scheduler started")
 
@@ -113,7 +132,7 @@ async def lifespan(app: FastAPI):
     # them via to_thread so they don't block the event loop, and so the
     # async-running-loop landmine in prewarm doesn't fire.
     async def _background_warm() -> None:
-        log.info("background warm: starting refresh_watchlist + prewarm")
+        log.info("background warm: starting refresh_watchlist + prewarm + symbol catalog")
         try:
             await asyncio.to_thread(refresh_watchlist, force=True)
         except Exception:  # noqa: BLE001
@@ -122,6 +141,14 @@ async def lifespan(app: FastAPI):
             await asyncio.to_thread(prewarm_hot_tickers, force=True)
         except Exception:  # noqa: BLE001
             log.exception("background prewarm_hot_tickers failed")
+        # Symbol catalog warm — the search endpoint serves the fallback
+        # 16-symbol list until this populates (~5-10 seconds against
+        # Alpaca's assets endpoint). Logged separately so the boot
+        # timeline shows when the live catalog landed.
+        try:
+            await asyncio.to_thread(symbol_catalog.refresh)
+        except Exception:  # noqa: BLE001
+            log.exception("background symbol_catalog refresh failed")
         log.info("background warm: complete")
 
     warm_task = asyncio.create_task(_background_warm())
