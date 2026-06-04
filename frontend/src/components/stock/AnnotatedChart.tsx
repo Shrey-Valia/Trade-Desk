@@ -136,7 +136,6 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
         {data && data.bars.length > 0 && (
           <>
             <LightweightChart
-              key={`${symbol}:${timeframe}`}
               bars={data.bars}
               annotations={annotationData ?? EMPTY_ANNOTATIONS}
               timeframe={timeframe}
@@ -188,6 +187,85 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
   const annotationLinesRef = useRef<IPriceLine[]>([]);
   const positionLinesRef = useRef<IPriceLine[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+
+  // The bars effect tears down + recreates the candle series whenever
+  // bars / timeframe / candle colors change. The position effect alone
+  // can't re-attach the BE overlay across those rebuilds because its
+  // deps are `[position]`, which doesn't change on a timeframe click.
+  // We fix the gap by giving the bars effect an inline attach using
+  // refs that hold the latest position + bars from the most recent
+  // render. The refs avoid putting position/bars in the bars-effect
+  // deps, which would otherwise tear down the candle series on every
+  // scrubber tick.
+  const positionRef = useRef<PositionOverlay | null>(position);
+  positionRef.current = position;
+  const barsRef = useRef<BarPoint[]>(bars);
+  barsRef.current = bars;
+
+  function attachPositionOverlay(
+    series: ISeriesApi<"Candlestick">,
+    p: PositionOverlay | null,
+    barsList: BarPoint[],
+  ): void {
+    // Tear down any prior overlay attached to this series. After a
+    // bars-effect rebuild the refs may already be empty (the old
+    // series was removed, taking its priceLines with it) — the loop
+    // is a defensive no-op in that case.
+    for (const line of positionLinesRef.current) {
+      try {
+        series.removePriceLine(line);
+      } catch {
+        /* line already detached */
+      }
+    }
+    positionLinesRef.current = [];
+    if (markersRef.current) {
+      markersRef.current.setMarkers([]);
+    }
+    if (!p) return;
+
+    // Entry marker — clamped to the chart's visible time range so a
+    // weeks-old entry that falls outside a 5D view still shows at the
+    // left edge instead of vanishing off-screen.
+    const entryT = toTime(p.entryDate);
+    const firstBarT = barsList.length > 0 ? toTime(barsList[0].t) : entryT;
+    const lastBarT =
+      barsList.length > 0 ? toTime(barsList[barsList.length - 1].t) : entryT;
+    const clampedT = (Math.min(
+      Math.max(entryT as number, firstBarT as number),
+      lastBarT as number,
+    ) as unknown) as UTCTimestamp;
+
+    const markers: SeriesMarker<Time>[] = [
+      {
+        time: clampedT,
+        position: "belowBar",
+        color: POSITION_COLOR,
+        shape: "arrowUp",
+        text: `ENTRY · ${p.strategyLabel}`,
+        size: 1,
+      },
+    ];
+    if (markersRef.current == null) {
+      markersRef.current = createSeriesMarkers(series, markers);
+    } else {
+      markersRef.current.setMarkers(markers);
+    }
+
+    const beTitle = p.uplLabel ? `BE ${p.uplLabel}` : "BE";
+    for (const be of p.breakevensToday) {
+      positionLinesRef.current.push(
+        series.createPriceLine({
+          price: be,
+          color: POSITION_COLOR,
+          lineStyle: LineStyle.Solid,
+          lineWidth: 2,
+          axisLabelVisible: true,
+          title: beTitle,
+        }),
+      );
+    }
+  }
 
   useEffect(() => {
     const host = containerRef.current;
@@ -279,11 +357,13 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
     });
   }, [gridOpacity]);
 
-  // Bars + market-level annotations. Recreates series when bars/tf
-  // changes (which is rare — outer key on symbol+tf already remounts
-  // this whole component). The position overlay is handled by a
-  // SEPARATE effect below so dragging the scrubber doesn't re-tear the
-  // candlestick series 60× per second.
+  // Bars + market-level annotations. Recreates series when bars,
+  // timeframe, or candle colors change. The position overlay is
+  // re-attached INLINE at the end of this effect so the BE survives
+  // a timeframe click — see attachPositionOverlay() above for the
+  // race this fixes. The position effect below handles the
+  // independent scrubber path (position changes without a series
+  // rebuild).
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -348,6 +428,14 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
     annotationLinesRef.current = [];
 
     chart.timeScale().fitContent();
+
+    // Re-attach the position overlay (entry marker + BE lines) to
+    // the freshly-created series. Reads from refs so changes to
+    // position / bars during a scrubber tick don't add deps that
+    // would tear down the candle series on every move. Without this
+    // call the BE disappears on every timeframe click — see
+    // VERIFY_BE_REPORT.md's condition 5.
+    attachPositionOverlay(candles, positionRef.current, barsRef.current);
   }, [bars, annotations, timeframe, userBullish, userBearish]);
 
   // Market-structure annotation overlay — toggle-aware.
@@ -366,82 +454,18 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
       : [];
   }, [annotations, showMarketAnnotations]);
 
-  // Position overlay — independent of the series lifecycle so the
-  // scrubber can stream new BE values without redrawing candles.
+  // Position overlay — handles the scrubber path (position changes
+  // while the candle series is stable). Bars-change re-attach is done
+  // inline in the bars effect above so the BE survives timeframe
+  // clicks; we deliberately omit `bars` from this dep array to avoid
+  // a double-attach race when bars + position both update in the same
+  // commit.
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
-
-    // Tear down any previous position overlay.
-    for (const line of positionLinesRef.current) {
-      try {
-        series.removePriceLine(line);
-      } catch {
-        /* line already detached */
-      }
-    }
-    positionLinesRef.current = [];
-    if (markersRef.current) {
-      markersRef.current.setMarkers([]);
-    }
-
-    if (!position) return;
-
-    // Entry marker — clamped to the chart's visible time range so a
-    // weeks-old entry that falls outside a 5D view still shows at the
-    // left edge instead of vanishing off-screen.
-    const entryT = toTime(position.entryDate);
-    const firstBarT = bars.length > 0 ? toTime(bars[0].t) : entryT;
-    const lastBarT = bars.length > 0 ? toTime(bars[bars.length - 1].t) : entryT;
-    const clampedT = (Math.min(
-      Math.max(entryT as number, firstBarT as number),
-      lastBarT as number,
-    ) as unknown) as UTCTimestamp;
-
-    const markers: SeriesMarker<Time>[] = [
-      {
-        time: clampedT,
-        position: "belowBar",
-        color: POSITION_COLOR,
-        shape: "arrowUp",
-        text: `ENTRY · ${position.strategyLabel}`,
-        size: 1,
-      },
-    ];
-    if (markersRef.current == null) {
-      markersRef.current = createSeriesMarkers(series, markers);
-    } else {
-      markersRef.current.setMarkers(markers);
-    }
-
-    // Live (theta-adjusted) breakeven price lines. Drawn as solid
-    // magenta — distinctively NOT in the amber/red/green/cyan palette
-    // used for market-structure annotations. The title carries the
-    // live UPL ("BE +$42.18") so the right-axis pill IS the P&L
-    // readout — moves with the line as theta widens it.
-    //
-    // Only `breakevensToday` is drawn. The prior expiration ghost
-    // ("BE✕") was removed because a single-leg position would render
-    // two magenta lines (live BE + expiration BE), which read as
-    // two breakevens and undermined the moving-breakeven narrative.
-    // The today BE converges to the expiration BE as theta decays —
-    // that motion IS the point. Showing both was redundant.
-    const beTitle = position.uplLabel
-      ? `BE ${position.uplLabel}`
-      : "BE";
-    for (const be of position.breakevensToday) {
-      positionLinesRef.current.push(
-        series.createPriceLine({
-          price: be,
-          color: POSITION_COLOR,
-          lineStyle: LineStyle.Solid,
-          lineWidth: 2,
-          axisLabelVisible: true,
-          title: beTitle,
-        }),
-      );
-    }
-  }, [position, bars]);
+    attachPositionOverlay(series, position, barsRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [position]);
 
   return <div ref={containerRef} className="h-full w-full" />;
 }
