@@ -54,10 +54,21 @@ class CatalogEntry:
     exchange: str
 
 
+# Indices like SPX, NDX, VIX are NOT equities — they're cash-settled
+# CBOE products with no Alpaca bars endpoint and no chain on the free
+# tier. Letting them surface in search lets a user click a ticker that
+# 404s the chart, the chain, and the detail panels. Filter them out at
+# both the refresh path (in case Alpaca starts listing them as
+# us_equity) and the search path (in case a fallback row sneaks in).
+_INDEX_DENYLIST: frozenset[str] = frozenset(
+    {"SPX", "NDX", "RUT", "VIX", "DJX", "OEX", "XSP", "XEO", "MXEF", "RUI"}
+)
+
+
 # Bundled fallback — used only when Alpaca hasn't populated yet AND
 # we have no prior catalog (fresh boot before refresh completes).
-# Mirrors the 16-symbol hand-curated set the router shipped with so
-# the empty-catalog case still produces familiar results.
+# Mirrors the curated set the router shipped with, minus index tickers
+# (those would 404 the chart endpoints if the user clicked them).
 _FALLBACK_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("SPY", "SPDR S&P 500 ETF", "ARCA"),
     CatalogEntry("QQQ", "Invesco QQQ Trust", "NASDAQ"),
@@ -73,8 +84,6 @@ _FALLBACK_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("META", "Meta Platforms Inc.", "NASDAQ"),
     CatalogEntry("NFLX", "Netflix Inc.", "NASDAQ"),
     CatalogEntry("AVGO", "Broadcom Inc.", "NASDAQ"),
-    CatalogEntry("SPX", "S&P 500 Index", "INDEX"),
-    CatalogEntry("NDX", "Nasdaq 100 Index", "INDEX"),
 )
 
 
@@ -121,6 +130,8 @@ def refresh() -> int:
         symbol = (getattr(a, "symbol", "") or "").strip().upper()
         if not symbol:
             continue
+        if symbol in _INDEX_DENYLIST:
+            continue
         name = (getattr(a, "name", "") or "").strip() or symbol
         exchange = (getattr(a, "exchange", "") or "").strip() or "—"
         new_entries.append(CatalogEntry(symbol, name, exchange))
@@ -154,6 +165,8 @@ def search(q: str, limit: int = 10) -> list[CatalogEntry]:
 
     scored: list[tuple[float, CatalogEntry]] = []
     for entry in snapshot:
+        if entry.symbol in _INDEX_DENYLIST:
+            continue
         sym_lc = entry.symbol.lower()
         name_lc = entry.name.lower()
         score = 0.0

@@ -140,3 +140,62 @@ def test_refresh_populates_with_live_data():
     with patch.object(symbol_catalog, "_trading_client", return_value=_StubClient()):
         pass
     symbol_catalog._catalog = _FALLBACK_CATALOG  # noqa: SLF001 — test teardown
+
+
+def test_search_filters_out_index_tickers():
+    # SPX/NDX/VIX/RUT are cash-settled indices, not equities — the
+    # chart/chain endpoints 404 on them. Even if Alpaca starts listing
+    # one as us_equity (or a fallback row sneaks one in), search must
+    # never surface them.
+    fixture = (
+        CatalogEntry("SPX", "S&P 500 Index", "INDEX"),
+        CatalogEntry("SPXL", "Direxion Daily S&P 500 Bull 3X", "ARCA"),
+        CatalogEntry("SPY", "SPDR S&P 500 ETF", "ARCA"),
+        CatalogEntry("VIX", "CBOE Volatility Index", "INDEX"),
+        CatalogEntry("VIXY", "ProShares VIX ST Futures ETF", "BATS"),
+    )
+    with patch.object(symbol_catalog, "_catalog", fixture):
+        for needle in ("SPX", "NDX", "VIX", "RUT", "DJX", "OEX"):
+            syms = [h.symbol for h in symbol_catalog.search(needle, limit=10)]
+            assert needle not in syms, f"index {needle} leaked into search"
+        # Adjacent equity tickers that happen to share the substring
+        # must still come back.
+        assert "SPXL" in [h.symbol for h in symbol_catalog.search("SPX", limit=10)]
+        assert "VIXY" in [h.symbol for h in symbol_catalog.search("VIX", limit=10)]
+        assert "SPY" in [h.symbol for h in symbol_catalog.search("SPY", limit=10)]
+
+
+def test_refresh_drops_indices_from_alpaca_payload():
+    # If Alpaca's us_equity list ever contains an index symbol (it has
+    # happened historically — some delisted index proxies linger), the
+    # refresh path must drop it before it lands in the catalog.
+    class _Asset:
+        def __init__(self, symbol, name, exchange, tradable=True):
+            self.symbol = symbol
+            self.name = name
+            self.exchange = exchange
+            self.tradable = tradable
+            from alpaca.trading.enums import AssetStatus
+
+            self.status = AssetStatus.ACTIVE
+
+    class _StubClient:
+        def get_all_assets(self, _req):
+            return [
+                _Asset("AAPL", "Apple Inc.", "NASDAQ"),
+                _Asset("SPX", "S&P 500 Index", "INDEX"),
+                _Asset("VIX", "CBOE Volatility Index", "INDEX"),
+                _Asset("SPY", "SPDR S&P 500 ETF", "ARCA"),
+            ]
+
+    with patch.object(symbol_catalog, "_trading_client", return_value=_StubClient()):
+        symbol_catalog.refresh()
+
+    syms = {e.symbol for e in symbol_catalog.get_all()}
+    assert "SPX" not in syms
+    assert "VIX" not in syms
+    assert "AAPL" in syms
+    assert "SPY" in syms
+
+    # Restore for downstream tests.
+    symbol_catalog._catalog = _FALLBACK_CATALOG  # noqa: SLF001 — test teardown
