@@ -26,6 +26,7 @@ from routers import regime as regime_router
 from routers import signal as signal_router
 from routers import ticker as ticker_router
 from routers import ticker_search as ticker_search_router
+from routers import user_browse as user_browse_router
 from routers import watchlist as watchlist_router
 from routers import zerodte as zerodte_router
 from services import symbol_catalog
@@ -186,6 +187,8 @@ app.include_router(analytics_router.router)
 app.include_router(zerodte_router.router)
 app.include_router(account_router.router)
 app.include_router(ticker_search_router.router)
+app.include_router(user_browse_router.router_user)
+app.include_router(user_browse_router.router_ticker)
 
 
 @app.get("/health")

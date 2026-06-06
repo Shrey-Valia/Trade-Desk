@@ -1,48 +1,26 @@
-"""Live symbol catalog backed by Alpaca's assets endpoint.
+"""Symbol catalog — thin adapter over the curated 0DTE universe.
 
-The ticker search router used to ship a hardcoded 16-symbol list,
-which meant "BABA" returned nothing and "AAPL" worked only because
-it was in the hand-curated set. This service replaces that with the
-full Alpaca active US-equity universe (~10,000+ symbols including
-ETFs), refreshed daily.
+Historical context: this module used to maintain a live ~13K-symbol
+catalog refreshed daily from Alpaca's assets endpoint. The new search
+modal (Phase 1 curated-universe rework) scopes search to the curated
+30 names that actually have liquid 0DTE chains, so the live-asset
+catalog is retired.
 
-Lifecycle:
-  - `refresh()` fetches the assets list via TradingClient and stores
-    a sorted-by-symbol tuple of CatalogEntry. Idempotent; safe to
-    call from APScheduler.
-  - `search(q, limit)` ranks substring matches by:
-        3.0  exact symbol match
-        2.0  symbol-prefix match
-        1.0  symbol-substring match
-        0.5  name-substring match
-    Same scoring the router used before; runs against the live set.
-  - `get_all()` is for diagnostics + tests.
+This module is kept around as a stable adapter so the existing
+`routers/ticker_search.py` doesn't need to change shape — same
+`CatalogEntry`, same `search()` ranking, same `_INDEX_DENYLIST`
+defense. It just sources entries from `curated_universe` now.
 
-Failure modes:
-  - Alpaca unreachable or returns nothing → keep the previous catalog
-    if one is loaded, else fall back to the bundled
-    `_FALLBACK_CATALOG` (the 16 symbols the router shipped with).
-    Log a WARN so the operator sees the degradation.
-  - First call before `refresh()` has populated → returns results
-    from the fallback so the endpoint is never empty.
-
-The module exposes a process-wide single catalog. A single user
-running locally doesn't need per-request isolation; we keep this
-simple.
+`refresh()` is preserved as a no-op so the existing APScheduler job
+registration in `main.py` doesn't need to be torn out.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
-import time
 from dataclasses import dataclass
 
-from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import AssetClass, AssetStatus
-from alpaca.trading.requests import GetAssetsRequest
-
-from config import settings
+from services import curated_universe
 
 log = logging.getLogger(__name__)
 
@@ -51,124 +29,56 @@ log = logging.getLogger(__name__)
 class CatalogEntry:
     symbol: str
     name: str
-    exchange: str
+    exchange: str  # Retained for response-shape compatibility.
 
 
-# Indices like SPX, NDX, VIX are NOT equities — they're cash-settled
-# CBOE products with no Alpaca bars endpoint and no chain on the free
-# tier. Letting them surface in search lets a user click a ticker that
-# 404s the chart, the chain, and the detail panels. Filter them out at
-# both the refresh path (in case Alpaca starts listing them as
-# us_equity) and the search path (in case a fallback row sneaks in).
+# Cash-settled CBOE indices are not equities — no Alpaca bars endpoint,
+# no chain on the free tier (see commit f9bd590). The curated universe
+# already excludes them, but this defense stays so any future drift
+# (someone accidentally adds SPX to the curated list) is caught at the
+# search layer too.
 _INDEX_DENYLIST: frozenset[str] = frozenset(
     {"SPX", "NDX", "RUT", "VIX", "DJX", "OEX", "XSP", "XEO", "MXEF", "RUI"}
 )
 
 
-# Bundled fallback — used only when Alpaca hasn't populated yet AND
-# we have no prior catalog (fresh boot before refresh completes).
-# Mirrors the curated set the router shipped with, minus index tickers
-# (those would 404 the chart endpoints if the user clicked them).
-_FALLBACK_CATALOG: tuple[CatalogEntry, ...] = (
-    CatalogEntry("SPY", "SPDR S&P 500 ETF", "ARCA"),
-    CatalogEntry("QQQ", "Invesco QQQ Trust", "NASDAQ"),
-    CatalogEntry("IWM", "iShares Russell 2000 ETF", "ARCA"),
-    CatalogEntry("DIA", "SPDR Dow Jones Industrial Average ETF", "ARCA"),
-    CatalogEntry("AAPL", "Apple Inc.", "NASDAQ"),
-    CatalogEntry("MSFT", "Microsoft Corp.", "NASDAQ"),
-    CatalogEntry("NVDA", "NVIDIA Corp.", "NASDAQ"),
-    CatalogEntry("TSLA", "Tesla Inc.", "NASDAQ"),
-    CatalogEntry("AMD", "Advanced Micro Devices", "NASDAQ"),
-    CatalogEntry("GOOGL", "Alphabet Inc.", "NASDAQ"),
-    CatalogEntry("AMZN", "Amazon.com Inc.", "NASDAQ"),
-    CatalogEntry("META", "Meta Platforms Inc.", "NASDAQ"),
-    CatalogEntry("NFLX", "Netflix Inc.", "NASDAQ"),
-    CatalogEntry("AVGO", "Broadcom Inc.", "NASDAQ"),
-)
-
-
-_lock = threading.Lock()
-_catalog: tuple[CatalogEntry, ...] = _FALLBACK_CATALOG
-_loaded_at: float = 0.0  # monotonic seconds; 0 means "never refreshed"
-
-
-def _trading_client() -> TradingClient:
-    """Local copy of the Alpaca client constructor to avoid an
-    import cycle with services.alpaca_client."""
-    return TradingClient(
-        api_key=settings.alpaca_api_key,
-        secret_key=settings.alpaca_api_secret,
-        paper=settings.alpaca_paper,
-    )
+def _curated_to_catalog(e: curated_universe.CuratedEntry) -> CatalogEntry:
+    # Exchange isn't tracked in the curated universe (we only need it
+    # for the legacy response shape). "CURATED" is a clearer sentinel
+    # than picking a real exchange we don't actually verify.
+    return CatalogEntry(symbol=e.symbol, name=e.name, exchange="CURATED")
 
 
 def refresh() -> int:
-    """Fetch the assets list and replace the in-memory catalog.
+    """No-op kept for APScheduler compatibility.
 
-    Returns the number of entries after refresh. Safe to call from
-    APScheduler — failures are logged, never raised, and the prior
-    catalog is preserved.
+    The curated universe is static — there's nothing to refresh. We
+    keep the function signature so `main.py`'s cron registration
+    doesn't need to be unwired during the curated rollout.
     """
-    global _catalog, _loaded_at
-    try:
-        client = _trading_client()
-        request = GetAssetsRequest(
-            status=AssetStatus.ACTIVE,
-            asset_class=AssetClass.US_EQUITY,
-        )
-        assets = client.get_all_assets(request)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("symbol_catalog: refresh failed (%s); keeping prior catalog", exc)
-        return len(_catalog)
-
-    new_entries: list[CatalogEntry] = []
-    for a in assets:
-        if not getattr(a, "tradable", True):
-            continue
-        if getattr(a, "status", None) is not None and a.status != AssetStatus.ACTIVE:
-            continue
-        symbol = (getattr(a, "symbol", "") or "").strip().upper()
-        if not symbol:
-            continue
-        if symbol in _INDEX_DENYLIST:
-            continue
-        name = (getattr(a, "name", "") or "").strip() or symbol
-        exchange = (getattr(a, "exchange", "") or "").strip() or "—"
-        new_entries.append(CatalogEntry(symbol, name, exchange))
-
-    if not new_entries:
-        log.warning(
-            "symbol_catalog: refresh returned 0 entries; keeping prior catalog"
-        )
-        return len(_catalog)
-
-    # Sort by symbol so ties break alphabetically without extra work in
-    # the search path; also gives a deterministic test artifact.
-    new_entries.sort(key=lambda e: e.symbol)
-    with _lock:
-        _catalog = tuple(new_entries)
-        _loaded_at = time.monotonic()
-    log.info("symbol_catalog: refreshed; %d entries", len(_catalog))
-    return len(_catalog)
+    return len(curated_universe.CURATED_UNIVERSE)
 
 
 def search(q: str, limit: int = 10) -> list[CatalogEntry]:
-    """Ranked substring search over the in-memory catalog. The scoring
-    matches the router's prior behavior so a swap to this service
-    doesn't change the existing test fixtures.
+    """Ranked substring search over the curated universe.
+
+    Same scoring rubric as the live-Alpaca era so the response shape
+    is unchanged from the search router's perspective:
+        3.0  exact symbol match
+        2.0  symbol-prefix match
+        1.0  symbol-substring match
+        0.5  name-substring match
+    Denylisted indices are dropped even if a future caller injects them.
     """
     needle = q.strip().lower()
     if not needle:
         return []
-    with _lock:
-        snapshot = _catalog
-
     scored: list[tuple[float, CatalogEntry]] = []
-    for entry in snapshot:
-        if entry.symbol in _INDEX_DENYLIST:
+    for e in curated_universe.CURATED_UNIVERSE:
+        if e.symbol in _INDEX_DENYLIST:
             continue
-        sym_lc = entry.symbol.lower()
-        name_lc = entry.name.lower()
+        sym_lc = e.symbol.lower()
+        name_lc = e.name.lower()
         score = 0.0
         if sym_lc == needle:
             score = 3.0
@@ -179,19 +89,22 @@ def search(q: str, limit: int = 10) -> list[CatalogEntry]:
         elif needle in name_lc:
             score = 0.5
         if score > 0:
-            scored.append((score, entry))
+            scored.append((score, _curated_to_catalog(e)))
     scored.sort(key=lambda x: (-x[0], x[1].symbol))
     return [e for _, e in scored[:limit]]
 
 
 def get_all() -> tuple[CatalogEntry, ...]:
-    """Snapshot of the catalog. Used by tests + diagnostics."""
-    with _lock:
-        return _catalog
+    """Snapshot of the catalog — diagnostics and tests."""
+    return tuple(
+        _curated_to_catalog(e)
+        for e in curated_universe.CURATED_UNIVERSE
+        if e.symbol not in _INDEX_DENYLIST
+    )
 
 
 def is_loaded_from_alpaca() -> bool:
-    """True iff `refresh()` has populated the catalog at least once
-    in this process. Used by tests + diagnostic endpoints to
-    distinguish a fresh boot (fallback list) from a warm cache."""
-    return _loaded_at > 0
+    """Legacy signal from the live-catalog era. The curated universe
+    is loaded eagerly at import, so this is always True now — kept
+    to avoid breaking any caller that reads it."""
+    return True

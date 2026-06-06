@@ -60,7 +60,9 @@ def init_db() -> None:
         account_state,
         historical_earnings_event,
         options_snapshot,
+        ticker_selection,
         trade,
+        user_star,
         watchlist_item,
     )
 
