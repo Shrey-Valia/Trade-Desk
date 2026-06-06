@@ -46,7 +46,11 @@ import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
 import { WatchlistResponseSchema, type WatchlistResponse } from "@/types/watchlist";
 import { AccountStateSchema, type AccountState } from "@/types/account";
 import {
+  PopularResponseSchema,
+  StarsResponseSchema,
   TickerSearchResponseSchema,
+  type PopularResponse,
+  type StarsResponse,
   type TickerSearchResponse,
 } from "@/types/search";
 
@@ -184,6 +188,37 @@ export const searchTickers = (q: string): Promise<TickerSearchResponse> =>
     `/api/ticker/search?q=${encodeURIComponent(q)}`,
     TickerSearchResponseSchema,
   );
+
+export const fetchPopularTickers = (): Promise<PopularResponse> =>
+  request("/api/ticker/popular", PopularResponseSchema);
+
+export const fetchStars = (): Promise<StarsResponse> =>
+  request("/api/user/stars", StarsResponseSchema);
+
+export const addStar = (symbol: string): Promise<StarsResponse> =>
+  mutate(`/api/user/stars/${encodeURIComponent(symbol)}`, StarsResponseSchema, {
+    method: "POST",
+  });
+
+export const removeStar = (symbol: string): Promise<StarsResponse> =>
+  mutate(`/api/user/stars/${encodeURIComponent(symbol)}`, StarsResponseSchema, {
+    method: "DELETE",
+  });
+
+export const logTickerSelection = async (symbol: string): Promise<void> => {
+  // Fire-and-forget — server returns 204. Errors are swallowed so a
+  // logging failure doesn't surface as a UI error after the user
+  // already moved on to the new ticker.
+  try {
+    await fetch(`${API_BASE}/api/ticker/selection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol }),
+    });
+  } catch {
+    /* selection logging is best-effort */
+  }
+};
 
 export const switchAccountTier = (tier: string): Promise<AccountState> =>
   mutate("/api/account/state/switch", AccountStateSchema, {
