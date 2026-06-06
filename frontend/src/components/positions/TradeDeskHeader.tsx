@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { TickerSearchBox } from "@/components/positions/TickerSearchBox";
+import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
 import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
@@ -31,18 +31,99 @@ interface Props {
 }
 
 export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // Global keyboard shortcuts: "/" or Cmd/Ctrl+K opens the modal from
+  // anywhere on the page. We skip the shortcut if the user is typing
+  // in another input (e.g. the trade-entry form) so "/" still types a
+  // literal slash where it should.
+  useEffect(() => {
+    function handle(e: KeyboardEvent) {
+      const targetTag = (e.target as HTMLElement | null)?.tagName ?? "";
+      const isEditable =
+        targetTag === "INPUT" ||
+        targetTag === "TEXTAREA" ||
+        (e.target as HTMLElement | null)?.isContentEditable === true;
+      const isCmdK =
+        (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k";
+      const isSlash = e.key === "/" && !isEditable;
+      if (isCmdK || isSlash) {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    }
+    window.addEventListener("keydown", handle);
+    return () => window.removeEventListener("keydown", handle);
+  }, []);
+
   return (
     <header
       className="flex items-center gap-3 border-b border-hairline bg-tier-1 px-3 shrink-0 relative"
       style={{ height: 64 }}
     >
       <TierPill />
-      <TickerSearchBox symbol={symbol} onSelect={onSymbolChange} />
+      <SearchTrigger
+        symbol={symbol}
+        onClick={() => setSearchOpen(true)}
+      />
       <PriceReadout symbol={symbol} />
       <div className="ml-auto flex items-center" style={{ gap: 8 }}>
         <MetricPills />
       </div>
+      <SymbolSearchModal
+        open={searchOpen}
+        activeSymbol={symbol}
+        onClose={() => setSearchOpen(false)}
+        onSelect={(sym) => onSymbolChange(sym)}
+      />
     </header>
+  );
+}
+
+/**
+ * Replaces the old inline TickerSearchBox dropdown. Renders as a
+ * button-shaped readout: search icon + "{SYMBOL} · search ticker..." +
+ * "⌘K" hint. Click opens the modal; same shortcut keys work too.
+ */
+function SearchTrigger({
+  symbol,
+  onClick,
+}: {
+  symbol: string | null;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "h-9 pl-2.5 pr-2 bg-tier-2 border rounded-btn",
+        "border-tier-3 hover:border-tier-4 hover:bg-tier-3",
+        "flex items-center gap-2 text-left transition-colors duration-75",
+      ].join(" ")}
+      style={{ width: 220, fontSize: 13 }}
+      aria-label="Open symbol search"
+      title="Open symbol search (/ or ⌘K)"
+    >
+      <span
+        aria-hidden
+        className="text-fg-tertiary-2"
+        style={{ fontSize: 12 }}
+      >
+        ⌕
+      </span>
+      <span
+        className="text-fg-tertiary-2 font-mono tabular-nums truncate flex-1"
+      >
+        {symbol ? `${symbol} · search ticker…` : "Search ticker…"}
+      </span>
+      <kbd
+        className="text-fg-tertiary-2 border border-tier-3 px-1 rounded-btn font-mono"
+        style={{ fontSize: 10, lineHeight: 1.2 }}
+      >
+        /
+      </kbd>
+    </button>
   );
 }
 
