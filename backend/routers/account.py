@@ -14,7 +14,9 @@ path doesn't gate on it.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -34,6 +36,8 @@ from services.account_tiers import (
     update_hwm,
 )
 
+_ET = ZoneInfo("America/New_York")
+
 router = APIRouter(prefix="/api/account", tags=["account"])
 
 
@@ -43,6 +47,7 @@ class TierSpec(BaseModel):
     starting_balance: float
     trailing_distance: float
     initial_mll: float
+    dll_amount: float
 
 
 class AccountStateOut(BaseModel):
@@ -52,6 +57,19 @@ class AccountStateOut(BaseModel):
     balance: float = Field(..., description="starting_balance + realized_pnl. Unrealized is added client-side.")
     high_water_mark: float
     mll: float
+    dll_used: float = Field(
+        ...,
+        description=(
+            "Today's realized loss on the active tier (ET trading day), clamped"
+            " to ≥0. Frontend folds in any active-position UPL at display time,"
+            " mirroring the BAL pattern."
+        ),
+    )
+    dll_budget: float = Field(..., description="Active tier's daily loss budget.")
+    dll_breached: bool = Field(
+        ...,
+        description="True iff dll_used > dll_budget on the realized-only signal.",
+    )
     tiers: list[TierSpec]
 
 
@@ -80,6 +98,9 @@ def get_account_state(session: Session = Depends(get_session)) -> AccountStateOu
 
     mll = compute_mll(tier_key, new_hwm)
 
+    dll_used = _dll_used_today_for_tier(session, tier_key)
+    dll_budget = tier.dll_amount
+
     return AccountStateOut(
         active_tier=tier_key,
         starting_balance=tier.starting_balance,
@@ -87,6 +108,9 @@ def get_account_state(session: Session = Depends(get_session)) -> AccountStateOu
         balance=balance_excl_upl,
         high_water_mark=new_hwm,
         mll=mll,
+        dll_used=dll_used,
+        dll_budget=dll_budget,
+        dll_breached=dll_used > dll_budget,
         tiers=_tier_specs(),
     )
 
@@ -133,6 +157,37 @@ def _tier_specs() -> list[TierSpec]:
             starting_balance=TIERS[k].starting_balance,
             trailing_distance=TIERS[k].trailing_distance,
             initial_mll=TIERS[k].initial_mll,
+            dll_amount=TIERS[k].dll_amount,
         )
         for k in ALL_TIERS
     ]
+
+
+def _dll_used_today_for_tier(session: Session, tier_key: TierKey) -> float:
+    """Today's realized loss on this tier, clamped to ≥0.
+
+    "Today" is the current ET trading day (matches the rest of the
+    backend's date logic — see services/alpaca_client.py). Frontend
+    folds in any active-position UPL at display time, so this returns
+    the realized-only signal.
+    """
+    rows = session.execute(
+        select(Trade.exit_date, Trade.realized_pnl)
+        .where(Trade.tier == tier_key)
+        .where(Trade.status == "closed")
+        .where(Trade.exit_date.is_not(None))
+    ).all()
+    today_et = datetime.now(_ET).date()
+    today_realized = 0.0
+    for exit_dt, pnl in rows:
+        if exit_dt is None:
+            continue
+        # Trade exit_date is stored as a UTC-aware datetime. Convert
+        # into ET to bucket by trading day correctly — without this,
+        # a trade closed at 23:30 ET would land on tomorrow's UTC date
+        # and disappear from today's DLL count.
+        if exit_dt.tzinfo is None:
+            exit_dt = exit_dt.replace(tzinfo=timezone.utc)
+        if exit_dt.astimezone(_ET).date() == today_et:
+            today_realized += float(pnl or 0.0)
+    return max(0.0, -today_realized)

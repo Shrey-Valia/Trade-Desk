@@ -8,8 +8,9 @@ import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { formatPercent, formatPrice } from "@/lib/formatters";
 import { useActivePosition } from "@/stores/activePosition";
+import { useUserSettings } from "@/stores/userSettings";
 import { isZeroDteTrade } from "@/types/journal";
-import type { TierSpec } from "@/types/account";
+import type { TierKey, TierSpec } from "@/types/account";
 
 /**
  * Persistent Trade-Desk top header (64px).
@@ -155,7 +156,8 @@ function MetricPills() {
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const scrubberDte = useActivePosition((s) => s.scrubberDte);
   const elapsedHours = useActivePosition((s) => s.elapsedHours);
-  const activeTier = account?.active_tier ?? "50K";
+  const dllOverrides = useUserSettings((s) => s.dllOverrides);
+  const activeTier = (account?.active_tier ?? "50K") as TierKey;
 
   // Tier-filtered active trade. If the active trade was opened on a
   // different combine than the one currently selected, it must not
@@ -197,6 +199,22 @@ function MetricPills() {
   const mllTone = mllToneClass(bal, mll, trailing);
   const breached = bal < mll;
 
+  // DLL budget — user can override per-tier in Settings; default falls
+  // back to the active tier's spec (Topstep-aligned 3% of starting
+  // balance, served by the backend). Display-only — no enforcement.
+  const dllBudget =
+    dllOverrides[activeTier] ??
+    account?.tiers.find((t) => t.key === activeTier)?.dll_amount ??
+    account?.dll_budget ??
+    0;
+  // dll_used from backend is realized-only. Fold in any negative UPL
+  // from the active position on this tier (positive UPL doesn't reduce
+  // DLL_used — see services/account_tiers, the spec). Mirrors how BAL
+  // folds UPL on top of the realized-only balance.
+  const dllUsed = Math.max(0, (account?.dll_used ?? 0) + Math.max(0, -upl));
+  const dllTone = dllToneClass(dllUsed, dllBudget);
+  const dllHit = dllBudget > 0 && dllUsed > dllBudget;
+
   return (
     <>
       <MetricPill label="BAL" value={formatDollar(bal)} />
@@ -208,6 +226,26 @@ function MetricPills() {
             title="Balance is below the trailing maximum-loss limit."
           >
             BREACH
+          </span>
+        )}
+      </MetricPill>
+      <MetricPill
+        label="DLL"
+        value={formatDllUsage(dllUsed, dllBudget)}
+        valueClass={dllTone}
+        title={
+          dllHit
+            ? "Daily loss limit hit — display only, trade open is not blocked."
+            : "Daily loss limit — resets at the next ET trading day."
+        }
+      >
+        {dllHit && (
+          <span
+            className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
+            style={{ fontSize: 8, height: 14 }}
+            title="Daily loss limit hit — display only, trade open is not blocked."
+          >
+            DLL HIT
           </span>
         )}
       </MetricPill>
@@ -231,11 +269,23 @@ function mllToneClass(balance: number, mll: number, trailing: number): string {
   return "text-fg-primary";
 }
 
+/** DLL tone — used/budget thresholds: <50% normal, 50-90% warn, 90-100%
+ * bear-red, >100% bright-bearish font-medium with the "DLL HIT" badge. */
+function dllToneClass(used: number, budget: number): string {
+  if (budget <= 0) return "text-fg-primary";
+  const ratio = used / budget;
+  if (ratio > 1) return "text-bearish font-medium";
+  if (ratio >= 0.9) return "text-bearish";
+  if (ratio >= 0.5) return "text-warning";
+  return "text-fg-primary";
+}
+
 interface MetricPillProps {
   label: string;
   value: string;
   signed?: number;
   valueClass?: string;
+  title?: string;
   children?: React.ReactNode;
 }
 
@@ -244,6 +294,7 @@ function MetricPill({
   value,
   signed,
   valueClass: valueClassOverride,
+  title,
   children,
 }: MetricPillProps) {
   const valueClass =
@@ -259,6 +310,7 @@ function MetricPill({
     <div
       className="bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex flex-col leading-tight"
       style={{ height: 44, minWidth: 110 }}
+      title={title}
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
@@ -333,6 +385,17 @@ function formatSigned(v: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+/** "−$120 / $1,500" when used > 0; "$0 / $1,500" otherwise. Whole-dollar
+ * formatting — DLL budgets are round numbers and the pill is narrow. */
+function formatDllUsage(used: number, budget: number): string {
+  const usedTxt =
+    used > 0
+      ? `−$${Math.round(used).toLocaleString("en-US")}`
+      : "$0";
+  const budgetTxt = `$${Math.round(budget).toLocaleString("en-US")}`;
+  return `${usedTxt} / ${budgetTxt}`;
 }
 
 function formatClockEt(iso: string): string {

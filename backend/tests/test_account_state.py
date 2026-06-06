@@ -73,6 +73,14 @@ def test_tiers_have_correct_starting_balance_and_initial_mll():
     assert TIERS["150K"].initial_mll == 145_500
 
 
+def test_tiers_have_topstep_aligned_dll_defaults():
+    # Daily Loss Limit ≈ 3% of starting balance, matching the Topstep /
+    # Apex industry convention. Display-only for now.
+    assert TIERS["50K"].dll_amount == 1_500
+    assert TIERS["100K"].dll_amount == 3_000
+    assert TIERS["150K"].dll_amount == 4_500
+
+
 def test_is_valid_tier():
     assert is_valid_tier("50K")
     assert is_valid_tier("100K")
@@ -200,11 +208,82 @@ def test_switching_tiers_preserves_per_tier_hwm(client):
 
 
 # ---------------------------------------------------------------------------
+# Daily Loss Limit (DLL) — display-only signal
+# ---------------------------------------------------------------------------
+
+
+def test_dll_clean_state_returns_zero_used(client):
+    r = client.get("/api/account/state").json()
+    assert r["dll_used"] == 0
+    assert r["dll_budget"] == 1_500           # 50K tier default
+    assert r["dll_breached"] is False
+    # TierSpec carries its own dll_amount so the frontend can render
+    # per-tier limits without re-deriving from active_tier.
+    by_key = {t["key"]: t["dll_amount"] for t in r["tiers"]}
+    assert by_key == {"50K": 1_500, "100K": 3_000, "150K": 4_500}
+
+
+def test_dll_used_counts_todays_realized_losses_only(client):
+    # Two losers and one winner closed today on the active tier. The
+    # spec is clamp(max(0, -sum_realized)) — gains net against losses
+    # in the realized sum, but the clamp prevents a positive day from
+    # producing a negative dll_used.
+    _seed_closed_trade(client, tier="50K", realized=-300, exit_at=_today_et_noon())
+    _seed_closed_trade(client, tier="50K", realized=-500, exit_at=_today_et_noon())
+    _seed_closed_trade(client, tier="50K", realized=+100, exit_at=_today_et_noon())
+    r = client.get("/api/account/state").json()
+    # -300 + -500 + +100 = -700 → dll_used = 700
+    assert r["dll_used"] == 700
+    assert r["dll_breached"] is False        # 700 < 1500
+
+
+def test_dll_used_ignores_yesterdays_losses(client):
+    # Two -$1000 losses yesterday, one -$200 today. Only today counts.
+    _seed_closed_trade(
+        client, tier="50K", realized=-1_000, exit_at=_yesterday_et_noon()
+    )
+    _seed_closed_trade(
+        client, tier="50K", realized=-1_000, exit_at=_yesterday_et_noon()
+    )
+    _seed_closed_trade(client, tier="50K", realized=-200, exit_at=_today_et_noon())
+    r = client.get("/api/account/state").json()
+    assert r["dll_used"] == 200
+    assert r["dll_breached"] is False
+
+
+def test_dll_breached_when_realized_loss_exceeds_budget(client):
+    # 50K budget = $1500. Two closed losses today summing to -$1600.
+    _seed_closed_trade(client, tier="50K", realized=-900, exit_at=_today_et_noon())
+    _seed_closed_trade(client, tier="50K", realized=-700, exit_at=_today_et_noon())
+    r = client.get("/api/account/state").json()
+    assert r["dll_used"] == 1_600
+    assert r["dll_breached"] is True
+
+
+def test_dll_used_is_tier_isolated(client):
+    # Losses on 100K must NOT contaminate the 50K DLL count and vice
+    # versa — each combine tracks its own day independently.
+    _seed_closed_trade(client, tier="50K", realized=-200, exit_at=_today_et_noon())
+    _seed_closed_trade(client, tier="100K", realized=-2_500, exit_at=_today_et_noon())
+
+    r50 = client.get("/api/account/state").json()
+    assert r50["active_tier"] == "50K"
+    assert r50["dll_used"] == 200
+    assert r50["dll_budget"] == 1_500
+
+    r100 = client.post("/api/account/state/switch", json={"tier": "100K"}).json()
+    assert r100["active_tier"] == "100K"
+    assert r100["dll_used"] == 2_500
+    assert r100["dll_budget"] == 3_000
+    assert r100["dll_breached"] is False     # 2500 < 3000
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
 
-def _seed_closed_trade(client, tier: str, realized: float) -> None:
+def _seed_closed_trade(client, tier: str, realized: float, exit_at=None) -> None:
     """Write a closed trade directly via the test session so we don't
     have to route through the journal entry validation."""
     session = next(client.app.dependency_overrides[get_session]())
@@ -218,7 +297,7 @@ def _seed_closed_trade(client, tier: str, realized: float) -> None:
         is_paper=True,
         notes="seeded",
         tier=tier,
-        exit_date=_now(),
+        exit_date=exit_at if exit_at is not None else _now(),
         exit_underlying_price=400.0,
         realized_pnl=realized,
         legs_json="[]",
@@ -236,3 +315,26 @@ def _now():
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc)
+
+
+def _today_et_noon():
+    """Today at 12:00 ET — safely inside today's ET trading day on any
+    UTC offset. Returned as a UTC-aware datetime to match how the
+    journal POST path persists exit timestamps."""
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    noon_et = datetime.combine(now_et.date(), time(12, 0), tzinfo=et)
+    return noon_et.astimezone(ZoneInfo("UTC"))
+
+
+def _yesterday_et_noon():
+    from datetime import datetime, time, timedelta
+    from zoneinfo import ZoneInfo
+
+    et = ZoneInfo("America/New_York")
+    yest_et = datetime.now(et).date() - timedelta(days=1)
+    noon_et = datetime.combine(yest_et, time(12, 0), tzinfo=et)
+    return noon_et.astimezone(ZoneInfo("UTC"))

@@ -28,6 +28,10 @@ class Tier:
     label: str
     starting_balance: float
     trailing_distance: float
+    # DLL ("Daily Loss Limit") — resets at the start of each ET trading
+    # day. Separate from MLL (which is a permanent trailing floor that
+    # never resets daily). Topstep-aligned 3% of starting balance.
+    dll_amount: float
 
     @property
     def initial_mll(self) -> float:
@@ -40,18 +44,21 @@ TIERS: dict[TierKey, Tier] = {
         label="50K Combine",
         starting_balance=50_000.0,
         trailing_distance=2_000.0,
+        dll_amount=1_500.0,
     ),
     "100K": Tier(
         key="100K",
         label="100K Combine",
         starting_balance=100_000.0,
         trailing_distance=4_000.0,
+        dll_amount=3_000.0,
     ),
     "150K": Tier(
         key="150K",
         label="150K Combine",
         starting_balance=150_000.0,
         trailing_distance=4_500.0,
+        dll_amount=4_500.0,
     ),
 }
 

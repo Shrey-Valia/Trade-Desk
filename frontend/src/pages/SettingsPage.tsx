@@ -6,7 +6,7 @@ import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useUserSettings } from "@/stores/userSettings";
-import type { TierSpec } from "@/types/account";
+import type { TierKey, TierSpec } from "@/types/account";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 
 // Standard candle-interval ladder. Default selection "5m" matches the
@@ -217,6 +217,7 @@ function CombineTierSection() {
           );
         })}
       </div>
+      <DailyLossLimitRow tiers={account.tiers} />
       {confirmTier && (
         <ConfirmSwitch
           target={confirmTier}
@@ -229,6 +230,98 @@ function CombineTierSection() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Per-tier Daily Loss Limit override.
+ *
+ * Defaults come from the backend's TierSpec (Topstep-aligned 3% of
+ * starting balance). User can override per tier within a 1-10% band of
+ * the tier's starting balance. The DLL pill in the header reads the
+ * override from userSettings; backend still emits dll_used/dll_budget
+ * from its own defaults (display-only spec, no enforcement).
+ */
+function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
+  const overrides = useUserSettings((s) => s.dllOverrides);
+  const setOverride = useUserSettings((s) => s.setDllOverride);
+  return (
+    <div className="border-b border-hairline">
+      <div className="px-3 pt-3 pb-1">
+        <div
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        >
+          Daily loss limit
+        </div>
+        <div
+          className="text-fg-tertiary mt-0.5"
+          style={{ fontSize: 11, lineHeight: 1.35 }}
+        >
+          How much you can lose in one trading day before the DLL pill warns,
+          then breaches. Resets at the next ET open. Display-only — trade
+          opens are not blocked. Range: 1-10% of the tier's starting balance.
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2 px-3 pb-3 pt-1">
+        {tiers.map((t) => {
+          const tierKey = t.key as TierKey;
+          const override = overrides[tierKey];
+          const value = override ?? t.dll_amount;
+          const isDefault = override == null;
+          const min = Math.round(t.starting_balance * 0.01);
+          const max = Math.round(t.starting_balance * 0.10);
+          return (
+            <div
+              key={t.key}
+              className="flex flex-col gap-1 p-2 border border-hairline bg-tier-1"
+              style={{ borderRadius: 0 }}
+            >
+              <span
+                className="uppercase tracking-label-up text-fg-tertiary-2"
+                style={{ fontSize: 10 }}
+              >
+                {t.key} DLL
+              </span>
+              <div className="flex items-center gap-1">
+                <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+                  $
+                </span>
+                <input
+                  type="number"
+                  value={value}
+                  min={min}
+                  max={max}
+                  step={50}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setOverride(tierKey, Number.isFinite(n) ? n : null);
+                  }}
+                  className="h-7 px-1.5 text-xs2 font-mono tabular-nums bg-tier-2 border border-tier-3 text-fg-primary rounded-btn"
+                  style={{ width: 80 }}
+                  aria-label={`${t.key} daily loss limit`}
+                />
+                {!isDefault && (
+                  <button
+                    type="button"
+                    onClick={() => setOverride(tierKey, null)}
+                    className="text-fg-tertiary-2 hover:text-fg-secondary uppercase tracking-label-up"
+                    style={{ fontSize: 9 }}
+                    aria-label={`Reset ${t.key} DLL to default`}
+                    title={`Reset to default ($${t.dll_amount.toLocaleString()})`}
+                  >
+                    reset
+                  </button>
+                )}
+              </div>
+              <span className="text-fg-tertiary-2" style={{ fontSize: 9 }}>
+                {isDefault ? "default" : `default $${t.dll_amount.toLocaleString()}`}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

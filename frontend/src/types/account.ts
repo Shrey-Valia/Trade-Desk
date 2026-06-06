@@ -9,6 +9,8 @@ export const TierSpecSchema = z.object({
   starting_balance: z.number(),
   trailing_distance: z.number(),
   initial_mll: z.number(),
+  /** Daily Loss Limit budget — resets at the start of each ET trading day. */
+  dll_amount: z.number(),
 });
 export type TierSpec = z.infer<typeof TierSpecSchema>;
 
@@ -21,6 +23,14 @@ export const AccountStateSchema = z.object({
   balance: z.number(),
   high_water_mark: z.number(),
   mll: z.number(),
+  /**
+   * Realized-only DLL signal — today's realized losses on the active
+   * tier, clamped to ≥0. Frontend folds in any active-position UPL at
+   * display time, mirroring the BAL pattern.
+   */
+  dll_used: z.number(),
+  dll_budget: z.number(),
+  dll_breached: z.boolean(),
   tiers: z.array(TierSpecSchema),
 });
 export type AccountState = z.infer<typeof AccountStateSchema>;
