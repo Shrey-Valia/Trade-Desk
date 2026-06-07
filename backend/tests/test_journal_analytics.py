@@ -16,17 +16,30 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from calculations.journal_analytics import (
     compose,
+    compute_by_day_of_week,
     compute_by_dte,
     compute_by_mistake,
     compute_by_strategy,
+    compute_by_symbol,
+    compute_by_time_of_day,
     compute_equity_curve,
     compute_kpis,
+    compute_risk,
+    compute_streaks,
 )
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _et(year: int, month: int, day: int, hh: int, mm: int) -> datetime:
+    """ET-aware datetime — used to pin time-of-day / weekday buckets."""
+    return datetime(year, month, day, hh, mm, tzinfo=_ET)
 
 
 # ---------------------------------------------------------------------------
@@ -361,3 +374,202 @@ def test_compose_runs_all_four_aggregations():
     assert any(r.trades > 0 for r in result.by_dte)
     assert len(result.by_mistake) == 1
     assert len(result.equity.points) == 2
+
+
+# ---------------------------------------------------------------------------
+# By-symbol
+# ---------------------------------------------------------------------------
+
+
+def test_by_symbol_groups_and_sorts_by_net():
+    trades = [
+        FakeTrade(symbol="SPY", realized_pnl=300, exit_date=_today()),
+        FakeTrade(symbol="SPY", realized_pnl=-100, exit_date=_today()),
+        FakeTrade(symbol="QQQ", realized_pnl=-250, exit_date=_today()),
+        FakeTrade(symbol="QQQ", status="open", realized_pnl=None),
+    ]
+    rows = compute_by_symbol(trades)
+    by_sym = {r.symbol: r for r in rows}
+    assert by_sym["SPY"].trades == 2
+    assert by_sym["SPY"].closed == 2
+    assert by_sym["SPY"].net_pnl == 200
+    assert by_sym["SPY"].win_rate == pytest.approx(0.5)
+    # QQQ counts the open trade in `trades` but not in closed/P&L.
+    assert by_sym["QQQ"].trades == 2
+    assert by_sym["QQQ"].closed == 1
+    assert by_sym["QQQ"].net_pnl == -250
+    # Sorted by net P&L descending → SPY first.
+    assert rows[0].symbol == "SPY"
+
+
+# ---------------------------------------------------------------------------
+# By time-of-day
+# ---------------------------------------------------------------------------
+
+
+def test_by_time_of_day_buckets_by_et_entry():
+    trades = [
+        FakeTrade(realized_pnl=100, entry_date=_et(2026, 5, 19, 9, 45),
+                  exit_date=_et(2026, 5, 19, 10, 15)),   # Open
+        FakeTrade(realized_pnl=-40, entry_date=_et(2026, 5, 19, 11, 30),
+                  exit_date=_et(2026, 5, 19, 12, 0)),     # Midday
+        FakeTrade(realized_pnl=60, entry_date=_et(2026, 5, 19, 14, 0),
+                  exit_date=_et(2026, 5, 19, 15, 0)),      # Power hour
+        FakeTrade(realized_pnl=20, entry_date=_et(2026, 5, 19, 10, 15),
+                  exit_date=_et(2026, 5, 19, 10, 45)),     # Open (before 10:30)
+    ]
+    rows = compute_by_time_of_day(trades)
+    by_label = {r.label: r for r in rows}
+    assert by_label["Open"].trades == 2
+    assert by_label["Midday"].trades == 1
+    assert by_label["Power hour"].trades == 1
+    # Net P&L on the Open bucket = 100 + 20.
+    assert by_label["Open"].net_pnl == 120
+
+
+def test_by_time_of_day_excludes_dateonly_entries():
+    """Back-logged trades stored at UTC-midnight carry no real intraday
+    time and must not pollute the buckets (they'd all read as 'Open')."""
+    trades = [
+        FakeTrade(realized_pnl=100,
+                  entry_date=datetime(2026, 5, 19, tzinfo=timezone.utc),  # 00:00 UTC
+                  exit_date=_today()),
+    ]
+    rows = compute_by_time_of_day(trades)
+    # Every canonical bucket present, all empty.
+    assert {r.label for r in rows} == {"Open", "Midday", "Power hour"}
+    assert all(r.trades == 0 for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# By day-of-week
+# ---------------------------------------------------------------------------
+
+
+def test_by_day_of_week_buckets_by_et_weekday():
+    # May 18 2026 is a Monday; May 20 is a Wednesday.
+    trades = [
+        FakeTrade(realized_pnl=100, entry_date=_et(2026, 5, 18, 9, 45),
+                  exit_date=_et(2026, 5, 18, 10, 0)),
+        FakeTrade(realized_pnl=-50, entry_date=_et(2026, 5, 20, 9, 45),
+                  exit_date=_et(2026, 5, 20, 10, 0)),
+    ]
+    rows = compute_by_day_of_week(trades)
+    by_label = {r.label: r for r in rows}
+    assert [r.label for r in rows] == ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    assert by_label["Mon"].trades == 1
+    assert by_label["Wed"].trades == 1
+    assert by_label["Tue"].trades == 0
+
+
+# ---------------------------------------------------------------------------
+# Streaks + hold
+# ---------------------------------------------------------------------------
+
+
+def test_streaks_best_worst_and_current():
+    # Sequence by exit date: W W L L L W  → best 2, worst -3, current +1.
+    seq = [100, 200, -50, -60, -70, 30]
+    trades = [
+        FakeTrade(realized_pnl=p, exit_date=_today() - timedelta(days=len(seq) - i))
+        for i, p in enumerate(seq)
+    ]
+    s = compute_streaks(trades)
+    assert s.best_win == 2
+    assert s.worst_loss == -3
+    assert s.current == 1
+
+
+def test_streaks_avg_hold_split_by_outcome():
+    trades = [
+        # winner held 60m
+        FakeTrade(realized_pnl=100, entry_date=_et(2026, 5, 19, 9, 30),
+                  exit_date=_et(2026, 5, 19, 10, 30)),
+        # loser held 30m
+        FakeTrade(realized_pnl=-40, entry_date=_et(2026, 5, 20, 9, 30),
+                  exit_date=_et(2026, 5, 20, 10, 0)),
+    ]
+    s = compute_streaks(trades)
+    assert s.avg_hold_win_min == pytest.approx(60)
+    assert s.avg_hold_loss_min == pytest.approx(30)
+
+
+def test_kpis_avg_hold_excludes_dateonly_entries():
+    trades = [
+        FakeTrade(realized_pnl=100, entry_date=_et(2026, 5, 19, 9, 30),
+                  exit_date=_et(2026, 5, 19, 10, 30)),          # 60m, counts
+        FakeTrade(realized_pnl=50,
+                  entry_date=datetime(2026, 5, 20, tzinfo=timezone.utc),  # date-only
+                  exit_date=_today()),                          # excluded
+    ]
+    k = compute_kpis(trades)
+    assert k.avg_hold_min == pytest.approx(60)
+
+
+# ---------------------------------------------------------------------------
+# Equity drawdown window
+# ---------------------------------------------------------------------------
+
+
+def test_equity_curve_reports_drawdown_window_dates():
+    trades = [
+        FakeTrade(realized_pnl=100, exit_date=datetime(2026, 5, 1, tzinfo=timezone.utc)),
+        FakeTrade(realized_pnl=200, exit_date=datetime(2026, 5, 2, tzinfo=timezone.utc)),
+        FakeTrade(realized_pnl=-250, exit_date=datetime(2026, 5, 3, tzinfo=timezone.utc)),
+        FakeTrade(realized_pnl=80, exit_date=datetime(2026, 5, 4, tzinfo=timezone.utc)),
+    ]
+    curve = compute_equity_curve(trades)
+    # Peak 300 on May 2, trough 50 on May 3 → DD 250.
+    assert curve.max_drawdown == 250
+    assert curve.drawdown_peak_date == "2026-05-02"
+    assert curve.drawdown_trough_date == "2026-05-03"
+
+
+# ---------------------------------------------------------------------------
+# Risk / discipline
+# ---------------------------------------------------------------------------
+
+
+def test_risk_worst_day_and_days_near_mll_with_trail():
+    trades = [
+        # Day 1: −1200 net (two losers same day)
+        FakeTrade(realized_pnl=-800, exit_date=datetime(2026, 5, 1, 14, tzinfo=timezone.utc)),
+        FakeTrade(realized_pnl=-400, exit_date=datetime(2026, 5, 1, 15, tzinfo=timezone.utc)),
+        # Day 2: −300 net
+        FakeTrade(realized_pnl=-300, exit_date=datetime(2026, 5, 2, 14, tzinfo=timezone.utc)),
+        # Day 3: +500
+        FakeTrade(realized_pnl=500, exit_date=datetime(2026, 5, 3, 14, tzinfo=timezone.utc)),
+    ]
+    # 50K trail = 2000; 50% = 1000. Day 1 loss (1200) exceeds it; Day 2 (300) does not.
+    risk = compute_risk(trades, trail=2000)
+    assert risk.worst_day_pnl == -1200
+    assert risk.worst_day_date == "2026-05-01"
+    assert risk.largest_loss == -800
+    assert risk.days_near_mll == 1
+    assert risk.trail == 2000
+
+
+def test_risk_days_near_mll_none_without_trail():
+    trades = [
+        FakeTrade(realized_pnl=-1200, exit_date=datetime(2026, 5, 1, 14, tzinfo=timezone.utc)),
+    ]
+    risk = compute_risk(trades)  # no trail
+    assert risk.days_near_mll is None
+    assert risk.worst_day_pnl == -1200
+
+
+def test_compose_includes_new_blocks():
+    trades = [
+        FakeTrade(symbol="SPY", realized_pnl=120,
+                  entry_date=_et(2026, 5, 18, 9, 45),
+                  exit_date=_et(2026, 5, 18, 10, 30)),
+        FakeTrade(symbol="QQQ", realized_pnl=-60,
+                  entry_date=_et(2026, 5, 20, 13, 30),
+                  exit_date=_et(2026, 5, 20, 14, 0)),
+    ]
+    result = compose(trades, trail=2000)
+    assert len(result.by_symbol) == 2
+    assert len(result.by_time_of_day) == 3
+    assert len(result.by_day_of_week) == 5
+    assert result.streaks.best_win >= 1
+    assert result.risk.trail == 2000

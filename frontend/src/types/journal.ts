@@ -211,6 +211,7 @@ export interface TradeUpdateInput {
   exit_underlying_price?: number;
   realized_pnl?: number;
   notes?: string;
+  tags?: string[];
   mistake_tags?: string[];
   review_note?: string;
 }

@@ -26,7 +26,11 @@ from schemas.analytics import (
     EquityPointOut,
     KpiBlockOut,
     MistakeBucketOut,
+    RiskBlockOut,
     StrategyBucketOut,
+    StreakStatsOut,
+    SymbolBucketOut,
+    TimeBucketOut,
 )
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
@@ -39,6 +43,11 @@ def get_analytics(
     strategy: str | None = Query(default=None),
     since: str | None = Query(default=None, description="ISO date — exit_date >= since"),
     until: str | None = Query(default=None, description="ISO date — exit_date <= until"),
+    trail: float | None = Query(
+        default=None,
+        ge=0,
+        description="Active tier's MLL trailing distance — enables the days-near-MLL count.",
+    ),
     session: Session = Depends(get_session),
 ) -> AnalyticsResponse:
     """Aggregate journal metrics. All filters optional."""
@@ -65,7 +74,7 @@ def get_analytics(
             pass
 
     trades = session.execute(stmt).scalars().all()
-    result = compose(trades)
+    result = compose(trades, trail)
 
     # Pydantic can't serialize math.inf cleanly to JSON — coerce to None.
     def _finite(v: float | None) -> float | None:
@@ -89,6 +98,7 @@ def get_analytics(
             avg_r=result.kpis.avg_r,
             largest_winner=result.kpis.largest_winner,
             largest_loser=result.kpis.largest_loser,
+            avg_hold_min=result.kpis.avg_hold_min,
         ),
         by_strategy=[
             StrategyBucketOut(
@@ -103,12 +113,33 @@ def get_analytics(
             )
             for b in result.by_strategy
         ],
+        by_symbol=[
+            SymbolBucketOut(
+                symbol=b.symbol, trades=b.trades, closed=b.closed,
+                win_rate=b.win_rate, net_pnl=b.net_pnl, avg_pnl=b.avg_pnl,
+            )
+            for b in result.by_symbol
+        ],
         by_dte=[
             DteBucketOut(
                 label=b.label, trades=b.trades, win_rate=b.win_rate,
                 avg_pnl=b.avg_pnl, net_pnl=b.net_pnl,
             )
             for b in result.by_dte
+        ],
+        by_time_of_day=[
+            TimeBucketOut(
+                label=b.label, trades=b.trades, win_rate=b.win_rate,
+                avg_pnl=b.avg_pnl, net_pnl=b.net_pnl,
+            )
+            for b in result.by_time_of_day
+        ],
+        by_day_of_week=[
+            TimeBucketOut(
+                label=b.label, trades=b.trades, win_rate=b.win_rate,
+                avg_pnl=b.avg_pnl, net_pnl=b.net_pnl,
+            )
+            for b in result.by_day_of_week
         ],
         by_mistake=[
             MistakeBucketOut(
@@ -117,6 +148,13 @@ def get_analytics(
             )
             for b in result.by_mistake
         ],
+        streaks=StreakStatsOut(
+            best_win=result.streaks.best_win,
+            worst_loss=result.streaks.worst_loss,
+            current=result.streaks.current,
+            avg_hold_win_min=result.streaks.avg_hold_win_min,
+            avg_hold_loss_min=result.streaks.avg_hold_loss_min,
+        ),
         equity=EquityCurveOut(
             points=[
                 EquityPointOut(date=p.date, cumulative_pnl=p.cumulative_pnl)
@@ -125,6 +163,17 @@ def get_analytics(
             max_drawdown=result.equity.max_drawdown,
             peak_pnl=result.equity.peak_pnl,
             final_pnl=result.equity.final_pnl,
+            drawdown_peak_date=result.equity.drawdown_peak_date,
+            drawdown_trough_date=result.equity.drawdown_trough_date,
+        ),
+        risk=RiskBlockOut(
+            largest_loss=result.risk.largest_loss,
+            worst_day_pnl=result.risk.worst_day_pnl,
+            worst_day_date=result.risk.worst_day_date,
+            avg_loss=result.risk.avg_loss,
+            max_drawdown=result.risk.max_drawdown,
+            trail=result.risk.trail,
+            days_near_mll=result.risk.days_near_mll,
         ),
         filters=AnalyticsFilters(paper=paper, strategy=strategy, since=since, until=until),
     )

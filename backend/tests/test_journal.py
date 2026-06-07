@@ -198,6 +198,28 @@ def test_delete_removes_trade(client):
     assert client.get(f"/api/journal/trades/{tid}").status_code == 404
 
 
+def test_patch_edits_self_applied_tags(client):
+    """The journal day-detail edits intent tags via PATCH `tags` —
+    distinct from mistake_tags, and editable after entry."""
+    created = client.post(
+        "/api/journal/trades", json=_trade_payload(tags=["planned"])
+    ).json()
+    tid = created["id"]
+    assert created["tags"] == ["planned"]
+
+    res = client.patch(
+        f"/api/journal/trades/{tid}", json={"tags": ["planned", "good setup"]}
+    )
+    assert res.status_code == 200
+    assert res.json()["tags"] == ["planned", "good setup"]
+
+    # Tags can be cleared independently, and the change persists.
+    res = client.patch(f"/api/journal/trades/{tid}", json={"tags": []})
+    assert res.status_code == 200
+    assert res.json()["tags"] == []
+    assert client.get(f"/api/journal/trades/{tid}").json()["tags"] == []
+
+
 # ---------------------------------------------------------------------------
 # Phase 2 — metadata enrichment + R-multiple
 # ---------------------------------------------------------------------------

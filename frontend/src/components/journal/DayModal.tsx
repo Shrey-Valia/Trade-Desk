@@ -189,7 +189,7 @@ function TradeDetail({ trade }: { trade: Trade }) {
       <section>
         <SecHead>Note</SecHead>
         <NoteEditor trade={trade} />
-        <TagRow tags={trade.tags} mistakeTags={trade.mistake_tags} />
+        <TagEditor trade={trade} />
       </section>
 
       {/* intratrade — honest summary, not a fabricated path */}
@@ -283,21 +283,93 @@ function NoteEditor({ trade }: { trade: Trade }) {
   );
 }
 
-function TagRow({ tags, mistakeTags }: { tags: string[]; mistakeTags: string[] }) {
-  if (tags.length === 0 && mistakeTags.length === 0) return null;
+/** Self-applied intent tags are editable (add / remove → PATCH tags).
+ *  Mistake tags are shown read-only — they're captured at close. */
+function TagEditor({ trade }: { trade: Trade }) {
+  const update = useUpdateTrade();
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const commit = async (next: string[]) => {
+    await update.mutateAsync({ id: trade.id, patch: { tags: next } });
+  };
+
+  const addTag = async () => {
+    const t = draft.trim();
+    setDraft("");
+    setAdding(false);
+    if (!t || trade.tags.includes(t)) return;
+    await commit([...trade.tags, t]);
+  };
+
+  const removeTag = async (tag: string) => {
+    await commit(trade.tags.filter((x) => x !== tag));
+  };
+
   return (
     <div className="flex flex-wrap gap-1.5 mt-2.5">
-      {tags.map((tag) => (
-        <Tag key={`t-${tag}`} label={tag} kind={tagKind(tag)} />
+      {trade.tags.map((tag) => (
+        <Tag key={`t-${tag}`} label={tag} kind={tagKind(tag)} onRemove={() => removeTag(tag)} />
       ))}
-      {mistakeTags.map((tag) => (
+      {trade.mistake_tags.map((tag) => (
         <Tag key={`m-${tag}`} label={tag} kind="bad" />
       ))}
+      {adding ? (
+        <input
+          autoFocus
+          list="intent-tag-suggestions"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={addTag}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void addTag();
+            } else if (e.key === "Escape") {
+              setDraft("");
+              setAdding(false);
+            }
+          }}
+          placeholder="tag…"
+          className="bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary uppercase"
+          style={{ fontSize: 9, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 2, width: 90 }}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="uppercase border border-dashed border-hairline text-fg-tertiary hover:text-amber hover:border-amber"
+          style={{ fontSize: 9, letterSpacing: "0.06em", padding: "2px 7px", borderRadius: 2 }}
+        >
+          + tag
+        </button>
+      )}
+      <datalist id="intent-tag-suggestions">
+        {INTENT_TAG_SUGGESTIONS.map((s) => (
+          <option key={s} value={s} />
+        ))}
+      </datalist>
     </div>
   );
 }
 
-function Tag({ label, kind }: { label: string; kind: "good" | "bad" | "neutral" }) {
+const INTENT_TAG_SUGGESTIONS = [
+  "planned",
+  "good setup",
+  "A+ setup",
+  "discipline",
+  "in plan",
+] as const;
+
+function Tag({
+  label,
+  kind,
+  onRemove,
+}: {
+  label: string;
+  kind: "good" | "bad" | "neutral";
+  onRemove?: () => void;
+}) {
   const cls =
     kind === "good"
       ? "text-bullish border-bullish"
@@ -306,10 +378,20 @@ function Tag({ label, kind }: { label: string; kind: "good" | "bad" | "neutral" 
       : "text-fg-tertiary-2 border-hairline-strong";
   return (
     <span
-      className={`uppercase border ${cls}`}
+      className={`inline-flex items-center gap-1 uppercase border ${cls}`}
       style={{ fontSize: 9, letterSpacing: "0.06em", padding: "2px 7px", borderRadius: 2 }}
     >
       {label}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="leading-none hover:text-fg-primary"
+          aria-label={`Remove ${label}`}
+        >
+          ×
+        </button>
+      )}
     </span>
   );
 }

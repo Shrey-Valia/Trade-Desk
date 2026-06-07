@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 
-import { EquityChart } from "@/components/analytics/EquityChart";
+import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
 import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
@@ -8,7 +8,11 @@ import type {
   AnalyticsResponse,
   KpiBlock,
   MistakeBucket,
+  RiskBlock,
   StrategyBucket,
+  StreakStats,
+  SymbolBucket,
+  TimeBucket,
 } from "@/types/analytics";
 import { STRATEGY_LABELS } from "@/types/journal";
 
@@ -22,14 +26,16 @@ type Range = "Today" | "Week" | "Month" | "All";
  * prominent equity curve, and performance breakdowns. The header carries
  * a Today/Week/Month/All range, the active combine tier, and a paper/live
  * filter. All numbers come from /api/analytics — the page only composes
- * filters and presents the result.
- *
- * New design panels that need backend aggregations (by symbol, time of
- * day, day of week, streaks, risk vs MLL trail) land in Phase B.
+ * filters and presents the result. The active tier's MLL trail is passed
+ * through so the risk panel can flag days that ran near the limit.
  */
 export function AnalyticsPage() {
   const [paperFilter, setPaperFilter] = useState<PaperFilter>("all");
   const [range, setRange] = useState<Range>("All");
+
+  const account = useAccountState();
+  const tier = account.data?.active_tier ?? null;
+  const trail = account.data?.tiers.find((t) => t.key === tier)?.trailing_distance ?? null;
 
   const filters = useMemo(() => {
     const { since, until } = rangeToDates(range);
@@ -38,12 +44,11 @@ export function AnalyticsPage() {
       strategy: null,
       since,
       until,
+      trail,
     };
-  }, [paperFilter, range]);
+  }, [paperFilter, range, trail]);
 
   const { data, isLoading, isError, error } = useJournalAnalytics(filters);
-  const account = useAccountState();
-  const tier = account.data?.active_tier ?? null;
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
@@ -61,7 +66,7 @@ export function AnalyticsPage() {
         ) : !data ? (
           <LoadingState />
         ) : (
-          <AnalyticsBody data={data} />
+          <AnalyticsBody data={data} tier={tier} />
         )}
       </main>
     </div>
@@ -141,7 +146,7 @@ function Toolbar({
   );
 }
 
-function AnalyticsBody({ data }: { data: AnalyticsResponse }) {
+function AnalyticsBody({ data, tier }: { data: AnalyticsResponse; tier: string | null }) {
   if (data.kpis.total_trades === 0) {
     return <NoTradesYet />;
   }
@@ -149,10 +154,17 @@ function AnalyticsBody({ data }: { data: AnalyticsResponse }) {
     <div className="flex flex-col gap-3.5 p-3.5">
       <MetricHero kpis={data.kpis} />
       <EquityPanel equity={data.equity} netSign={data.kpis.net_pnl} />
-      <div className="grid grid-cols-2 gap-3.5 items-start">
+      <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
         <ByStrategyPanel rows={data.by_strategy} />
-        <MistakeCostPanel rows={data.by_mistake} />
+        <BySymbolPanel rows={data.by_symbol} />
+        <StreaksHoldPanel streaks={data.streaks} />
       </div>
+      <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "2fr 1fr" }}>
+        <ByTimeOfDayPanel rows={data.by_time_of_day} />
+        <ByDayOfWeekPanel rows={data.by_day_of_week} />
+      </div>
+      <RiskPanel risk={data.risk} equity={data.equity} kpis={data.kpis} tier={tier} streaks={data.streaks} />
+      <MistakeCostPanel rows={data.by_mistake} />
     </div>
   );
 }
@@ -223,7 +235,7 @@ function MetricHero({ kpis }: { kpis: KpiBlock }) {
       <Metric
         label="Total trades"
         value={String(kpis.closed_trades)}
-        sub={kpis.open_trades > 0 ? `${kpis.open_trades} open` : "all closed"}
+        sub={kpis.avg_hold_min != null ? `${formatHold(kpis.avg_hold_min)} avg hold` : kpis.open_trades > 0 ? `${kpis.open_trades} open` : "all closed"}
       />
     </div>
   );
@@ -278,7 +290,11 @@ function EquityPanel({
     <Panel>
       <PanelHead k="Equity Curve · cumulative P&L" r={`max drawdown ${formatDollar(equity.max_drawdown)}`} />
       <div className="p-3" style={{ height: 240 }}>
-        <EquityChart points={equity.points} />
+        <EquityCurveSvg
+          points={equity.points}
+          drawdownPeakDate={equity.drawdown_peak_date}
+          drawdownTroughDate={equity.drawdown_trough_date}
+        />
       </div>
       <div className="flex gap-4 px-3 pb-2.5 text-fg-tertiary-2" style={{ fontSize: 10 }}>
         <span className="inline-flex items-center gap-1.5">
@@ -287,6 +303,10 @@ function EquityPanel({
             style={{ width: 14, height: 2 }}
           />
           cumulative P&L
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block bg-bearish" style={{ width: 14, height: 8, opacity: 0.18 }} />
+          max-DD window
         </span>
         <span className="ml-auto tabular-nums">
           Final {formatDollarSigned(equity.final_pnl)} · Peak {formatDollarSigned(equity.peak_pnl)} · Max DD{" "}
@@ -398,6 +418,247 @@ function MeterRow({
   );
 }
 
+// -- by symbol (horizontal meters) -------------------------------------------
+
+function BySymbolPanel({ rows }: { rows: SymbolBucket[] }) {
+  const closed = rows.filter((r) => r.closed > 0);
+  const maxAbs = Math.max(1, ...closed.map((r) => Math.abs(r.net_pnl)));
+  return (
+    <Panel>
+      <PanelHead k="By Symbol" r="net · win%" />
+      {closed.length === 0 ? (
+        <Empty label="No closed trades match the current filters." />
+      ) : (
+        <div className="flex flex-col gap-2.5 px-3 py-2.5">
+          {closed.map((r) => (
+            <MeterRow
+              key={r.symbol}
+              label={r.symbol}
+              net={r.net_pnl}
+              maxAbs={maxAbs}
+              right={
+                <>
+                  {formatDollarSigned(r.net_pnl)}
+                  {r.win_rate != null && (
+                    <span className="text-fg-tertiary-2"> · {(r.win_rate * 100).toFixed(0)}%</span>
+                  )}
+                </>
+              }
+            />
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// -- streaks & hold ----------------------------------------------------------
+
+function StreaksHoldPanel({ streaks }: { streaks: StreakStats }) {
+  return (
+    <Panel>
+      <PanelHead k="Streaks & Hold" r="exit order" />
+      <div className="flex flex-col px-3 py-2.5">
+        <StatRow label="Best win streak" value={`${streaks.best_win}W`} tone="bull" />
+        <StatRow label="Worst loss streak" value={`${Math.abs(streaks.worst_loss)}L`} tone="bear" />
+        <StatRow
+          label="Current streak"
+          value={`${Math.abs(streaks.current)}${streaks.current >= 0 ? "W" : "L"}`}
+          tone={streaks.current >= 0 ? "bull" : "bear"}
+        />
+        <StatRow
+          label="Avg hold · win"
+          value={streaks.avg_hold_win_min == null ? "—" : formatHold(streaks.avg_hold_win_min)}
+        />
+        <StatRow
+          label="Avg hold · loss"
+          value={streaks.avg_hold_loss_min == null ? "—" : formatHold(streaks.avg_hold_loss_min)}
+          last
+        />
+      </div>
+    </Panel>
+  );
+}
+
+function StatRow({
+  label,
+  value,
+  tone,
+  last,
+}: {
+  label: string;
+  value: string;
+  tone?: "bull" | "bear";
+  last?: boolean;
+}) {
+  return (
+    <div
+      className={`flex items-baseline justify-between py-1.5 ${last ? "" : "border-b border-hairline"}`}
+    >
+      <span className="text-tiny text-fg-secondary" style={{ fontSize: 11 }}>{label}</span>
+      <span className={`text-xs2 font-medium tabular-nums ${tone ? toneClass(tone) : "text-fg-primary"}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+// -- vertical bar breakdowns (time-of-day, day-of-week) ----------------------
+
+function ByTimeOfDayPanel({ rows }: { rows: TimeBucket[] }) {
+  const hasTimed = rows.some((r) => r.trades > 0);
+  return (
+    <Panel>
+      <PanelHead k="By Time of Day" r="net P&L · 0DTE is intraday" />
+      <VBars rows={rows} />
+      {!hasTimed && (
+        <div className="px-3 pb-2.5 text-fg-tertiary" style={{ fontSize: 9 }}>
+          No trades with a recorded intraday entry time in this range.
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ByDayOfWeekPanel({ rows }: { rows: TimeBucket[] }) {
+  return (
+    <Panel>
+      <PanelHead k="By Day of Week" r="net" />
+      <VBars rows={rows} />
+    </Panel>
+  );
+}
+
+/** Vertical net-P&L bars around a centered zero line. */
+function VBars({ rows }: { rows: TimeBucket[] }) {
+  const maxAbs = Math.max(1, ...rows.map((r) => Math.abs(r.net_pnl)));
+  return (
+    <div className="flex items-end gap-2 px-3 pt-3.5 pb-2" style={{ height: 130 }}>
+      {rows.map((r) => {
+        const h = (Math.abs(r.net_pnl) / maxAbs) * 44;
+        const bull = r.net_pnl >= 0;
+        return (
+          <div key={r.label} className="flex-1 flex flex-col items-center justify-end h-full gap-1">
+            <div className="relative flex-1 w-full flex flex-col justify-center">
+              <div className="absolute left-0 right-0 bg-hairline" style={{ top: "50%", height: 1 }} />
+              {r.trades > 0 && (
+                <div
+                  className={`absolute ${bull ? "bg-bullish" : "bg-bearish"}`}
+                  style={{ left: "22%", right: "22%", height: h, [bull ? "bottom" : "top"]: "50%" }}
+                />
+              )}
+            </div>
+            <span className={`tabular-nums ${r.trades ? pnlClass(r.net_pnl) : "text-fg-tertiary"}`} style={{ fontSize: 9 }}>
+              {r.trades ? formatDollarSigned(r.net_pnl) : "—"}
+            </span>
+            <span className="uppercase text-fg-tertiary-2" style={{ fontSize: 9, letterSpacing: "0.04em" }}>
+              {r.label}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// -- risk & discipline -------------------------------------------------------
+
+function RiskPanel({
+  risk,
+  equity,
+  kpis,
+  tier,
+  streaks,
+}: {
+  risk: RiskBlock;
+  equity: AnalyticsResponse["equity"];
+  kpis: KpiBlock;
+  tier: string | null;
+  streaks: StreakStats;
+}) {
+  const trail = risk.trail;
+  const pct = (v: number) => (trail && trail > 0 ? `${Math.round((Math.abs(v) / trail) * 100)}% of trail` : "—");
+  const avgLoss = risk.avg_loss; // negative
+  const avgLossAbs = avgLoss == null ? 0 : Math.abs(avgLoss);
+  const avgLossVsTrail = trail && trail > 0 ? avgLossAbs / trail : 0;
+  const lossesToBreach = avgLossAbs > 0 && trail ? Math.ceil(trail / avgLossAbs) : null;
+
+  return (
+    <section className="flex flex-col bg-tier-1 border border-hairline-strong">
+      <div className="flex items-center justify-between px-3 border-b border-hairline bg-tier-2 shrink-0" style={{ height: 28 }}>
+        <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 10 }}>
+          Risk &amp; Discipline{tier ? ` · vs ${tier} MLL trail ${formatDollar(trail ?? 0)}` : ""}
+        </span>
+        <span className="uppercase tracking-label-up text-fg-tertiary" style={{ fontSize: 9 }}>
+          are you trading within the rules
+        </span>
+      </div>
+      <div className="grid gap-3 p-3" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
+        <RiskCell label="Max drawdown" value={formatDollar(equity.max_drawdown)} tone="warn" sub={pct(equity.max_drawdown)} />
+        <RiskCell
+          label="Largest single loss"
+          value={kpis.largest_loser == null ? "—" : formatDollarSigned(kpis.largest_loser)}
+          tone="bear"
+          sub={kpis.largest_loser == null ? "—" : pct(kpis.largest_loser)}
+        />
+        <RiskCell label="Worst day" value={formatDollarSigned(risk.worst_day_pnl)} tone="bear" sub={pct(risk.worst_day_pnl)} />
+        <RiskCell
+          label="Days near MLL"
+          value={risk.days_near_mll == null ? "—" : String(risk.days_near_mll)}
+          tone={risk.days_near_mll ? "warn" : "bull"}
+          sub="> 50% of trail in a day"
+        />
+        {trail && trail > 0 && avgLoss != null && (
+          <div className="col-span-4">
+            <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+              Avg loss vs MLL trail — keep this small
+            </span>
+            <div className="relative bg-tier-0 border border-hairline mt-1.5" style={{ height: 10 }}>
+              <span className="absolute left-0 top-0 bottom-0 bg-bearish" style={{ width: `${Math.min(100, avgLossVsTrail * 100)}%`, opacity: 0.35 }} />
+              <span className="absolute bg-warning" style={{ left: `${Math.min(100, avgLossVsTrail * 100)}%`, top: -3, bottom: -3, width: 2 }} />
+            </div>
+          </div>
+        )}
+        <div className="col-span-4 pt-2 border-t border-hairline text-fg-tertiary" style={{ fontSize: 11, lineHeight: 1.5 }}>
+          {avgLoss != null && trail ? (
+            <>
+              Your average loss is <b className="text-fg-secondary font-medium">{formatDollar(avgLossAbs)}</b> —{" "}
+              <b className="text-fg-secondary font-medium">{Math.round(avgLossVsTrail * 100)}%</b> of the{" "}
+              {formatDollar(trail)} trailing limit. At this size it takes{" "}
+              <b className="text-fg-secondary font-medium">{lossesToBreach} consecutive losers</b> to threaten the account.
+              Worst actual streak this range was{" "}
+              <b className="text-fg-secondary font-medium">{Math.abs(streaks.worst_loss)}</b>.
+            </>
+          ) : (
+            "Connect a combine tier to measure loss sizing against the MLL trail."
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RiskCell({
+  label,
+  value,
+  tone,
+  sub,
+}: {
+  label: string;
+  value: string;
+  tone?: "bear" | "warn" | "bull";
+  sub: string;
+}) {
+  const toneCls = tone === "bear" ? "text-bearish" : tone === "warn" ? "text-warning" : tone === "bull" ? "text-bullish" : "text-fg-primary";
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>{label}</span>
+      <span className={`font-medium tabular-nums ${toneCls}`} style={{ fontSize: 18 }}>{value}</span>
+      <span className="text-fg-tertiary" style={{ fontSize: 10 }}>{sub}</span>
+    </div>
+  );
+}
+
 // -- panel chrome ------------------------------------------------------------
 
 function Panel({ children }: { children: React.ReactNode }) {
@@ -483,4 +744,10 @@ function formatDollarSigned(value: number): string {
 function formatR(r: number): string {
   const sign = r > 0 ? "+" : r < 0 ? "−" : "";
   return `${sign}${Math.abs(r).toFixed(2)}R`;
+}
+
+function formatHold(minutes: number): string {
+  const m = Math.round(minutes);
+  if (m >= 60) return `${Math.floor(m / 60)}h ${m % 60}m`;
+  return `${m}m`;
 }

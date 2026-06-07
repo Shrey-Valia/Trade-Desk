@@ -265,6 +265,9 @@ export interface JournalAnalyticsFilters {
   strategy?: string | null;
   since?: string | null;     // ISO date
   until?: string | null;
+  /** Active tier's MLL trailing distance — enables the days-near-MLL
+   *  count in the risk panel. */
+  trail?: number | null;
 }
 
 // -- Zero-DTE ---------------------------------------------------------------
@@ -342,6 +345,7 @@ export const fetchJournalAnalytics = (
   if (filters.strategy) p.set("strategy", filters.strategy);
   if (filters.since) p.set("since", filters.since);
   if (filters.until) p.set("until", filters.until);
+  if (filters.trail != null) p.set("trail", String(filters.trail));
   const q = p.toString();
   return request(`/api/analytics${q ? `?${q}` : ""}`, AnalyticsResponseSchema);
 };

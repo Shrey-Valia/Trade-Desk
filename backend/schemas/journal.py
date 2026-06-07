@@ -109,6 +109,9 @@ class TradeUpdate(BaseModel):
     exit_underlying_price: float | None = Field(default=None, gt=0)
     realized_pnl: float | None = None
     notes: str | None = None
+    # Self-applied intent tags (planned / good setup / …). Distinct from
+    # mistake_tags; editable from the journal day-detail.
+    tags: list[str] | None = None
     mistake_tags: list[str] | None = None
     review_note: str | None = None
 

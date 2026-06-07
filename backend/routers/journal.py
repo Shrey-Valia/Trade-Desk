@@ -152,6 +152,8 @@ def update_trade(
         trade.realized_pnl = payload.realized_pnl
     if payload.notes is not None:
         trade.notes = payload.notes
+    if payload.tags is not None:
+        trade.tags = list(payload.tags)
     if payload.mistake_tags is not None:
         trade.mistake_tags = list(payload.mistake_tags)
     if payload.review_note is not None:
