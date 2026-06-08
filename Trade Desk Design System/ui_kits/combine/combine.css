@@ -1,0 +1,151 @@
+/* ===========================================================
+   TRADE DESK — COMBINE EVALUATION DASHBOARD (UI KIT)
+   Continuous with the terminal: same tokens, density, chrome.
+   Risk-first: the MLL/drawdown hero dominates the layout.
+   =========================================================== */
+
+.cb-app { display: flex; height: 100vh; min-height: 0; overflow: hidden; font-family: var(--td-font-mono); color: var(--td-fg-primary); background: var(--td-bg-0); }
+.cb-main { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow-y: auto; }
+
+/* reuse rail look from the terminal */
+.cb-rail { width: 48px; flex-shrink: 0; background: var(--td-bg-1); border-right: 1px solid var(--td-border); display: flex; flex-direction: column; align-items: center; padding-top: 8px; }
+.cb-rail-mark { margin-bottom: 14px; }
+.cb-rail-btn { width: 48px; padding: 9px 0 7px; display: flex; flex-direction: column; align-items: center; gap: 4px; background: none; border: none; cursor: pointer; color: var(--td-fg-tertiary-2); transition: var(--td-transition-colors); }
+.cb-rail-btn span { font-size: 7.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.cb-rail-btn:hover { color: var(--td-fg-secondary); }
+.cb-rail-btn.active { color: var(--td-amber); }
+.cb-rail-foot { margin-top: auto; margin-bottom: 10px; }
+
+/* ---------- HEADER STRIP ---------- */
+.cb-header { height: 64px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 16px; background: var(--td-bg-1); border-bottom: 1px solid var(--td-border); }
+.cb-tier { height: 40px; padding: 0 12px; display: inline-flex; align-items: center; gap: 8px; background: var(--td-bg-2); border: 1px solid var(--td-bg-3); border-radius: var(--td-radius); color: var(--td-fg-primary); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; font-family: var(--td-font-mono); transition: var(--td-transition-colors); }
+.cb-tier:hover { background: var(--td-bg-3); }
+.cb-tier .caret { color: var(--td-fg-tertiary-2); font-size: 10px; }
+.cb-state-badge { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: var(--td-radius-pill); border: 1px solid; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; }
+.cb-state-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cb-state-badge.active { color: var(--td-amber); border-color: var(--td-amber); }
+.cb-state-badge.passed { color: var(--td-bullish); border-color: var(--td-bullish); }
+.cb-state-badge.failed { color: var(--td-bearish); border-color: var(--td-bearish); }
+.cb-balances { margin-left: 8px; display: flex; gap: 22px; align-items: baseline; font-variant-numeric: tabular-nums; }
+.cb-balances .grp { display: flex; flex-direction: column; }
+.cb-balances .l { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+.cb-balances .v { font-size: 17px; font-weight: 500; color: var(--td-fg-primary); }
+.cb-balances .v.bull { color: var(--td-bullish); }
+.cb-balances .v.bear { color: var(--td-bearish); }
+.cb-balances .v.sub { font-size: 13px; color: var(--td-fg-secondary); font-weight: 400; }
+
+.cb-toggle { margin-left: auto; display: flex; gap: 0; border: 1px solid var(--td-bg-3); border-radius: var(--td-radius); overflow: hidden; }
+.cb-toggle button { height: 30px; padding: 0 14px; background: var(--td-bg-2); border: none; border-right: 1px solid var(--td-bg-3); color: var(--td-fg-tertiary-2); font-family: var(--td-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; transition: var(--td-transition-colors); }
+.cb-toggle button:last-child { border-right: none; }
+.cb-toggle button:hover { color: var(--td-fg-secondary); background: var(--td-bg-3); }
+.cb-toggle button.on { color: var(--td-amber); background: var(--td-bg-3); }
+
+/* ---------- CONTENT GRID ---------- */
+.cb-content { padding: 14px; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.cb-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.cb-panel { background: var(--td-bg-1); border: 1px solid var(--td-border); display: flex; flex-direction: column; }
+.cb-phead { display: flex; align-items: center; justify-content: space-between; height: 28px; padding: 0 12px; border-bottom: 1px solid var(--td-border); flex-shrink: 0; }
+.cb-phead .k { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-secondary); }
+.cb-phead .r { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary); }
+
+/* ---------- HERO: MLL / DRAWDOWN ---------- */
+.cb-hero { background: var(--td-bg-1); border: 1px solid var(--td-border); }
+.cb-hero-head { display: flex; align-items: baseline; justify-content: space-between; height: 30px; padding: 0 16px; border-bottom: 1px solid var(--td-border); }
+.cb-hero-head .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-secondary); }
+.cb-hero-head .sub { font-size: 10px; color: var(--td-fg-tertiary); text-transform: uppercase; letter-spacing: 0.08em; }
+.cb-hero-body { padding: 20px 16px 18px; display: flex; flex-direction: column; gap: 18px; }
+.cb-hero-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.cb-distance { display: flex; flex-direction: column; gap: 2px; }
+.cb-distance .big { font-size: 56px; line-height: 1; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.cb-distance .cap { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--td-fg-tertiary-2); margin-top: 6px; }
+.cb-distance.green .big { color: var(--td-bullish); }
+.cb-distance.amber .big { color: var(--td-amber); }
+.cb-distance.red .big { color: var(--td-bearish); }
+.cb-hero-stats { display: flex; gap: 22px; }
+.cb-hstat { display: flex; flex-direction: column; gap: 2px; text-align: right; font-variant-numeric: tabular-nums; }
+.cb-hstat .l { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+.cb-hstat .v { font-size: 15px; font-weight: 500; color: var(--td-fg-primary); }
+.cb-hstat .v.pos { color: var(--td-position); }
+.cb-hstat .v.bull { color: var(--td-bullish); }
+
+/* the gauge */
+.cb-gauge { position: relative; height: 64px; margin-top: 4px; }
+.cb-gauge-track { position: absolute; left: 0; right: 0; top: 26px; height: 12px; background: var(--td-bg-0); border: 1px solid var(--td-border); }
+.cb-seg { position: absolute; top: 0; bottom: 0; }
+.cb-seg.danger { background: var(--td-bearish-tint); border-right: 1px solid var(--td-bearish); }
+.cb-seg.cushion { background: var(--td-bullish-tint); }
+.cb-seg.cushion.warn { background: var(--td-amber-tint); }
+.cb-seg.breach { background: var(--td-bearish); }
+.cb-seg.toward { background: repeating-linear-gradient(90deg, transparent, transparent 3px, var(--td-bg-2) 3px, var(--td-bg-2) 6px); }
+/* markers */
+.cb-mark { position: absolute; top: 14px; width: 0; }
+.cb-mark .stem { position: absolute; left: 0; top: 12px; width: 2px; height: 24px; transform: translateX(-1px); }
+.cb-mark .lab { position: absolute; left: 0; top: -2px; transform: translateX(-50%); white-space: nowrap; font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; font-variant-numeric: tabular-nums; }
+.cb-mark.floor .stem { background: var(--td-bearish); }
+.cb-mark.floor .lab { color: var(--td-bearish); }
+.cb-mark.you .stem { background: var(--td-fg-primary); }
+.cb-mark.you .lab { color: var(--td-fg-primary); font-weight: 500; }
+.cb-mark.you.bull .stem { background: var(--td-bullish); } .cb-mark.you.bull .lab { color: var(--td-bullish); }
+.cb-mark.you.bear .stem { background: var(--td-bearish); } .cb-mark.you.bear .lab { color: var(--td-bearish); }
+.cb-mark.target .stem { background: var(--td-fg-tertiary-2); }
+.cb-mark.target .lab { color: var(--td-fg-tertiary-2); }
+.cb-mark.hw .stem { background: var(--td-fg-tertiary); height: 14px; top: 22px; }
+.cb-mark.hw .lab { color: var(--td-fg-tertiary); top: 38px; }
+/* trail arrow */
+.cb-trail { position: absolute; top: 30px; height: 4px; }
+.cb-trail .line { position: absolute; left: 0; right: 6px; top: 1px; border-top: 1px dashed var(--td-bearish); opacity: 0.6; }
+.cb-trail .arr { position: absolute; right: 0; top: -3px; color: var(--td-bearish); font-size: 10px; opacity: 0.7; }
+.cb-trail .tl { position: absolute; left: 0; top: -14px; font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--td-fg-tertiary); }
+.cb-hero-foot { font-size: 11px; color: var(--td-fg-tertiary); padding-top: 2px; }
+.cb-hero-foot b { color: var(--td-fg-secondary); font-weight: 500; }
+
+/* ---------- PROFIT TARGET ---------- */
+.cb-pt-body { padding: 14px 12px; display: flex; flex-direction: column; gap: 10px; }
+.cb-pt-nums { display: flex; align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums; }
+.cb-pt-nums .cur { font-size: 28px; font-weight: 500; color: var(--td-fg-primary); }
+.cb-pt-nums .tot { font-size: 14px; color: var(--td-fg-tertiary-2); }
+.cb-pt-nums .pct { margin-left: auto; font-size: 14px; color: var(--td-fg-secondary); }
+.cb-pt-nums .pct.done { color: var(--td-bullish); }
+.cb-bar { height: 10px; background: var(--td-bg-0); border: 1px solid var(--td-border); position: relative; }
+.cb-bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--td-fg-tertiary-2); }
+.cb-bar .fill.done { background: var(--td-bullish); }
+.cb-bar .fill.neg { background: var(--td-bearish); }
+.cb-pt-cap { font-size: 10px; color: var(--td-fg-tertiary); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* ---------- CHECKLIST ---------- */
+.cb-check { display: flex; flex-direction: column; }
+.cb-check-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--td-border); }
+.cb-check-row:last-child { border-bottom: none; }
+.cb-check-mark { width: 16px; height: 16px; border-radius: var(--td-radius-pill); display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 11px; border: 1px solid; margin-top: 1px; }
+.cb-check-mark.pass { color: var(--td-bullish); border-color: var(--td-bullish); }
+.cb-check-mark.fail { color: var(--td-bearish); border-color: var(--td-bearish); }
+.cb-check-mark.pending { color: var(--td-fg-tertiary-2); border-color: var(--td-border-strong); }
+.cb-check-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cb-check-txt .t { font-size: 12px; line-height: 1.35; color: var(--td-fg-primary); }
+.cb-check-txt .d { font-size: 10px; line-height: 1.3; color: var(--td-fg-tertiary-2); font-variant-numeric: tabular-nums; }
+.cb-check-txt .d.bull { color: var(--td-bullish); }
+.cb-check-txt .d.bear { color: var(--td-bearish); }
+
+/* ---------- DAILY BREAKDOWN ---------- */
+.cb-days { display: flex; flex-direction: column; }
+.cb-day-row { display: grid; grid-template-columns: 90px 1fr 110px 70px; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--td-border); font-variant-numeric: tabular-nums; }
+.cb-day-row:last-child { border-bottom: none; }
+.cb-day-row.best { background: var(--td-bg-2); }
+.cb-day-date { font-size: 11px; color: var(--td-fg-secondary); }
+.cb-day-date .today { color: var(--td-amber); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; margin-left: 6px; }
+.cb-day-meter { height: 6px; background: var(--td-bg-0); border: 1px solid var(--td-border); position: relative; }
+.cb-day-meter .f { position: absolute; top: 0; bottom: 0; }
+.cb-day-meter .f.bull { background: var(--td-bullish); left: 50%; }
+.cb-day-meter .f.bear { background: var(--td-bearish); right: 50%; }
+.cb-day-meter .mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--td-border-strong); }
+.cb-day-pnl { font-size: 12px; font-weight: 500; text-align: right; }
+.cb-day-pnl.bull { color: var(--td-bullish); }
+.cb-day-pnl.bear { color: var(--td-bearish); }
+.cb-day-share { font-size: 10px; text-align: right; color: var(--td-fg-tertiary-2); }
+.cb-day-share.flag { color: var(--td-bearish); }
+.cb-days-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--td-border); font-size: 10px; color: var(--td-fg-tertiary); text-transform: uppercase; letter-spacing: 0.06em; }
+.cb-days-foot .best-share { margin-left: auto; color: var(--td-fg-secondary); font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0; }
+.cb-days-foot .best-share.flag { color: var(--td-bearish); }
+
+/* failed overlay accent */
+.cb-dead { font-size: 11px; color: var(--td-bearish); padding: 0 16px 14px; }

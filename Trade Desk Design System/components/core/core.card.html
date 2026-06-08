@@ -1,0 +1,58 @@
+<!-- @dsCard group="Components" viewport="700x300" name="Core" subtitle="Button · MetricPill · Badge · TierPill" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  body { margin: 0; background: var(--td-bg-0); }
+  #root { padding: 18px; }
+  .grp { display: flex; flex-direction: column; gap: 14px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .cap { font-family: var(--td-font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary); }
+</style>
+</head>
+<body class="td-root">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { Button, MetricPill, Badge, TierPill } = window.TradeDeskDesignSystem_29ab83;
+    function Demo() {
+      return (
+        <div className="grp">
+          <div className="row">
+            <TierPill tier="50K" />
+            <Button variant="primary">BUY +1</Button>
+            <Button variant="secondary" active>5m</Button>
+            <Button variant="secondary">1D</Button>
+            <Button variant="ghost" size="sm">reset</Button>
+            <Button variant="danger">flatten</Button>
+            <Button variant="secondary" disabled>disabled</Button>
+          </div>
+          <div className="row">
+            <MetricPill label="BAL" value="$50,132.93" />
+            <MetricPill label="UP&L" value="+$132.93" signed={132.93} />
+            <MetricPill label="RP&L" value="−$250.00" signed={-250} />
+            <MetricPill label="MLL" value="$48,000.00" tone="warning">
+              <Badge tone="bearish">BREACH</Badge>
+            </MetricPill>
+          </div>
+          <div className="row">
+            <span className="cap">Badges</span>
+            <Badge tone="bearish">BREACH</Badge>
+            <Badge tone="warning">ER</Badge>
+            <Badge tone="amber">ACTIVE</Badge>
+            <Badge tone="bullish">FUNDED</Badge>
+            <Badge tone="cyan">0DTE</Badge>
+            <Badge tone="muted">MACRO</Badge>
+          </div>
+        </div>
+      );
+    }
+    ReactDOM.createRoot(document.getElementById("root")).render(<Demo />);
+  </script>
+</body>
+</html>

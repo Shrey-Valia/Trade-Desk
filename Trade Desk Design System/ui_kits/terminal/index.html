@@ -1,0 +1,119 @@
+<!-- @dsCard group="Terminal" viewport="1440x600" name="0DTE Terminal" subtitle="Full trading workspace — pick a strike, BUY, scrub theta to walk the breakeven" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trade Desk — 0DTE Terminal</title>
+<link rel="stylesheet" href="../../styles.css">
+<link rel="stylesheet" href="terminal.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="data.js"></script>
+<script type="text/babel" src="Chart.jsx"></script>
+<script type="text/babel" src="Panels.jsx"></script>
+<script type="text/babel" src="BottomRow.jsx"></script>
+</head>
+<body class="td-root">
+<div id="root"></div>
+<script type="text/babel">
+const { Rail, Header, ChainPanel, TradeTicket } = window.TDPanels;
+const BottomRow = window.TDBottom;
+const TDChart = window.TDChart;
+const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1D"];
+
+function Toolbar({ tf, setTf }) {
+  return (
+    <div className="td-toolbar">
+      <div className="tf-group">
+        {TIMEFRAMES.map((t) => (
+          <button key={t} className={"tf" + (tf === t ? " on" : "")} onClick={() => setTf(t)}>{t}</button>
+        ))}
+      </div>
+      <div className="tb-sep" />
+      <button className="tb-drop">candles ▾</button>
+      <div className="tb-spacer" />
+      <button className="tb-ghost">indicators ▾</button>
+      <button className="tb-ghost">LEGEND</button>
+      <button className="tb-ghost dim">LEVELS ↓</button>
+    </div>
+  );
+}
+
+function ChartCrumb() {
+  const d = window.TD;
+  const last = d.CANDLES[d.CANDLES.length - 1];
+  return (
+    <div className="td-crumb">
+      <span className="sym">SPY</span><span className="tfl">· 5M</span>
+      <span>O <b>{last.o.toFixed(2)}</b></span>
+      <span>H <b>{last.h.toFixed(2)}</b></span>
+      <span>L <b>{last.l.toFixed(2)}</b></span>
+      <span>C <b>{last.c.toFixed(2)}</b></span>
+      <span className="bull">+0.19 (0.03%)</span>
+    </div>
+  );
+}
+
+function App() {
+  const d = window.TD;
+  const [nav, setNav] = React.useState("chart");
+  const [tf, setTf] = React.useState("5m");
+  const [selection, setSelection] = React.useState(null);
+  const [qty, setQty] = React.useState(1);
+  const [position, setPosition] = React.useState(null);
+  const [scrubT, setScrubT] = React.useState(0);
+
+  // UPL responds to theta decay via the scrubber.
+  const baseUpl = position ? 132.93 * position.contracts : 0;
+  const upl = position ? +(baseUpl * (1 - 0.92 * scrubT)).toFixed(2) : 0;
+  const greeks = {
+    delta: (0.69 * (position ? position.contracts : 1)).toFixed(2),
+    gamma: "6.37",
+    theta: "−" + (102.76 * (1 + scrubT) ).toFixed(2),
+    vega: "14.00",
+  };
+
+  const fire = (action) => {
+    if (!selection) return;
+    setPosition({
+      strike: selection.strike,
+      side: selection.side,
+      price: selection.price,
+      contracts: qty,
+      entryIndex: d.CANDLES.length - 18,
+      action,
+    });
+    setScrubT(0);
+    setSelection(null);
+  };
+  const closePos = () => { setPosition(null); setScrubT(0); };
+
+  return (
+    <div className="td-app">
+      <Rail active={nav} onNav={setNav} />
+      <div className="td-main">
+        <Header position={position} upl={upl} />
+        <div className="td-body">
+          <div className="td-left">
+            <Toolbar tf={tf} setTf={setTf} />
+            <ChartCrumb />
+            <div className="td-chartwrap">
+              <TDChart candles={d.CANDLES} position={position} scrubT={scrubT} timeframe={tf} />
+            </div>
+          </div>
+          <div className="td-right">
+            <ChainPanel chain={d.CHAIN} action="buy" onPick={setSelection} />
+            <TradeTicket selection={selection} qty={qty} setQty={setQty} onFire={fire} marketOpen={false} />
+          </div>
+        </div>
+        <BottomRow position={position} upl={upl} scrubT={scrubT} setScrubT={setScrubT} onClose={closePos} greeks={greeks} />
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

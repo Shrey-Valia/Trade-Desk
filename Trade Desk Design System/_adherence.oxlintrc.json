@@ -1,0 +1,296 @@
+{
+  "plugins": [
+    "react",
+    "import"
+  ],
+  "rules": {
+    "react/forbid-elements": [
+      "warn",
+      {
+        "forbid": []
+      }
+    ],
+    "no-restricted-imports": [
+      "warn",
+      {
+        "patterns": [
+          {
+            "group": [
+              "components/core/**",
+              "components/data/**",
+              "components/forms/**",
+              "ui_kits/combine/**",
+              "ui_kits/data/**",
+              "ui_kits/funded/**",
+              "ui_kits/terminal/**"
+            ],
+            "message": "Import design-system components from 'index.js', not component internals."
+          }
+        ]
+      }
+    ],
+    "no-restricted-syntax": [
+      "warn",
+      {
+        "selector": "Literal[value=/#[0-9a-fA-F]{3,8}\\b/]",
+        "message": "Raw hex color — use a design-system color token via var()."
+      },
+      {
+        "selector": "Literal[value=/\\b\\d+px\\b/]",
+        "message": "Raw px value — use a design-system spacing token via var()."
+      },
+      {
+        "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:IBM Plex Mono))/i]",
+        "message": "Font not provided by the design system. Available: IBM Plex Mono."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ActionButton'] > JSXAttribute > JSXIdentifier[name!=/^(?:intent|label|sub|disabled|key|ref|className|style|children)$/]",
+        "message": "<ActionButton> doesn't accept that prop. Declared props: intent, label, sub, disabled."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Badge'] > JSXAttribute > JSXIdentifier[name!=/^(?:tone|key|ref|className|style|children)$/]",
+        "message": "<Badge> doesn't accept that prop. Declared props: tone."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Button'] > JSXAttribute > JSXIdentifier[name!=/^(?:variant|size|active|disabled|key|ref|className|style|children)$/]",
+        "message": "<Button> doesn't accept that prop. Declared props: variant, size, active, disabled."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ChainRow'] > JSXAttribute > JSXIdentifier[name!=/^(?:strike|call|put|isAtm|callSource|putSource|onCall|onPut|onStrike|disabled|key|ref|className|style|children)$/]",
+        "message": "<ChainRow> doesn't accept that prop. Declared props: strike, call, put, isAtm, callSource, putSource, onCall, onPut, onStrike, disabled."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Icon'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|size|key|ref|className|style|children)$/]",
+        "message": "<Icon> doesn't accept that prop. Declared props: name, size."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='MetricPill'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|value|tone|signed|sub|width|key|ref|className|style|children)$/]",
+        "message": "<MetricPill> doesn't accept that prop. Declared props: label, value, tone, signed, sub, width."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='PresetChips'] > JSXAttribute > JSXIdentifier[name!=/^(?:presets|value|onSelect|key|ref|className|style|children)$/]",
+        "message": "<PresetChips> doesn't accept that prop. Declared props: presets, value, onSelect."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Stepper'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|onChange|min|max|key|ref|className|style|children)$/]",
+        "message": "<Stepper> doesn't accept that prop. Declared props: value, onChange, min, max."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='TierPill'] > JSXAttribute > JSXIdentifier[name!=/^(?:tier|breached|key|ref|className|style|children)$/]",
+        "message": "<TierPill> doesn't accept that prop. Declared props: tier, breached."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/index.js"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    }
+  ],
+  "x-omelette": {
+    "components": {
+      "ActionButton": {
+        "replaces": []
+      },
+      "Badge": {
+        "replaces": []
+      },
+      "Button": {
+        "replaces": []
+      },
+      "ChainRow": {
+        "replaces": []
+      },
+      "Icon": {
+        "replaces": []
+      },
+      "MetricPill": {
+        "replaces": []
+      },
+      "PresetChips": {
+        "replaces": []
+      },
+      "Stepper": {
+        "replaces": []
+      },
+      "TierPill": {
+        "replaces": []
+      }
+    },
+    "tokens": [
+      "--td-accent-active",
+      "--td-accent-neutral",
+      "--td-action-buy",
+      "--td-action-buy-active",
+      "--td-action-buy-hover",
+      "--td-action-sell",
+      "--td-action-sell-active",
+      "--td-action-sell-hover",
+      "--td-amber",
+      "--td-amber-tint",
+      "--td-bearish",
+      "--td-bearish-tint",
+      "--td-bg-0",
+      "--td-bg-1",
+      "--td-bg-2",
+      "--td-bg-3",
+      "--td-border",
+      "--td-border-active",
+      "--td-border-hairline",
+      "--td-border-strong",
+      "--td-border-strong-rule",
+      "--td-border-width",
+      "--td-bullish",
+      "--td-bullish-tint",
+      "--td-cyan",
+      "--td-fg-disabled",
+      "--td-fg-primary",
+      "--td-fg-secondary",
+      "--td-fg-tertiary",
+      "--td-fg-tertiary-2",
+      "--td-focus-offset",
+      "--td-focus-outline",
+      "--td-focus-ring",
+      "--td-font-mono",
+      "--td-font-sans",
+      "--td-header-height",
+      "--td-lh-body",
+      "--td-lh-display",
+      "--td-lh-large",
+      "--td-lh-medium",
+      "--td-lh-micro",
+      "--td-lh-tiny",
+      "--td-numeric",
+      "--td-position",
+      "--td-position-bar",
+      "--td-position-tint",
+      "--td-radius",
+      "--td-radius-0",
+      "--td-radius-pill",
+      "--td-rail-width",
+      "--td-row-height",
+      "--td-shadow",
+      "--td-size-body",
+      "--td-size-display",
+      "--td-size-large",
+      "--td-size-medium",
+      "--td-size-micro",
+      "--td-size-tiny",
+      "--td-space-0",
+      "--td-space-1",
+      "--td-space-2",
+      "--td-space-3",
+      "--td-space-4",
+      "--td-space-5",
+      "--td-space-6",
+      "--td-surface-active",
+      "--td-surface-body",
+      "--td-surface-panel",
+      "--td-surface-raised",
+      "--td-text-chrome",
+      "--td-text-label",
+      "--td-text-muted",
+      "--td-text-value",
+      "--td-toolbar-height",
+      "--td-tracking-default",
+      "--td-tracking-label",
+      "--td-tracking-mark",
+      "--td-transition",
+      "--td-transition-colors",
+      "--td-warning",
+      "--td-weight-medium",
+      "--td-weight-regular"
+    ],
+    "tokenKinds": {
+      "--td-bg-0": "color",
+      "--td-bg-1": "color",
+      "--td-bg-2": "color",
+      "--td-bg-3": "color",
+      "--td-fg-primary": "color",
+      "--td-fg-secondary": "color",
+      "--td-fg-tertiary-2": "color",
+      "--td-fg-tertiary": "color",
+      "--td-fg-disabled": "color",
+      "--td-border": "color",
+      "--td-border-strong": "color",
+      "--td-bullish": "color",
+      "--td-bearish": "color",
+      "--td-amber": "color",
+      "--td-cyan": "color",
+      "--td-warning": "color",
+      "--td-position": "color",
+      "--td-position-bar": "color",
+      "--td-action-buy": "color",
+      "--td-action-buy-hover": "color",
+      "--td-action-buy-active": "color",
+      "--td-action-sell": "color",
+      "--td-action-sell-hover": "color",
+      "--td-action-sell-active": "color",
+      "--td-amber-tint": "color",
+      "--td-bullish-tint": "color",
+      "--td-bearish-tint": "color",
+      "--td-position-tint": "color",
+      "--td-surface-body": "color",
+      "--td-surface-panel": "color",
+      "--td-surface-raised": "color",
+      "--td-surface-active": "color",
+      "--td-text-value": "font",
+      "--td-text-label": "font",
+      "--td-text-muted": "font",
+      "--td-text-chrome": "font",
+      "--td-accent-active": "color",
+      "--td-accent-neutral": "color",
+      "--td-focus-ring": "color",
+      "--td-font-mono": "font",
+      "--td-font-sans": "font",
+      "--td-weight-regular": "font",
+      "--td-weight-medium": "font",
+      "--td-size-micro": "spacing",
+      "--td-lh-micro": "spacing",
+      "--td-size-tiny": "spacing",
+      "--td-lh-tiny": "spacing",
+      "--td-size-body": "spacing",
+      "--td-lh-body": "spacing",
+      "--td-size-medium": "spacing",
+      "--td-lh-medium": "spacing",
+      "--td-size-large": "spacing",
+      "--td-lh-large": "spacing",
+      "--td-size-display": "spacing",
+      "--td-lh-display": "spacing",
+      "--td-tracking-default": "font",
+      "--td-tracking-label": "font",
+      "--td-tracking-mark": "font",
+      "--td-numeric": "other",
+      "--td-space-0": "spacing",
+      "--td-space-1": "spacing",
+      "--td-space-2": "spacing",
+      "--td-space-3": "spacing",
+      "--td-space-4": "spacing",
+      "--td-space-5": "spacing",
+      "--td-space-6": "spacing",
+      "--td-row-height": "spacing",
+      "--td-header-height": "spacing",
+      "--td-rail-width": "spacing",
+      "--td-toolbar-height": "spacing",
+      "--td-radius-0": "radius",
+      "--td-radius-pill": "radius",
+      "--td-radius": "radius",
+      "--td-border-width": "spacing",
+      "--td-border-hairline": "color",
+      "--td-border-active": "color",
+      "--td-border-strong-rule": "color",
+      "--td-shadow": "shadow",
+      "--td-transition": "other",
+      "--td-transition-colors": "color",
+      "--td-focus-outline": "color",
+      "--td-focus-offset": "spacing"
+    },
+    "fontFamilies": [
+      "IBM Plex Mono"
+    ]
+  }
+}

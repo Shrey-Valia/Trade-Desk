@@ -1,0 +1,66 @@
+/* ============================================================
+   TRADE DESK — BASE / RESET
+   Minimal opinionated base for terminal surfaces. Sets the body
+   ground, the mono font, tabular numerics, scrollbars, focus ring.
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+.td-root,
+body.td-root {
+  margin: 0;
+  background: var(--td-surface-body);
+  color: var(--td-text-value);
+  font-family: var(--td-font-mono);
+  font-size: var(--td-size-body);
+  line-height: var(--td-lh-body);
+  font-weight: var(--td-weight-regular);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Numbers are tabular across the terminal. */
+.td-root .td-tabular,
+.td-root [data-tabular] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hairline-thin custom scrollbars to match the dense aesthetic. */
+.td-root ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.td-root ::-webkit-scrollbar-track {
+  background: var(--td-bg-0);
+}
+.td-root ::-webkit-scrollbar-thumb {
+  background: var(--td-bg-3);
+  border: 2px solid var(--td-bg-0);
+  border-radius: 0;
+}
+.td-root ::-webkit-scrollbar-thumb:hover {
+  background: var(--td-border-strong);
+}
+
+/* Focus ring — amber, replaces any default. */
+.td-root :focus-visible {
+  outline: var(--td-focus-outline);
+  outline-offset: var(--td-focus-offset);
+}
+
+/* Selection in the brand amber tint. */
+.td-root ::selection {
+  background: var(--td-amber-tint);
+  color: var(--td-fg-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .td-root * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

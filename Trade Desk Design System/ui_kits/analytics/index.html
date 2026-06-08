@@ -1,0 +1,231 @@
+<!-- @dsCard group="Analytics" viewport="1440x980" name="Analytics" subtitle="Performance at a glance — metric hero, equity curve with drawdown, strategy/symbol/time breakdowns, risk discipline" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trade Desk — Analytics</title>
+<link rel="stylesheet" href="../../styles.css">
+<link rel="stylesheet" href="../combine/combine.css">
+<link rel="stylesheet" href="analytics.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../data/trades.js"></script>
+</head>
+<body class="td-root">
+<div id="root"></div>
+<script type="text/babel">
+const J = window.TDJournal;
+const { TRADES, inRange, summarize, equity, groupBy, streaks, fmt, fmtHold, MLL_TRAIL } = J;
+
+function Rail({ active }) {
+  const ICONS = {
+    chart: <g><line x1="6" y1="3" x2="6" y2="17"/><rect x="4" y="6" width="4" height="7" fill="currentColor"/><line x1="14" y1="3" x2="14" y2="17"/><rect x="12" y="8" width="4" height="5"/></g>,
+    journal: <g><path d="M4 4h9a2 2 0 0 1 2 2v11H6a2 2 0 0 1-2-2V4z"/><line x1="7" y1="8" x2="12" y2="8"/><line x1="7" y1="11" x2="12" y2="11"/><line x1="7" y1="14" x2="10" y2="14"/></g>,
+    analytics: <g><line x1="3" y1="17" x2="17" y2="17"/><rect x="4" y="11" width="3" height="6"/><rect x="9" y="7" width="3" height="10"/><rect x="14" y="4" width="3" height="13"/></g>,
+    watchlist: <g><circle cx="4.5" cy="5.5" r="1" fill="currentColor" stroke="none"/><line x1="8" y1="5.5" x2="17" y2="5.5"/><circle cx="4.5" cy="10" r="1" fill="currentColor" stroke="none"/><line x1="8" y1="10" x2="17" y2="10"/><circle cx="4.5" cy="14.5" r="1" fill="currentColor" stroke="none"/><line x1="8" y1="14.5" x2="17" y2="14.5"/></g>,
+    settings: <g><circle cx="10" cy="10" r="2.5"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></g>,
+  };
+  const G = ({ n }) => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">{ICONS[n]}</svg>;
+  return (
+    <nav className="cb-rail">
+      <div className="cb-rail-mark"><svg viewBox="0 0 36 36" width="32" height="32"><rect x="1" y="1" width="34" height="34" rx="5" ry="5" fill="none" stroke="var(--td-amber)" strokeWidth="2"/><text x="18" y="18" textAnchor="middle" dominantBaseline="central" fontFamily="var(--td-font-mono)" fontSize="20" fontWeight="500" letterSpacing="-0.02em" fill="var(--td-fg-primary)">TD</text></svg></div>
+      {[["chart","Chart"],["journal","Journal"],["analytics","Analytics"],["watchlist","Watch"]].map(([k,l]) => <button key={k} className={"cb-rail-btn" + (active===k?" active":"")} title={l}><G n={k}/><span>{l}</span></button>)}
+      <button className="cb-rail-btn cb-rail-foot" title="Settings"><G n="settings"/><span>Settings</span></button>
+    </nav>
+  );
+}
+
+function EquityCurve({ rows }) {
+  const eq = equity(rows);
+  const pts = [{ i: -1, cum: 0 }, ...eq.pts];
+  const W = 1000, H = 220, padT = 14, padB = 22, padL = 6, padR = 56;
+  const cums = pts.map((p) => p.cum);
+  const hi = Math.max(0, ...cums), lo = Math.min(0, ...cums);
+  const span = (hi - lo) || 1;
+  const x = (i) => padL + (i / (pts.length - 1)) * (W - padL - padR);
+  const y = (v) => padT + (1 - (v - lo) / span) * (H - padT - padB);
+  const line = pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.cum).toFixed(1)).join(" ");
+  const zeroY = y(0);
+  const last = pts[pts.length - 1].cum;
+  const col = last >= 0 ? "var(--td-bullish)" : "var(--td-bearish)";
+  const area = line + ` L ${x(pts.length-1).toFixed(1)} ${zeroY.toFixed(1)} L ${x(0).toFixed(1)} ${zeroY.toFixed(1)} Z`;
+  // drawdown band: peak index before trough → trough
+  let peakI = 0, peakV = -Infinity, troughI = 0, dd = 0;
+  pts.forEach((p, i) => { if (p.cum > peakV) { peakV = p.cum; } });
+  // recompute trough as max drawdown point
+  let runPeak = -Infinity, runPeakI = 0;
+  pts.forEach((p, i) => {
+    if (p.cum > runPeak) { runPeak = p.cum; runPeakI = i; }
+    const d = runPeak - p.cum;
+    if (d > dd) { dd = d; troughI = i; peakI = runPeakI; }
+  });
+  // gridlines at round levels
+  const gridVals = [];
+  const stepG = span > 1500 ? 500 : 250;
+  for (let g = Math.ceil(lo / stepG) * stepG; g <= hi; g += stepG) gridVals.push(g);
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", height: 220 }}>
+      {gridVals.map((g) => (
+        <g key={g}>
+          <line x1={padL} y1={y(g)} x2={W-padR} y2={y(g)} stroke="var(--td-border)" strokeWidth="1" vectorEffect="non-scaling-stroke" opacity={g===0?0.9:0.4} />
+          <text x={W-padR+6} y={y(g)+3} fill="var(--td-fg-tertiary)" fontSize="10" fontFamily="var(--td-font-mono)">{g>0?"+":g<0?"−":""}${Math.abs(g)}</text>
+        </g>
+      ))}
+      <path d={area} fill={col} opacity="0.10" />
+      <path d={line} fill="none" stroke={col} strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+      <circle cx={x(pts.length-1)} cy={y(last)} r="3" fill={col} />
+    </svg>
+  );
+}
+
+function VBars({ data, order }) {
+  const items = order.map((k) => data.find((d) => d.key === k) || { key: k, net: 0, n: 0 });
+  const maxAbs = Math.max(1, ...items.map((d) => Math.abs(d.net)));
+  return (
+    <div className="an-bars">
+      {items.map((d) => {
+        const h = (Math.abs(d.net) / maxAbs) * 44;
+        const bull = d.net >= 0;
+        return (
+          <div className="an-bar-col" key={d.key}>
+            <div className="an-bar-wrap">
+              <div className="an-bar-zero" />
+              <div className={"an-bar " + (bull ? "bull" : "bear")} style={{ position: "absolute", left: "22%", right: "22%", height: h, [bull ? "bottom" : "top"]: "50%" }} />
+            </div>
+            <span className="bn" style={{ color: d.net>=0?"var(--td-bullish)":"var(--td-bearish)" }}>{d.n?fmt(d.net,true):"—"}</span>
+            <span className="bx">{d.key}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function HBars({ data }) {
+  const maxAbs = Math.max(1, ...data.map((d) => Math.abs(d.net)));
+  return (
+    <div className="an-bd-body">
+      {data.sort((a,b)=>b.net-a.net).map((d) => {
+        const w = (Math.abs(d.net) / maxAbs) * 48;
+        const bull = d.net >= 0;
+        return (
+          <div className="an-bd-row" key={d.key}>
+            <span className="bl">{d.key}</span>
+            <span className="an-bd-meter"><span className="mid" /><span className={"f " + (bull?"bull":"bear")} style={{ width: w + "%" }} /></span>
+            <span className={"bv " + (bull?"bull":"bear")}>{fmt(d.net, true)}<span className="wr"> · {d.winRate.toFixed(0)}%</span></span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function App() {
+  const [range, setRange] = React.useState("All");
+  const rows = TRADES.filter((t) => inRange(t, range));
+  const s = summarize(rows);
+  const eq = equity(rows);
+  const byStrat = groupBy(rows, (t) => t.strat);
+  const bySym = groupBy(rows, (t) => t.sym);
+  const byBucket = groupBy(rows, (t) => t.bucket);
+  const byDow = groupBy(rows, (t) => t.dow);
+  const st = streaks(rows);
+  const wlRatio = s.avgLoss ? s.avgWin / s.avgLoss : 0;
+
+  // risk / discipline
+  const byDate = groupBy(rows, (t) => t.date).map((d) => d.net);
+  const worstDay = byDate.length ? Math.min(...byDate) : 0;
+  const largestLoss = rows.length ? Math.min(...rows.map((t) => t.pnl)) : 0;
+  const avgLossVsTrail = s.avgLoss / MLL_TRAIL;
+  const worstDayVsTrail = Math.abs(worstDay) / MLL_TRAIL;
+  const approachedMLL = byDate.filter((n) => Math.abs(Math.min(0, n)) > MLL_TRAIL * 0.5).length;
+
+  const Metric = ({ l, v, tone, sub, subTone }) => (
+    <div className="an-metric"><span className="l">{l}</span><span className={"v " + (tone||"")}>{v}</span>{sub && <span className={"s " + (subTone||"")}>{sub}</span>}</div>
+  );
+
+  return (
+    <div className="cb-app">
+      <Rail active="analytics" />
+      <div className="cb-main" style={{overflow:"hidden", display:"flex", flexDirection:"column"}}>
+        <header className="cb-header">
+          <span className="an-title">Analytics</span>
+          <span className="an-ctx">{J.TIER} Combine</span>
+          <div className="an-range">
+            {["Today","Week","Month","All"].map((r) => <button key={r} className={range===r?"on":""} onClick={()=>setRange(r)}>{r}</button>)}
+          </div>
+        </header>
+
+        <div className="an-scroll">
+          <div className="an-content">
+            {/* metric hero */}
+            <div className="an-metrics">
+              <Metric l="Net P&L" v={fmt(s.net, true)} tone={s.net>=0?"bull":"bear"} sub={`${s.n} trades`} />
+              <Metric l="Win rate" v={s.winRate.toFixed(0)+"%"} sub={`${s.wins}W · ${s.losses}L`} />
+              <Metric l="Profit factor" v={isFinite(s.profitFactor)?s.profitFactor.toFixed(2):"∞"} sub={s.profitFactor>=1?"net edge":"bleeding"} subTone={s.profitFactor>=1?"bull":"bear"} />
+              <Metric l="Avg win / loss" v={wlRatio.toFixed(2)+"×"} sub={`${fmt(s.avgWin)} / ${fmt(s.avgLoss)}`} />
+              <Metric l="Expectancy" v={fmt(s.expectancy, true)} tone={s.expectancy>=0?"bull":"bear"} sub="per trade" />
+              <Metric l="Total trades" v={s.n} sub={`${fmtHold(s.avgHoldWin)} avg hold`} />
+            </div>
+
+            {/* equity curve */}
+            <div className="an-panel">
+              <div className="an-phead"><span className="k">Equity Curve · cumulative P&L</span><span className="r">max drawdown {fmt(eq.maxDD)}</span></div>
+              <div className="an-equity-body"><EquityCurve rows={rows} /></div>
+              <div className="an-eq-legend">
+                <span className="li"><span className="sw" style={{background:s.net>=0?"var(--td-bullish)":"var(--td-bearish)"}} /> cumulative P&L</span>
+                <span className="li" style={{marginLeft:"auto"}}>max drawdown {fmt(eq.maxDD)}</span>
+              </div>
+            </div>
+
+            {/* breakdowns row 1 */}
+            <div className="an-grid">
+              <div className="an-panel"><div className="an-phead"><span className="k">By Strategy</span><span className="r">net · win%</span></div><HBars data={byStrat} /></div>
+              <div className="an-panel"><div className="an-phead"><span className="k">By Symbol</span><span className="r">net · win%</span></div><HBars data={bySym} /></div>
+              <div className="an-panel">
+                <div className="an-phead"><span className="k">Streaks &amp; Hold</span><span className="r">order</span></div>
+                <div className="an-stats">
+                  <div className="an-stat"><span className="sl">Best win streak</span><span className="sv bull">{st.best}W</span></div>
+                  <div className="an-stat"><span className="sl">Worst loss streak</span><span className="sv bear">{Math.abs(st.worst)}L</span></div>
+                  <div className="an-stat"><span className="sl">Current streak</span><span className={"sv " + (st.current>=0?"bull":"bear")}>{Math.abs(st.current)}{st.current>=0?"W":"L"}</span></div>
+                  <div className="an-stat"><span className="sl">Avg hold · win</span><span className="sv">{fmtHold(s.avgHoldWin)}</span></div>
+                  <div className="an-stat"><span className="sl">Avg hold · loss</span><span className="sv">{fmtHold(s.avgHoldLoss)}</span></div>
+                </div>
+              </div>
+            </div>
+
+            {/* breakdowns row 2 */}
+            <div className="an-grid-2">
+              <div className="an-panel"><div className="an-phead"><span className="k">By Time of Day</span><span className="r">net P&L · 0DTE is intraday</span></div><VBars data={byBucket} order={["Open","Midday","Power hour"]} /></div>
+              <div className="an-panel"><div className="an-phead"><span className="k">By Day of Week</span><span className="r">net</span></div><VBars data={byDow} order={["Mon","Tue","Wed","Thu","Fri"]} /></div>
+            </div>
+
+            {/* risk / discipline */}
+            <div className="an-panel an-risk">
+              <div className="an-phead"><span className="k">Risk &amp; Discipline · vs {J.TIER} MLL trail {fmt(MLL_TRAIL)}</span><span className="r">are you trading within the rules</span></div>
+              <div className="an-risk-body">
+                <div className="an-risk-cell"><span className="l">Max drawdown</span><span className="v warn">{fmt(eq.maxDD)}</span><span className="s">{(eq.maxDD/MLL_TRAIL*100).toFixed(0)}% of trail</span></div>
+                <div className="an-risk-cell"><span className="l">Largest single loss</span><span className="v bear">{fmt(largestLoss)}</span><span className="s">{(Math.abs(largestLoss)/MLL_TRAIL*100).toFixed(0)}% of trail</span></div>
+                <div className="an-risk-cell"><span className="l">Worst day</span><span className="v bear">{fmt(worstDay, true)}</span><span className="s">{(worstDayVsTrail*100).toFixed(0)}% of trail</span></div>
+                <div className="an-risk-cell"><span className="l">Days near MLL</span><span className={"v " + (approachedMLL?"warn":"bull")}>{approachedMLL}</span><span className="s">&gt;50% of trail in a day</span></div>
+                <div className="an-mll-bar">
+                  <div className="an-risk-cell"><span className="l">Avg loss vs MLL trail — keep this small</span></div>
+                  <div className="an-mll-track"><span className="fill" style={{width: Math.min(100, avgLossVsTrail*100)+"%"}} /><span className="avg" style={{left: Math.min(100, avgLossVsTrail*100)+"%"}} /></div>
+                </div>
+                <div className="an-risk-foot">
+                  Your average loss is <b>{fmt(s.avgLoss)}</b> — <b>{(avgLossVsTrail*100).toFixed(0)}%</b> of the {fmt(MLL_TRAIL)} trailing limit. At this size it takes <b>{Math.ceil(MLL_TRAIL/Math.max(1,s.avgLoss))} consecutive losers</b> to threaten the account. Worst actual streak this range was <b>{Math.abs(st.worst)}</b>. Discipline is holding.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

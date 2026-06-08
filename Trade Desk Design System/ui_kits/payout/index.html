@@ -1,0 +1,153 @@
+<!-- @dsCard group="Payout" viewport="800x900" name="Payout Request" subtitle="Request your 50% share — eligibility confirm, split math, partial amount, method · toggle form / submitted" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trade Desk — Request Payout</title>
+<link rel="stylesheet" href="../../styles.css">
+<link rel="stylesheet" href="payout.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body class="td-root">
+<div id="root"></div>
+<script type="text/babel">
+// Eligible 50K funded trader (carried from the funded view).
+const ACCT = { tier: "50K", balance: 50960 };
+const GROSS = 960;          // gross eligible profit since last payout
+const SPLIT = 0.5;
+const YOUR = GROSS * SPLIT;  // 480
+const FIRM = GROSS * SPLIT;  // 480
+const STEP = 20;
+const fmt = (v) => "$" + Math.round(v).toLocaleString("en-US");
+
+function App() {
+  const [view, setView] = React.useState("FORM");     // FORM | SUBMITTED
+  const [amount, setAmount] = React.useState(YOUR);
+  const submittedDate = "Jun 5, 2026";
+
+  const clamp = (v) => Math.max(STEP, Math.min(YOUR, Math.round(v / STEP) * STEP));
+  // gross drawn from the account = the trader's requested share grossed up
+  // by the split (firm's matching half is retained automatically).
+  const grossDrawn = amount / SPLIT;
+
+  return (
+    <div className="py-body">
+      <div className="py-demo-toggle">
+        {["FORM", "SUBMITTED"].map((s) => (
+          <button key={s} className={view === s ? "on" : ""} onClick={() => setView(s)}>{s === "FORM" ? "Request form" : "Submitted"}</button>
+        ))}
+      </div>
+
+      <div className="py-top">
+        <div className="py-top-inner">
+          <a className="py-back" href="../funded/index.html">‹ Funded</a>
+          <span className="title">Request Payout</span>
+          <span className="ctx">
+            <span className="acct">{ACCT.tier} Funded</span>
+            <span className="bal">Balance <b>{fmt(ACCT.balance)}</b></span>
+          </span>
+        </div>
+      </div>
+
+      {view === "FORM" ? (
+        <div className="py-col">
+          {/* eligibility confirmation */}
+          <div className="py-elig">
+            <span className="hd"><span className="ic">✓</span> Eligible</span>
+            <span className="reqs">
+              <span className="req"><span className="c">✓</span> 3 green days</span>
+              <span className="req"><span className="c">✓</span> each over $150</span>
+              <span className="req"><span className="c">✓</span> consistency 29%</span>
+              <span className="req"><span className="c">✓</span> weekly window open</span>
+            </span>
+          </div>
+
+          {/* amount */}
+          <div className="py-panel">
+            <div className="py-phead"><span className="k">Eligible Payout</span><span className="r">since last payout</span></div>
+            <div className="py-amount">
+              <div className="py-eligible">
+                <span className="l">Eligible payout</span>
+                <span className="v">{fmt(YOUR)}</span>
+              </div>
+
+              <div className="py-request">
+                <span className="rl">Request amount — up to {fmt(YOUR)}</span>
+                <div className="py-amount-input">
+                  <div className="py-field">
+                    <span className="cur">$</span>
+                    <input type="text" value={amount.toLocaleString("en-US")}
+                      onChange={(e) => { const n = parseInt(e.target.value.replace(/[^0-9]/g, ""), 10); setAmount(isNaN(n) ? 0 : Math.min(YOUR, n)); }}
+                      onBlur={() => setAmount(clamp(amount))} />
+                  </div>
+                  <button className="py-max" onClick={() => setAmount(YOUR)}>Max</button>
+                </div>
+                <input className="py-slider" type="range" min={STEP} max={YOUR} step={STEP} value={amount}
+                  onChange={(e) => setAmount(parseInt(e.target.value, 10))} />
+                <span className="py-hint">
+                  Requesting <b>{fmt(amount)}</b> of {fmt(YOUR)}.
+                  {amount < YOUR ? ` ${fmt(YOUR - amount)} stays in the account as buffer.` : " Full eligible amount."}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* method */}
+          <div className="py-panel">
+            <div className="py-phead"><span className="k">Payout Method</span><span className="r">mock</span></div>
+            <div className="py-method">
+              <div className="py-method-row sel"><span className="radio" /><span className="mtxt">Bank account<span className="ms">····4291 · ACH</span></span></div>
+              <div className="py-method-row alt"><span className="radio" /><span className="mtxt">+ Add method</span></div>
+            </div>
+          </div>
+
+          {/* what happens next */}
+          <div className="py-panel">
+            <div className="py-phead"><span className="k">What happens next</span></div>
+            <div className="py-steps">
+              <span className="py-step active"><span className="n">1</span> Request</span><span className="py-step-line" />
+              <span className="py-step"><span className="n">2</span> Review</span><span className="py-step-line" />
+              <span className="py-step"><span className="n">3</span> Approved</span><span className="py-step-line" />
+              <span className="py-step"><span className="n">4</span> Paid</span>
+            </div>
+            <div className="py-next">
+              Requests are reviewed within <b>2 business days</b>. Once approved, funds are sent to your selected method. Your account balance adjusts automatically once the payout is paid.
+            </div>
+          </div>
+
+          <button className="py-confirm" onClick={() => setView("SUBMITTED")}>Request {fmt(amount)} Payout</button>
+          <span className="py-disclaimer">By requesting, you confirm the amount and method above. Mock flow — no real funds move.</span>
+        </div>
+      ) : (
+        <div className="py-col">
+          <div className="py-done">
+            <span className="badge">✓</span>
+            <span className="big">Payout requested</span>
+            <span className="amt">{fmt(amount)}</span>
+            <span className="meta">to Bank account ····4291 · <span className="review">under review</span> · submitted {submittedDate}</span>
+            <div className="actions">
+              <a className="ghost" href="../funded/index.html">‹ Back to funded</a>
+              <button className="ghost" onClick={() => setView("FORM")}>View request form</button>
+            </div>
+          </div>
+          <div className="py-panel">
+            <div className="py-phead"><span className="k">Status</span><span className="r">request → review → approved → paid</span></div>
+            <div className="py-steps" style={{ paddingBottom: 12 }}>
+              <span className="py-step active"><span className="n">✓</span> Request</span><span className="py-step-line" />
+              <span className="py-step active"><span className="n">2</span> Review</span><span className="py-step-line" />
+              <span className="py-step"><span className="n">3</span> Approved</span><span className="py-step-line" />
+              <span className="py-step"><span className="n">4</span> Paid</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

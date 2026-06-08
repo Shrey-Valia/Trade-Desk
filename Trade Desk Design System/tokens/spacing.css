@@ -1,0 +1,45 @@
+/* ============================================================
+   TRADE DESK — SPACING, RADII, BORDERS, MOTION
+   Information density is the product. Padding is tight; the 1px
+   hairline border IS the gutter. Radii top out at 4px (buttons);
+   panels are square. No shadows, no blur, no gradients.
+   ============================================================ */
+
+:root {
+  /* --- Spacing scale (px) — tight by design --- */
+  --td-space-0: 0px;
+  --td-space-1: 2px;
+  --td-space-2: 4px;   /* metric-cell vertical pad, stepper gaps */
+  --td-space-3: 6px;   /* metric-cell horizontal pad, row pad */
+  --td-space-4: 8px;   /* outermost panel pad, pill cluster gap */
+  --td-space-5: 12px;  /* header horizontal pad */
+  --td-space-6: 16px;
+
+  /* --- Density references (from DESIGN.md) --- */
+  --td-row-height: 18px;       /* chain row, dense list row */
+  --td-header-height: 64px;    /* persistent top header */
+  --td-rail-width: 48px;       /* left icon rail */
+  --td-toolbar-height: 36px;   /* chart toolbar */
+
+  /* --- Radii — 4px standard, never larger --- */
+  --td-radius-0: 0px;   /* panels, tables, chart — square */
+  --td-radius-pill: 2px;/* badges / pills */
+  --td-radius: 4px;     /* buttons, metric pills, inputs */
+
+  /* --- Borders --- */
+  --td-border-width: 1px; /* hairline — never thicker for frames */
+  --td-border-hairline: 1px solid var(--td-border);
+  --td-border-active: 1px solid var(--td-amber);
+  --td-border-strong-rule: 1px solid var(--td-border-strong);
+
+  /* --- Shadows: none. Period. --- */
+  --td-shadow: none;
+
+  /* --- Motion — opacity/color only, 100ms ease-out --- */
+  --td-transition: 100ms ease-out; /* @kind other */
+  --td-transition-colors: background-color 100ms ease-out, color 100ms ease-out, border-color 100ms ease-out;
+
+  /* --- Focus ring --- */
+  --td-focus-outline: 2px solid var(--td-amber);
+  --td-focus-offset: 1px;
+}

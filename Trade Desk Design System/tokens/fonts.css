@@ -1,0 +1,30 @@
+/* ============================================================
+   TRADE DESK — WEBFONTS
+   IBM Plex Mono is the single typeface across the entire terminal.
+   Open-source (SIL OFL). The product ships only weights 400
+   (regular) and 500 (medium) — Bloomberg never goes heavy;
+   weights >=600 are intentionally excluded.
+
+   The @import below is the reliable runtime loader (full unicode
+   subsets, always current). The explicit @font-face rules declare
+   the family for tooling / self-hosting; if a CDN hash ever rotates
+   the @import still resolves the font.
+   ============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/ibmplexmono/v19/-F63fjptAgt5VM-kVkqdyU8n3kwq0n1hj-sNFQ.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/ibmplexmono/v19/-F6qfjptAgt5VM-kVkqdyU8n3pwq0n1d-q5sFA.woff2") format("woff2");
+}

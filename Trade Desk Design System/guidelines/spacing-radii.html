@@ -1,0 +1,26 @@
+<!-- @dsCard group="Spacing" viewport="700x150" name="Radii & borders" subtitle="0 panels · 2px pills · 4px buttons · no shadows" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--td-bg-0); font-family: var(--td-font-mono); }
+  .wrap { display: flex; gap: 20px; padding: 18px 16px; align-items: flex-end; }
+  .item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .box { width: 72px; height: 56px; background: var(--td-bg-2); border: 1px solid var(--td-border-strong); }
+  .name { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+  .px { font-size: 11px; color: var(--td-fg-secondary); font-variant-numeric: tabular-nums; }
+  .hair { width: 120px; border-top: 1px solid var(--td-border); }
+  .hair-strong { width: 120px; border-top: 1px solid var(--td-border-strong); }
+</style>
+</head>
+<body class="td-root">
+  <div class="wrap">
+    <div class="item"><div class="box" style="border-radius:0"></div><span class="px">0</span><span class="name">Panels</span></div>
+    <div class="item"><div class="box" style="border-radius:2px"></div><span class="px">2</span><span class="name">Pills</span></div>
+    <div class="item"><div class="box" style="border-radius:4px"></div><span class="px">4</span><span class="name">Buttons</span></div>
+    <div class="item" style="gap:14px"><div class="hair"></div><span class="name" style="color:var(--td-fg-tertiary)">hairline · #2F3545</span><div class="hair-strong"></div><span class="name">strong · #3A4258</span></div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,70 @@
+/* ===========================================================
+   TRADE DESK — FUNDED ACCOUNT VIEW (UI KIT)
+   Reuses the combine dashboard chrome (combine.css cb-* classes)
+   for continuity; adds funded-specific elements. FUNDED phase is
+   signalled by a green-accented tier pill + split badge.
+   =========================================================== */
+
+/* funded tier pill — green-tinted to distinguish from combine amber */
+.fn-pill { height: 40px; padding: 0 12px; display: inline-flex; align-items: center; gap: 8px; background: var(--td-bullish-tint); border: 1px solid var(--td-bullish); border-radius: var(--td-radius); color: var(--td-bullish); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; font-family: var(--td-font-mono); transition: var(--td-transition-colors); }
+.fn-pill .caret { color: var(--td-bullish); opacity: 0.7; font-size: 10px; }
+
+.fn-split-badge { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; white-space: nowrap; border-radius: var(--td-radius-pill); border: 1px solid var(--td-border-strong); color: var(--td-fg-secondary); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; }
+.fn-split-badge b { color: var(--td-fg-primary); }
+
+/* ---------- ELIGIBILITY PANEL (funded hero #2) ---------- */
+.fn-elig-head { display: flex; align-items: center; gap: 10px; }
+.fn-elig-status { display: flex; align-items: center; gap: 10px; padding: 14px 12px; border-bottom: 1px solid var(--td-border); }
+.fn-elig-status .ic { width: 22px; height: 22px; border-radius: 50%; border: 1px solid; display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; }
+.fn-elig-status .txt { display: flex; flex-direction: column; }
+.fn-elig-status .big { font-size: 15px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+.fn-elig-status .sm { font-size: 10px; color: var(--td-fg-tertiary-2); margin-top: 1px; }
+.fn-elig-status.ready { background: var(--td-bullish-tint); }
+.fn-elig-status.ready .ic { color: var(--td-bullish); border-color: var(--td-bullish); }
+.fn-elig-status.ready .big { color: var(--td-bullish); }
+.fn-elig-status.locked .ic { color: var(--td-fg-tertiary-2); border-color: var(--td-border-strong); }
+.fn-elig-status.locked .big { color: var(--td-fg-primary); }
+
+.fn-greendays { display: flex; gap: 6px; padding: 12px; align-items: center; }
+.fn-greendays .pip { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--td-border-strong); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--td-fg-tertiary-2); font-variant-numeric: tabular-nums; }
+.fn-greendays .pip.on { background: var(--td-bullish-tint); border-color: var(--td-bullish); color: var(--td-bullish); }
+.fn-greendays .lab { margin-left: 6px; font-size: 11px; color: var(--td-fg-secondary); font-variant-numeric: tabular-nums; }
+.fn-greendays .lab b { color: var(--td-fg-primary); font-weight: 500; }
+
+.fn-req-btn { margin: 0 12px 12px; height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; border: none; border-radius: var(--td-radius); font-family: var(--td-font-mono); font-size: 13px; font-weight: 500; letter-spacing: 0.04em; cursor: pointer; transition: var(--td-transition-colors); text-decoration: none; }
+.fn-req-btn.on { background: var(--td-action-buy); color: #fff; }
+.fn-req-btn.on:hover { background: var(--td-action-buy-hover); }
+.fn-req-btn.off { background: var(--td-bg-1); border: 1px solid var(--td-bg-3); color: var(--td-fg-disabled); cursor: not-allowed; }
+
+/* ---------- SPLIT BREAKDOWN ---------- */
+.fn-money { display: flex; flex-direction: column; }
+.fn-money-row { display: flex; align-items: baseline; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--td-border); font-variant-numeric: tabular-nums; }
+.fn-money-row:last-child { border-bottom: none; }
+.fn-money-row .l { font-size: 11px; color: var(--td-fg-secondary); }
+.fn-money-row .l .s { display: block; font-size: 9px; color: var(--td-fg-tertiary); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 1px; }
+.fn-money-row .v { font-size: 15px; font-weight: 500; color: var(--td-fg-primary); }
+.fn-money-row.you { background: var(--td-bg-2); }
+.fn-money-row.you .v { color: var(--td-bullish); }
+.fn-money-row.firm .v { color: var(--td-fg-tertiary-2); }
+.fn-money-row .split-tag { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--td-fg-tertiary); border: 1px solid var(--td-border-strong); border-radius: var(--td-radius-pill); padding: 1px 5px; margin-left: 8px; }
+.fn-withdrawable { padding: 12px; background: var(--td-bullish-tint); border-top: 1px solid var(--td-border); display: flex; align-items: baseline; justify-content: space-between; }
+.fn-withdrawable .l { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-secondary); }
+.fn-withdrawable .v { font-size: 22px; font-weight: 500; color: var(--td-bullish); font-variant-numeric: tabular-nums; }
+.fn-withdrawable.zero { background: var(--td-bg-1); }
+.fn-withdrawable.zero .v { color: var(--td-fg-tertiary-2); }
+
+/* ---------- WITHDRAWAL HISTORY ---------- */
+.fn-hist { display: flex; flex-direction: column; }
+.fn-hist-row { display: grid; grid-template-columns: 130px 1fr 1fr 1fr 90px; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--td-border); font-size: 11px; font-variant-numeric: tabular-nums; }
+.fn-hist-row:last-child { border-bottom: none; }
+.fn-hist-row.head { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary); background: var(--td-bg-0); }
+.fn-hist-row .date { color: var(--td-fg-secondary); }
+.fn-hist-row .gross { color: var(--td-fg-primary); }
+.fn-hist-row .share { color: var(--td-bullish); }
+.fn-hist-row .firm { color: var(--td-fg-tertiary-2); }
+.fn-hist-row .status { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; }
+.fn-hist-row .status .dot { width: 5px; height: 5px; border-radius: 50%; }
+.fn-hist-row .status.paid { color: var(--td-bullish); } .fn-hist-row .status.paid .dot { background: var(--td-bullish); }
+.fn-hist-row .status.review { color: var(--td-warning); } .fn-hist-row .status.review .dot { background: var(--td-warning); }
+.fn-hist-empty { padding: 16px 12px; font-size: 11px; color: var(--td-fg-tertiary); }
+.fn-num-right { text-align: right; }

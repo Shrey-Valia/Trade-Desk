@@ -1,0 +1,27 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="Text ramp" subtitle="Five-stop foreground — tertiary is decorative only" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--td-bg-0); font-family: var(--td-font-mono); }
+  .wrap { display: flex; flex-direction: column; gap: 0; padding: 16px; }
+  .row { display: flex; align-items: baseline; gap: 16px; padding: 6px 4px; border-bottom: 1px solid var(--td-border); }
+  .row:last-child { border-bottom: none; }
+  .val { font-size: 15px; font-weight: 500; width: 200px; font-variant-numeric: tabular-nums; }
+  .name { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); width: 130px; }
+  .hex { font-size: 11px; color: var(--td-fg-tertiary-2); font-variant-numeric: tabular-nums; width: 80px; }
+  .note { font-size: 9px; color: var(--td-fg-tertiary); }
+</style>
+</head>
+<body class="td-root">
+  <div class="wrap">
+    <div class="row"><span class="val" style="color:var(--td-fg-primary)">$50,132.93</span><span class="name">Primary</span><span class="hex">#E8E8E0</span></div>
+    <div class="row"><span class="val" style="color:var(--td-fg-secondary)">Balance</span><span class="name">Secondary</span><span class="hex">#C4C4BC</span></div>
+    <div class="row"><span class="val" style="color:var(--td-fg-tertiary-2)">spot 758.65</span><span class="name">Tertiary-2</span><span class="hex">#8A8A82</span></div>
+    <div class="row"><span class="val" style="color:var(--td-fg-tertiary)">— separator</span><span class="name">Tertiary</span><span class="hex">#5A5A52</span><span class="note">decorative only · fails AA</span></div>
+    <div class="row"><span class="val" style="color:var(--td-fg-disabled)">disabled</span><span class="name">Disabled</span><span class="hex">#3F3F3A</span></div>
+  </div>
+</body>
+</html>

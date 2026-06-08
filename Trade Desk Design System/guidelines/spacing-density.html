@@ -1,0 +1,25 @@
+<!-- @dsCard group="Spacing" viewport="700x160" name="Density in use" subtitle="Metric pill = bg-2 + 1px bg-3 border + 4px radius" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--td-bg-0); font-family: var(--td-font-mono); }
+  .wrap { padding: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pill { background: var(--td-bg-2); border: 1px solid var(--td-bg-3); border-radius: 4px; padding: 5px 10px; display: flex; flex-direction: column; line-height: 1.15; min-width: 104px; height: 44px; justify-content: center; }
+  .pill .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+  .pill .val { font-size: 15px; font-weight: 500; margin-top: 2px; font-variant-numeric: tabular-nums; color: var(--td-fg-primary); }
+  .cap { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary); padding: 0 16px 8px; }
+</style>
+</head>
+<body class="td-root">
+  <div class="cap" style="padding-top:14px">Metric pills · ~110×44</div>
+  <div class="wrap" style="padding-top:0">
+    <div class="pill"><span class="lbl">BAL</span><span class="val">$50,132.93</span></div>
+    <div class="pill"><span class="lbl">MLL</span><span class="val">$48,000.00</span></div>
+    <div class="pill"><span class="lbl">RP&amp;L</span><span class="val" style="color:var(--td-fg-primary)">$0.00</span></div>
+    <div class="pill"><span class="lbl">UP&amp;L</span><span class="val" style="color:var(--td-bullish)">+$132.93</span></div>
+  </div>
+</body>
+</html>

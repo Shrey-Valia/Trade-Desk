@@ -1,0 +1,70 @@
+/* ============================================================
+   TRADE DESK — COLOR TOKENS
+   Source of truth: frontend/src/lib/palette.js + DESIGN.md
+   Dark-navy ground (NOT pure black). The discipline of HOW each
+   color is used is strict — see readme.md › VISUAL FOUNDATIONS.
+   ============================================================ */
+
+:root {
+  /* --- Surface elevation tiers (softer dark navy, not black) --- */
+  --td-bg-0: #131722; /* deepest — body background */
+  --td-bg-1: #1A1F2D; /* panel / card */
+  --td-bg-2: #222837; /* elevated — selected row, hover */
+  --td-bg-3: #2A3142; /* active control fill */
+
+  /* --- Foreground (text) ramp — five stops --- */
+  --td-fg-primary: #E8E8E0;   /* warm off-white — values, default text */
+  --td-fg-secondary: #C4C4BC; /* labels above values */
+  --td-fg-tertiary-2: #8A8A82;/* muted labels, axis ticks */
+  --td-fg-tertiary: #5A5A52;  /* decorative chrome ONLY (fails AA for body) */
+  --td-fg-disabled: #3F3F3A;  /* dead controls, disabled cells */
+
+  /* --- Borders — hairlines, bumped to read on the lifted ground --- */
+  --td-border: #2F3545;        /* 1px hairline everywhere */
+  --td-border-strong: #3A4258; /* selected / focused panel boundary */
+
+  /* --- Price semantics — RESERVED for +/- price moves + P&L --- */
+  --td-bullish: #4DD17C; /* positive %chg, up candles, winning P&L */
+  --td-bearish: #E85C5C; /* negative %chg, down candles, losing P&L, errors */
+
+  /* --- Accents --- */
+  --td-amber: #F0A030;   /* ACTIVE / SELECTED ONLY — brand mark, CTA, focus */
+  --td-cyan: #4FB8C8;    /* neutral level markers, expandable, links */
+  --td-warning: #C97A3A; /* alerts / advisories — "market closed", ER badge */
+
+  /* --- User position highlight (entry triangle + breakeven lines) --- */
+  --td-position: #D946EF; /* magenta — the trader's OWN position only */
+  --td-position-bar: #D4537E; /* slightly desaturated for decay-bar fills */
+
+  /* --- Action affordance — BUY / SELL filled buttons --- */
+  /* Deliberately distinct from bullish/bearish (price/P&L semantics). */
+  --td-action-buy: #2A8C4A;
+  --td-action-buy-hover: #33A357;
+  --td-action-buy-active: #21753E;
+  --td-action-sell: #C8434A;
+  --td-action-sell-hover: #D85258;
+  --td-action-sell-active: #A6363C;
+
+  /* --- Faint tinted fills (derived, used sparingly for badges/rows) --- */
+  --td-amber-tint: rgba(240, 160, 48, 0.12);
+  --td-bullish-tint: rgba(77, 209, 124, 0.14);
+  --td-bearish-tint: rgba(232, 92, 92, 0.14);
+  --td-position-tint: rgba(217, 70, 239, 0.14);
+
+  /* ===========================================================
+     SEMANTIC ALIASES — prefer these in product/component code
+     =========================================================== */
+  --td-surface-body: var(--td-bg-0);
+  --td-surface-panel: var(--td-bg-1);
+  --td-surface-raised: var(--td-bg-2);
+  --td-surface-active: var(--td-bg-3);
+
+  --td-text-value: var(--td-fg-primary);
+  --td-text-label: var(--td-fg-secondary);
+  --td-text-muted: var(--td-fg-tertiary-2);
+  --td-text-chrome: var(--td-fg-tertiary);
+
+  --td-accent-active: var(--td-amber);
+  --td-accent-neutral: var(--td-cyan);
+  --td-focus-ring: var(--td-amber);
+}

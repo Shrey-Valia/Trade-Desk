@@ -1,0 +1,34 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="Action affordance" subtitle="BUY / SELL fills — a separate axis from price color" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--td-bg-0); font-family: var(--td-font-mono); }
+  .wrap { display: flex; gap: 14px; padding: 16px; align-items: stretch; }
+  .col { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+  .btn { height: 48px; border-radius: 4px; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.15; }
+  .btn .lbl { font-size: 14px; font-weight: 500; letter-spacing: 0.04em; }
+  .btn .sub { font-size: 10px; opacity: 0.78; font-variant-numeric: tabular-nums; }
+  .states { display: flex; gap: 6px; }
+  .st { flex: 1; height: 18px; border-radius: 2px; }
+  .name { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+  .hex { font-size: 10px; color: var(--td-fg-tertiary); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body class="td-root">
+  <div class="wrap">
+    <div class="col">
+      <div class="btn" style="background:var(--td-action-buy)"><span class="lbl">BUY +1</span><span class="sub">long call · $8.00 debit</span></div>
+      <div class="states"><div class="st" style="background:var(--td-action-buy)"></div><div class="st" style="background:var(--td-action-buy-hover)"></div><div class="st" style="background:var(--td-action-buy-active)"></div></div>
+      <span class="name" style="color:var(--td-action-buy)">Buy</span><span class="hex">#2A8C4A · hover #33A357 · active #21753E</span>
+    </div>
+    <div class="col">
+      <div class="btn" style="background:var(--td-action-sell)"><span class="lbl">SELL -1</span><span class="sub">short call · $8.00 credit</span></div>
+      <div class="states"><div class="st" style="background:var(--td-action-sell)"></div><div class="st" style="background:var(--td-action-sell-hover)"></div><div class="st" style="background:var(--td-action-sell-active)"></div></div>
+      <span class="name" style="color:var(--td-action-sell)">Sell</span><span class="hex">#C8434A · hover #D85258 · active #A6363C</span>
+    </div>
+  </div>
+</body>
+</html>

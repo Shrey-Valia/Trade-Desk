@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 40" width="250" height="40" role="img" aria-label="Trade Desk">
+  <title>Trade Desk</title>
+  <text x="0" y="28" font-family="&#39;IBM Plex Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" letter-spacing="0.22em">
+    <tspan fill="#F0A030">[</tspan><tspan dx="6" font-weight="500" fill="#E8E8E0">TRADE</tspan><tspan dx="10" font-weight="400" fill="#C4C4BC">DESK</tspan>
+  </text>
+  <rect x="206" y="11" width="10" height="17" fill="#F0A030"></rect>
+  <text x="226" y="28" font-family="&#39;IBM Plex Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" letter-spacing="0.22em" fill="#F0A030">]</text>
+</svg>

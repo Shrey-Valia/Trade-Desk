@@ -1,0 +1,25 @@
+<!-- @dsCard group="Colors" viewport="700x170" name="Accents" subtitle="Amber=active · Cyan=neutral · Warning=advisory · Magenta=position" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--td-bg-0); font-family: var(--td-font-mono); }
+  .wrap { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 16px; }
+  .sw { border: 1px solid var(--td-border); padding: 10px; display: flex; flex-direction: column; gap: 7px; }
+  .chip { height: 26px; border-radius: 2px; }
+  .name { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+  .hex { font-size: 10px; color: var(--td-fg-tertiary-2); font-variant-numeric: tabular-nums; }
+  .use { font-size: 9px; color: var(--td-fg-tertiary); line-height: 1.35; }
+</style>
+</head>
+<body class="td-root">
+  <div class="wrap">
+    <div class="sw"><div class="chip" style="background:var(--td-amber)"></div><span class="name" style="color:var(--td-amber)">Amber</span><span class="hex">#F0A030</span><span class="use">active / selected only · mark · CTA · focus</span></div>
+    <div class="sw"><div class="chip" style="background:var(--td-cyan)"></div><span class="name" style="color:var(--td-cyan)">Cyan</span><span class="hex">#4FB8C8</span><span class="use">neutral levels · links · expandable</span></div>
+    <div class="sw"><div class="chip" style="background:var(--td-warning)"></div><span class="name" style="color:var(--td-warning)">Warning</span><span class="hex">#C97A3A</span><span class="use">advisories · market closed · ER badge</span></div>
+    <div class="sw"><div class="chip" style="background:var(--td-position)"></div><span class="name" style="color:var(--td-position)">Position</span><span class="hex">#D946EF</span><span class="use">trader's OWN position · BE lines · entry</span></div>
+  </div>
+</body>
+</html>

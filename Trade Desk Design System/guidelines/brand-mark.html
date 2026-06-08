@@ -1,0 +1,25 @@
+<!-- @dsCard group="Brand" viewport="700x170" name="TD mark" subtitle="Amber outlined square · TD monogram · scales 16→64px" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--td-bg-0); font-family: var(--td-font-mono); }
+  .wrap { display: flex; gap: 28px; padding: 20px 24px; align-items: flex-end; }
+  .item { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .name { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+  .note { margin-left: auto; max-width: 260px; font-size: 10px; line-height: 1.5; color: var(--td-fg-tertiary); }
+  .note b { color: var(--td-fg-secondary); font-weight: 500; }
+</style>
+</head>
+<body class="td-root">
+  <div class="wrap">
+    <div class="item"><img src="../assets/td-mark.svg" width="64" height="64" alt="TD mark 64"><span class="name">64px</span></div>
+    <div class="item"><img src="../assets/td-mark.svg" width="48" height="48" alt="TD mark 48"><span class="name">48px</span></div>
+    <div class="item"><img src="../assets/td-mark.svg" width="36" height="36" alt="TD mark 36"><span class="name">36 · rail</span></div>
+    <div class="item"><img src="../assets/td-mark.svg" width="20" height="20" alt="TD mark 20"><span class="name">20 · favicon</span></div>
+    <p class="note">2px amber stroke, transparent fill, corner radius ~14% of size. <b>TD</b> in IBM Plex Mono 500, −0.02em tracking, fg-primary.</p>
+  </div>
+</body>
+</html>

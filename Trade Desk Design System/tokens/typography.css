@@ -1,0 +1,55 @@
+/* ============================================================
+   TRADE DESK — TYPOGRAPHY TOKENS
+   IBM Plex Mono everywhere. Tabular nums ALWAYS on for numeric
+   data. Uppercase labels get +0.08em tracking at 9-11px.
+   Size ramp + line heights mirror DESIGN.md exactly.
+   ============================================================ */
+
+:root {
+  /* --- Family --- */
+  --td-font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* `sans` is aliased to mono — there is no proportional stack. */
+  --td-font-sans: var(--td-font-mono);
+
+  /* --- Weights (only two exist) --- */
+  --td-weight-regular: 400; /* body, labels, secondary */
+  --td-weight-medium: 500;  /* values, selected state, price header */
+
+  /* --- Size ramp (px) / line-height pairs --- */
+  --td-size-micro: 9px;    /* uppercase labels, axis ticks, sub-context */
+  --td-lh-micro: 12px;
+  --td-size-tiny: 11px;    /* pill bodies, indices, row metadata */
+  --td-lh-tiny: 14px;
+  --td-size-body: 13px;    /* default body, ticker rows, watchlist */
+  --td-lh-body: 18px;
+  --td-size-medium: 15px;  /* ticker symbol in price header, metric values */
+  --td-lh-medium: 20px;
+  --td-size-large: 17px;   /* metric card values */
+  --td-lh-large: 22px;
+  --td-size-display: 19px; /* current price in price header */
+  --td-lh-display: 24px;
+
+  /* --- Tracking --- */
+  --td-tracking-default: 0;
+  --td-tracking-label: 0.08em; /* uppercase labels */
+  --td-tracking-mark: -0.02em; /* TD monogram */
+
+  /* --- Numeric --- */
+  --td-numeric: tabular-nums; /* @kind other */
+}
+
+/* Utility — apply to any element rendering numbers. */
+.td-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Utility — the canonical uppercase micro-label. */
+.td-label {
+  font-family: var(--td-font-mono);
+  font-size: var(--td-size-micro);
+  line-height: var(--td-lh-micro);
+  font-weight: var(--td-weight-regular);
+  text-transform: uppercase;
+  letter-spacing: var(--td-tracking-label);
+  color: var(--td-text-label);
+}

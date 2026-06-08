@@ -1,0 +1,85 @@
+<!-- @dsCard group="Combine" viewport="1440x900" name="Combine Evaluation Dashboard" subtitle="Risk-first evaluation tracker — MLL hero, profit target, checklist, daily breakdown · toggle ACTIVE / PASSED / FAILED" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trade Desk — Combine Evaluation</title>
+<link rel="stylesheet" href="../../styles.css">
+<link rel="stylesheet" href="combine.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="Combine.jsx"></script>
+</head>
+<body class="td-root">
+<div id="root"></div>
+<script type="text/babel">
+const { buildModel, Hero, ProfitTarget, Checklist, DailyBreakdown, fmt } = window.CombineParts;
+
+function Rail() {
+  const items = [["chart","Chart"],["journal","Journal"],["analytics","Analytics"],["watchlist","Watch"]];
+  const ICONS = {
+    chart: <g><line x1="6" y1="3" x2="6" y2="17"/><rect x="4" y="6" width="4" height="7" fill="currentColor"/><line x1="14" y1="3" x2="14" y2="17"/><rect x="12" y="8" width="4" height="5"/></g>,
+    journal: <g><path d="M4 4h9a2 2 0 0 1 2 2v11H6a2 2 0 0 1-2-2V4z"/><line x1="7" y1="8" x2="12" y2="8"/><line x1="7" y1="11" x2="12" y2="11"/><line x1="7" y1="14" x2="10" y2="14"/></g>,
+    analytics: <g><line x1="3" y1="17" x2="17" y2="17"/><rect x="4" y="11" width="3" height="6"/><rect x="9" y="7" width="3" height="10"/><rect x="14" y="4" width="3" height="13"/></g>,
+    watchlist: <g><circle cx="4.5" cy="5.5" r="1" fill="currentColor" stroke="none"/><line x1="8" y1="5.5" x2="17" y2="5.5"/><circle cx="4.5" cy="10" r="1" fill="currentColor" stroke="none"/><line x1="8" y1="10" x2="17" y2="10"/><circle cx="4.5" cy="14.5" r="1" fill="currentColor" stroke="none"/><line x1="8" y1="14.5" x2="17" y2="14.5"/></g>,
+    settings: <g><circle cx="10" cy="10" r="2.5"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></g>,
+  };
+  const Glyph = ({ n }) => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">{ICONS[n]}</svg>;
+  return (
+    <nav className="cb-rail">
+      <div className="cb-rail-mark">
+        <svg viewBox="0 0 36 36" width="32" height="32">
+          <rect x="1" y="1" width="34" height="34" rx="5" ry="5" fill="none" stroke="var(--td-amber)" strokeWidth="2"/>
+          <text x="18" y="18" textAnchor="middle" dominantBaseline="central" fontFamily="var(--td-font-mono)" fontSize="20" fontWeight="500" letterSpacing="-0.02em" fill="var(--td-fg-primary)">TD</text>
+        </svg>
+      </div>
+      {items.map(([k,l]) => <button key={k} className="cb-rail-btn" title={l}><Glyph n={k}/><span>{l}</span></button>)}
+      <button className="cb-rail-btn cb-rail-foot" title="Settings"><Glyph n="settings"/><span>Settings</span></button>
+    </nav>
+  );
+}
+
+function App() {
+  const [tier, setTier] = React.useState("50K");
+  const [reqState, setReqState] = React.useState("ACTIVE");
+  const m = buildModel(tier, reqState);
+  const stateClass = m.state.toLowerCase();
+  return (
+    <div className="cb-app">
+      <Rail />
+      <div className="cb-main">
+        <header className="cb-header">
+          <button className="cb-tier" onClick={() => setTier(tier === "50K" ? "100K" : tier === "100K" ? "150K" : "50K")}>
+            {tier} Combine <span className="caret">▾</span>
+          </button>
+          <span className={"cb-state-badge " + stateClass}><span className="dot" />{m.state}</span>
+          <div className="cb-balances">
+            <div className="grp"><span className="l">Balance</span><span className={"v " + (m.profit > 0 ? "bull" : m.profit < 0 ? "bear" : "")}>{fmt(m.balance)}</span></div>
+            <div className="grp"><span className="l">Starting</span><span className="v sub">{fmt(m.t.start)}</span></div>
+            <div className="grp"><span className="l">Net P&L</span><span className={"v " + (m.profit >= 0 ? "bull" : "bear")}>{(m.profit>=0?"+":"−")+"$"+Math.abs(m.profit).toLocaleString()}</span></div>
+          </div>
+          <div className="cb-toggle">
+            {["ACTIVE","PASSED","FAILED"].map((s) => (
+              <button key={s} className={reqState === s ? "on" : ""} onClick={() => setReqState(s)}>{s}</button>
+            ))}
+          </div>
+        </header>
+
+        <div className="cb-content">
+          <Hero m={m} />
+          <div className="cb-row">
+            <ProfitTarget m={m} />
+            <Checklist m={m} />
+          </div>
+          <DailyBreakdown m={m} />
+        </div>
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

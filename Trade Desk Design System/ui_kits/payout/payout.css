@@ -1,0 +1,95 @@
+/* ===========================================================
+   TRADE DESK — PAYOUT REQUEST FLOW (UI KIT)
+   Focused flow, not a dashboard. Centered column on the dark
+   ground. Reuses tokens; continuous with funded/combine.
+   =========================================================== */
+.py-body { min-height: 100vh; background: var(--td-bg-0); display: flex; flex-direction: column; align-items: center; }
+.py-top { width: 100%; border-bottom: 1px solid var(--td-border); background: var(--td-bg-1); }
+.py-top-inner { max-width: 760px; margin: 0 auto; height: 56px; display: flex; align-items: center; gap: 14px; padding: 0 20px; }
+.py-back { display: inline-flex; align-items: center; gap: 6px; color: var(--td-fg-tertiary-2); text-decoration: none; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; transition: var(--td-transition-colors); }
+.py-back:hover { color: var(--td-amber); }
+.py-top .title { font-size: 15px; font-weight: 500; color: var(--td-fg-primary); }
+.py-top .ctx { margin-left: auto; display: flex; align-items: center; gap: 12px; font-variant-numeric: tabular-nums; }
+.py-top .ctx .acct { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: var(--td-radius-pill); background: var(--td-bullish-tint); border: 1px solid var(--td-bullish); color: var(--td-bullish); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; }
+.py-top .ctx .bal { font-size: 11px; color: var(--td-fg-tertiary-2); }
+.py-top .ctx .bal b { color: var(--td-fg-primary); font-weight: 500; }
+
+.py-col { width: 100%; max-width: 760px; padding: 18px 20px 40px; display: flex; flex-direction: column; gap: 14px; }
+
+/* eligibility confirmation block */
+.py-elig { background: var(--td-bullish-tint); border: 1px solid var(--td-bullish); border-radius: var(--td-radius); padding: 12px 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.py-elig .hd { display: flex; align-items: center; gap: 8px; color: var(--td-bullish); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+.py-elig .hd .ic { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--td-bullish); display: flex; align-items: center; justify-content: center; font-size: 11px; }
+.py-elig .reqs { display: flex; gap: 16px; flex-wrap: wrap; }
+.py-elig .req { font-size: 11px; color: var(--td-fg-secondary); display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+.py-elig .req .c { color: var(--td-bullish); }
+
+/* panel */
+.py-panel { background: var(--td-bg-1); border: 1px solid var(--td-border); }
+.py-phead { height: 30px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--td-border); }
+.py-phead .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-secondary); }
+.py-phead .r { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary); }
+
+/* amount panel */
+.py-amount { padding: 16px 14px; display: flex; flex-direction: column; gap: 14px; }
+.py-eligible { display: flex; align-items: baseline; justify-content: space-between; padding: 14px; background: var(--td-bullish-tint); border: 1px solid var(--td-bullish); border-radius: var(--td-radius); }
+.py-eligible .l { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-secondary); }
+.py-eligible .v { font-size: 28px; font-weight: 500; color: var(--td-bullish); font-variant-numeric: tabular-nums; }
+
+.py-request { display: flex; flex-direction: column; gap: 8px; }
+.py-request .rl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-secondary); }
+.py-amount-input { display: flex; align-items: center; gap: 10px; }
+.py-field { flex: 1; display: flex; align-items: center; height: 44px; padding: 0 14px; background: var(--td-bg-0); border: 1px solid var(--td-border-strong); border-radius: var(--td-radius); }
+.py-field .cur { font-size: 18px; color: var(--td-fg-tertiary-2); margin-right: 4px; }
+.py-field input { flex: 1; background: none; border: none; outline: none; color: var(--td-fg-primary); font-family: var(--td-font-mono); font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; width: 100%; }
+.py-max { height: 44px; padding: 0 14px; background: var(--td-bg-2); border: 1px solid var(--td-bg-3); border-radius: var(--td-radius); color: var(--td-fg-secondary); font-family: var(--td-font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; transition: var(--td-transition-colors); }
+.py-max:hover { background: var(--td-bg-3); color: var(--td-amber); }
+.py-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; background: var(--td-bg-2); border: 1px solid var(--td-border); outline: none; }
+.py-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--td-amber); cursor: pointer; border: 2px solid var(--td-bg-0); }
+.py-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--td-amber); cursor: pointer; border: 2px solid var(--td-bg-0); }
+.py-hint { font-size: 10px; color: var(--td-fg-tertiary); font-variant-numeric: tabular-nums; }
+.py-hint b { color: var(--td-fg-secondary); font-weight: 400; }
+
+/* method */
+.py-method { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.py-method-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid; border-radius: var(--td-radius); cursor: pointer; transition: var(--td-transition-colors); }
+.py-method-row.sel { border-color: var(--td-amber); background: var(--td-bg-2); }
+.py-method-row.alt { border-color: var(--td-border); border-style: dashed; color: var(--td-fg-tertiary-2); }
+.py-method-row .radio { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--td-border-strong); display: flex; align-items: center; justify-content: center; }
+.py-method-row.sel .radio { border-color: var(--td-amber); }
+.py-method-row.sel .radio::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--td-amber); }
+.py-method-row .mtxt { font-size: 12px; color: var(--td-fg-primary); }
+.py-method-row .mtxt .ms { font-size: 10px; color: var(--td-fg-tertiary-2); margin-left: 6px; }
+
+/* next steps */
+.py-next { padding: 12px 14px; font-size: 11px; line-height: 1.6; color: var(--td-fg-tertiary-2); }
+.py-next b { color: var(--td-fg-secondary); font-weight: 500; }
+.py-steps { display: flex; align-items: center; gap: 0; padding: 10px 14px 0; }
+.py-step { display: flex; align-items: center; gap: 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--td-fg-tertiary); }
+.py-step .n { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--td-border-strong); display: flex; align-items: center; justify-content: center; font-size: 9px; }
+.py-step.active { color: var(--td-amber); } .py-step.active .n { border-color: var(--td-amber); color: var(--td-amber); }
+.py-step-line { flex: 1; height: 1px; background: var(--td-border); margin: 0 8px; }
+
+/* confirm */
+.py-confirm { height: 48px; border: none; border-radius: var(--td-radius); background: var(--td-action-buy); color: #fff; font-family: var(--td-font-mono); font-size: 14px; font-weight: 500; letter-spacing: 0.04em; cursor: pointer; transition: var(--td-transition-colors); }
+.py-confirm:hover { background: var(--td-action-buy-hover); }
+.py-confirm:active { background: var(--td-action-buy-active); }
+.py-disclaimer { text-align: center; font-size: 10px; color: var(--td-fg-tertiary); }
+
+/* confirmation state */
+.py-done { background: var(--td-bg-1); border: 1px solid var(--td-bullish); border-radius: var(--td-radius); padding: 28px 20px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.py-done .badge { width: 48px; height: 48px; border-radius: 50%; border: 2px solid var(--td-bullish); color: var(--td-bullish); display: flex; align-items: center; justify-content: center; font-size: 24px; }
+.py-done .big { font-size: 19px; font-weight: 500; color: var(--td-fg-primary); }
+.py-done .amt { font-size: 32px; font-weight: 500; color: var(--td-bullish); font-variant-numeric: tabular-nums; }
+.py-done .meta { font-size: 11px; color: var(--td-fg-tertiary-2); font-variant-numeric: tabular-nums; }
+.py-done .meta .review { color: var(--td-warning); }
+.py-done .actions { display: flex; gap: 8px; margin-top: 6px; }
+.py-done .actions a, .py-done .actions button { font-family: var(--td-font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 0 14px; height: 32px; display: inline-flex; align-items: center; border-radius: var(--td-radius); cursor: pointer; text-decoration: none; transition: var(--td-transition-colors); }
+.py-done .actions .ghost { background: var(--td-bg-2); border: 1px solid var(--td-bg-3); color: var(--td-fg-secondary); }
+.py-done .actions .ghost:hover { background: var(--td-bg-3); color: var(--td-fg-primary); }
+
+/* state toggle (demo) */
+.py-demo-toggle { position: fixed; bottom: 16px; right: 16px; display: flex; border: 1px solid var(--td-bg-3); border-radius: var(--td-radius); overflow: hidden; z-index: 10; box-shadow: 0 0 0 4px var(--td-bg-0); }
+.py-demo-toggle button { height: 28px; padding: 0 12px; background: var(--td-bg-2); border: none; border-right: 1px solid var(--td-bg-3); color: var(--td-fg-tertiary-2); font-family: var(--td-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; }
+.py-demo-toggle button:last-child { border-right: none; }
+.py-demo-toggle button.on { color: var(--td-amber); background: var(--td-bg-3); }

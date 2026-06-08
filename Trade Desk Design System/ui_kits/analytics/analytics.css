@@ -1,0 +1,86 @@
+/* ===========================================================
+   TRADE DESK — ANALYTICS (UI KIT)
+   Reuses combine.css chrome. Understanding surface: metric hero,
+   equity curve, performance breakdowns, risk/discipline panel.
+   Green/red reserved for P&L semantics only.
+   =========================================================== */
+
+.an-title { font-size: 15px; font-weight: 500; color: var(--td-fg-primary); letter-spacing: 0.04em; text-transform: uppercase; }
+.an-ctx { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: var(--td-radius-pill); border: 1px solid var(--td-bg-3); background: var(--td-bg-2); color: var(--td-fg-secondary); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; }
+.an-range { margin-left: auto; display: flex; border: 1px solid var(--td-bg-3); border-radius: var(--td-radius); overflow: hidden; }
+.an-range button { height: 28px; padding: 0 12px; background: var(--td-bg-2); border: none; border-right: 1px solid var(--td-bg-3); color: var(--td-fg-tertiary-2); font-family: var(--td-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; transition: var(--td-transition-colors); }
+.an-range button:last-child { border-right: none; }
+.an-range button:hover { color: var(--td-fg-secondary); background: var(--td-bg-3); }
+.an-range button.on { color: var(--td-amber); background: var(--td-bg-3); }
+
+.an-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+.an-content { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+
+/* metric hero row */
+.an-metrics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+.an-metric { background: var(--td-bg-1); border: 1px solid var(--td-border); border-radius: var(--td-radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.an-metric .l { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+.an-metric .v { font-size: 22px; font-weight: 500; color: var(--td-fg-primary); font-variant-numeric: tabular-nums; }
+.an-metric .v.bull { color: var(--td-bullish); } .an-metric .v.bear { color: var(--td-bearish); }
+.an-metric .s { font-size: 10px; color: var(--td-fg-tertiary); font-variant-numeric: tabular-nums; }
+.an-metric .s.bull { color: var(--td-bullish); } .an-metric .s.bear { color: var(--td-bearish); }
+
+/* panels */
+.an-panel { background: var(--td-bg-1); border: 1px solid var(--td-border); display: flex; flex-direction: column; }
+.an-phead { display: flex; align-items: center; justify-content: space-between; height: 28px; padding: 0 12px; border-bottom: 1px solid var(--td-border); flex-shrink: 0; }
+.an-phead .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-secondary); }
+.an-phead .r { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary); font-variant-numeric: tabular-nums; }
+
+/* equity curve */
+.an-equity-body { padding: 12px; position: relative; }
+.an-eq-legend { display: flex; gap: 16px; padding: 0 12px 10px; font-size: 10px; color: var(--td-fg-tertiary-2); }
+.an-eq-legend .li { display: inline-flex; align-items: center; gap: 6px; }
+.an-eq-legend .sw { width: 14px; height: 2px; } .an-eq-legend .sw.dd { height: 10px; background: var(--td-bearish-tint); border-top: 1px dashed var(--td-bearish); }
+
+/* breakdown grid */
+.an-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; align-items: start; }
+.an-grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; align-items: start; }
+.an-bd-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 9px; }
+.an-bd-row { display: grid; grid-template-columns: 92px 1fr 64px; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+.an-bd-row .bl { font-size: 11px; color: var(--td-fg-secondary); text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.an-bd-meter { position: relative; height: 8px; background: var(--td-bg-0); border: 1px solid var(--td-border); }
+.an-bd-meter .mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--td-border-strong); }
+.an-bd-meter .f { position: absolute; top: 0; bottom: 0; }
+.an-bd-meter .f.bull { background: var(--td-bullish); left: 50%; } .an-bd-meter .f.bear { background: var(--td-bearish); right: 50%; }
+.an-bd-row .bv { font-size: 11px; text-align: right; }
+.an-bd-row .bv.bull { color: var(--td-bullish); } .an-bd-row .bv.bear { color: var(--td-bearish); }
+.an-bd-row .wr { font-size: 9px; color: var(--td-fg-tertiary-2); }
+
+/* vertical bar mini (time-of-day, dow) */
+.an-bars { display: flex; align-items: flex-end; gap: 8px; padding: 14px 12px 8px; height: 130px; }
+.an-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+.an-bar-wrap { flex: 1; width: 100%; display: flex; flex-direction: column; justify-content: center; position: relative; }
+.an-bar-zero { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--td-border); }
+.an-bar { width: 60%; margin: 0 auto; border-radius: 1px; position: relative; }
+.an-bar.bull { background: var(--td-bullish); align-self: flex-end; } .an-bar.bear { background: var(--td-bearish); }
+.an-bar-col .bx { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--td-fg-tertiary-2); }
+.an-bar-col .bn { font-size: 9px; color: var(--td-fg-tertiary); font-variant-numeric: tabular-nums; }
+
+/* streak / stat panel */
+.an-stats { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.an-stat { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 6px; border-bottom: 1px solid var(--td-border); }
+.an-stat:last-child { border-bottom: none; }
+.an-stat .sl { font-size: 11px; color: var(--td-fg-secondary); }
+.an-stat .sv { font-size: 14px; font-weight: 500; color: var(--td-fg-primary); font-variant-numeric: tabular-nums; }
+.an-stat .sv.bull { color: var(--td-bullish); } .an-stat .sv.bear { color: var(--td-bearish); }
+
+/* risk / discipline panel */
+.an-risk { border-color: var(--td-border-strong); }
+.an-risk .an-phead { background: var(--td-bg-2); }
+.an-risk-body { padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.an-risk-cell { display: flex; flex-direction: column; gap: 3px; }
+.an-risk-cell .l { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+.an-risk-cell .v { font-size: 18px; font-weight: 500; color: var(--td-fg-primary); font-variant-numeric: tabular-nums; }
+.an-risk-cell .v.bear { color: var(--td-bearish); } .an-risk-cell .v.warn { color: var(--td-warning); } .an-risk-cell .v.bull { color: var(--td-bullish); }
+.an-risk-cell .s { font-size: 10px; color: var(--td-fg-tertiary); }
+.an-risk-foot { grid-column: 1 / -1; font-size: 11px; color: var(--td-fg-tertiary); padding-top: 8px; border-top: 1px solid var(--td-border); line-height: 1.5; }
+.an-risk-foot b { color: var(--td-fg-secondary); font-weight: 500; }
+.an-mll-bar { grid-column: 1 / -1; }
+.an-mll-track { height: 10px; background: var(--td-bg-0); border: 1px solid var(--td-border); position: relative; margin-top: 6px; }
+.an-mll-track .avg { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--td-warning); }
+.an-mll-track .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--td-bearish-tint); }

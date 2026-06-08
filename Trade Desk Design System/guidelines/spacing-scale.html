@@ -1,0 +1,26 @@
+<!-- @dsCard group="Spacing" viewport="700x150" name="Spacing scale" subtitle="Tight by design — the hairline border is the gutter" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--td-bg-0); font-family: var(--td-font-mono); }
+  .wrap { display: flex; gap: 18px; padding: 18px 16px; align-items: flex-end; }
+  .item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .bar { background: var(--td-amber); }
+  .name { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+  .px { font-size: 11px; color: var(--td-fg-secondary); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body class="td-root">
+  <div class="wrap">
+    <div class="item"><div class="bar" style="width:2px;height:2px"></div><span class="px">2</span><span class="name">space-1</span></div>
+    <div class="item"><div class="bar" style="width:4px;height:4px"></div><span class="px">4</span><span class="name">space-2</span></div>
+    <div class="item"><div class="bar" style="width:6px;height:6px"></div><span class="px">6</span><span class="name">space-3</span></div>
+    <div class="item"><div class="bar" style="width:8px;height:8px"></div><span class="px">8</span><span class="name">space-4</span></div>
+    <div class="item"><div class="bar" style="width:12px;height:12px"></div><span class="px">12</span><span class="name">space-5</span></div>
+    <div class="item"><div class="bar" style="width:16px;height:16px"></div><span class="px">16</span><span class="name">space-6</span></div>
+  </div>
+</body>
+</html>

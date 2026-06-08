@@ -1,0 +1,25 @@
+<!-- @dsCard group="Type" viewport="700x150" name="Weights & numerics" subtitle="Only 400 & 500 — tabular nums always on" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--td-bg-0); font-family: var(--td-font-mono); }
+  .wrap { display: flex; gap: 0; padding: 16px; }
+  .col { flex: 1; padding: 0 14px; border-right: 1px solid var(--td-border); display: flex; flex-direction: column; gap: 8px; }
+  .col:last-child { border-right: none; }
+  .name { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--td-fg-tertiary-2); }
+  .big { font-size: 22px; color: var(--td-fg-primary); }
+  .mono-col { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--td-fg-secondary); line-height: 1.5; }
+  .x { color: var(--td-fg-tertiary); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; }
+</style>
+</head>
+<body class="td-root">
+  <div class="wrap">
+    <div class="col"><span class="name">Regular · 400</span><span class="big" style="font-weight:400">Trade Desk</span><span class="x">labels · body · secondary</span></div>
+    <div class="col"><span class="name">Medium · 500</span><span class="big" style="font-weight:500">Trade Desk</span><span class="x">values · selected · price</span></div>
+    <div class="col"><span class="name">Tabular nums</span><span class="mono-col">1,234.56<br>−987.00<br>+132.93</span><span class="x">columns align</span></div>
+  </div>
+</body>
+</html>
