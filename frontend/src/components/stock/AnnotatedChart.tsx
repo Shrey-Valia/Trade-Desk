@@ -28,6 +28,7 @@ import {
   type ChartTimeframe,
 } from "@/types/chart";
 
+import { ChartDrawingLayer } from "./ChartDrawingLayer";
 import { ChartLegend } from "./ChartLegend";
 
 const TIMEFRAMES: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
@@ -136,6 +137,7 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
         {data && data.bars.length > 0 && (
           <>
             <LightweightChart
+              symbol={symbol}
               bars={data.bars}
               annotations={annotationData ?? EMPTY_ANNOTATIONS}
               timeframe={timeframe}
@@ -169,13 +171,14 @@ const EMPTY_ANNOTATIONS: ChartAnnotations = {
 };
 
 interface ChartProps {
+  symbol: string;
   bars: BarPoint[];
   annotations: ChartAnnotations;
   timeframe: ChartTimeframe;
   position: PositionOverlay | null;
 }
 
-function LightweightChart({ bars, annotations, timeframe, position }: ChartProps) {
+function LightweightChart({ symbol, bars, annotations, timeframe, position }: ChartProps) {
   const showMarketAnnotations = useChartPrefs((s) => s.showMarketAnnotations);
   const userBullish = useUserSettings((s) => s.bullishColor);
   const userBearish = useUserSettings((s) => s.bearishColor);
@@ -467,7 +470,12 @@ function LightweightChart({ bars, annotations, timeframe, position }: ChartProps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [position]);
 
-  return <div ref={containerRef} className="h-full w-full" />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full" />
+      <ChartDrawingLayer chartRef={chartRef} seriesRef={seriesRef} symbol={symbol} />
+    </div>
+  );
 }
 
 // Market-structure annotations are SECONDARY to the user's position.
