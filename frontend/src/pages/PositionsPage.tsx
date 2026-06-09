@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
 import { BottomStrip } from "@/components/positions/BottomStrip";
@@ -53,6 +53,7 @@ export function PositionsPage() {
   }, [defaultContracts, setTicketContracts]);
 
   const activeTradeId = useActivePosition((s) => s.tradeId);
+  const setActiveTradeId = useActivePosition((s) => s.setTradeId);
   const scrubberDte = useActivePosition((s) => s.scrubberDte);
   const elapsedHours = useActivePosition((s) => s.elapsedHours);
   const { data: account } = useAccountState();
@@ -88,6 +89,38 @@ export function PositionsPage() {
       setSymbol(activeTrade.symbol);
     }
   }, [activeTrade, symbol, setSymbol]);
+
+  // Re-hydrate the active position after a page reload. The
+  // activePosition store is in-memory only (session-scoped), so a
+  // refresh strands the user with no selection — the entry marker,
+  // breakeven lines, and position panel all blank out. Once trades +
+  // tier are known, if nothing is selected we auto-select the
+  // most-recent open trade on the active tier. Setting the store's
+  // tradeId re-attaches the overlay exactly as a manual TradeList click
+  // would (the symbol-sync effect above moves the chart to its symbol,
+  // and chartOverlay rebuilds from the analytics payload). This runs at
+  // most once per mount, so a deliberate manual deselect is respected.
+  const didAutoSelectRef = useRef(false);
+  useEffect(() => {
+    if (didAutoSelectRef.current) return;
+    // A selection already exists (in-SPA nav, not a cold reload) — leave
+    // it alone and stop trying.
+    if (activeTradeId != null) {
+      didAutoSelectRef.current = true;
+      return;
+    }
+    // Wait for both the trade list and the account (which determines the
+    // active tier) before deciding — picking too early could match the
+    // wrong tier's trade.
+    if (!tradesData || !account) return;
+    const mostRecentOpen = trades
+      .filter((t) => t.status === "open" && (t.tier ?? "50K") === activeTier)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    if (mostRecentOpen) {
+      setActiveTradeId(mostRecentOpen.id);
+    }
+    didAutoSelectRef.current = true;
+  }, [tradesData, account, trades, activeTier, activeTradeId, setActiveTradeId]);
 
   const analyticsQuery = useTradeAnalytics(activeTradeId, scrubberDte, {
     intraday: isIntraday,
