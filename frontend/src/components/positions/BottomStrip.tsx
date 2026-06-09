@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import { NewsPanel } from "@/components/positions/NewsPanel";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
@@ -61,7 +62,9 @@ export function BottomStrip() {
       className="grid border-t border-hairline bg-tier-0 shrink-0"
       style={{
         height: 280,
-        gridTemplateColumns: "1fr 1fr 1fr 1fr",
+        // 5 equal columns — the original four shrink proportionally to
+        // make room for the NEWS panel; row height is unchanged.
+        gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
       }}
     >
       <Column>
@@ -75,6 +78,9 @@ export function BottomStrip() {
       </Column>
       <Column>
         <TodayCol trades={trades} activeTradeId={activeTradeId} />
+      </Column>
+      <Column>
+        <NewsPanel symbol={symbol} />
       </Column>
     </div>
   );

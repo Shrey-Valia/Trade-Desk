@@ -22,6 +22,7 @@ from routers import journal as journal_router
 from routers import market as market_router
 from routers import mc as mc_router
 from routers import models as models_router
+from routers import news as news_router
 from routers import regime as regime_router
 from routers import signal as signal_router
 from routers import ticker as ticker_router
@@ -180,6 +181,7 @@ app.include_router(mc_router.router)
 app.include_router(bs_router.router)
 app.include_router(models_router.router)
 app.include_router(market_router.router)
+app.include_router(news_router.router)
 app.include_router(regime_router.router)
 app.include_router(signal_router.router)
 app.include_router(journal_router.router)

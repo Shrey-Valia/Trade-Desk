@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from alpaca.data.historical.news import NewsClient
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import (
+    NewsRequest,
     OptionBarsRequest,
     OptionChainRequest,
     StockBarsRequest,
@@ -76,6 +78,12 @@ def _stock_client() -> StockHistoricalDataClient:
 
 def _option_client() -> OptionHistoricalDataClient:
     return OptionHistoricalDataClient(settings.alpaca_api_key, settings.alpaca_api_secret)
+
+
+def _news_client() -> NewsClient:
+    # Reuses the SAME Alpaca credentials as the stock/option clients — no
+    # new keys or config. NewsClient takes the same (api_key, secret_key).
+    return NewsClient(settings.alpaca_api_key, settings.alpaca_api_secret)
 
 
 def _trading_client() -> TradingClient:
@@ -570,3 +578,70 @@ def get_daily_bars_history(symbol: str, years_back: int = 5) -> list | None:
     bar_list.sort(key=lambda b: b.timestamp)
     cache.set(cache_key, bar_list, ttl_seconds=86400)
     return bar_list
+
+
+# --- News -------------------------------------------------------------------
+
+# Generous success TTL so repeated requests + ticker-flipping don't hammer
+# the free feed (which 429s under load). A SHORT negative TTL caches the
+# error state too, so an outage doesn't turn into a 429 storm of retries.
+_NEWS_TTL = 300        # 5 min — matches the frontend staleTime
+_NEWS_ERR_TTL = 30     # brief negative cache on failure / 429
+# Sentinel distinguishing a cached ERROR from a cached empty list. An
+# empty list is a valid "no news" success and must NOT read as an error.
+_NEWS_ERROR = object()
+
+
+class NewsUnavailable(Exception):
+    """Alpaca news fetch failed or rate-limited — the router maps this to
+    a 503 so the frontend can show 'News unavailable', distinct from an
+    empty (but successful) result."""
+
+
+def get_news(symbol: str, limit: int = 20) -> list[dict]:
+    """Trimmed, symbol-scoped news via Alpaca's news API.
+
+    Returns a list of ``{id, headline, summary, source, url, created_at}``
+    dicts (possibly empty when the symbol genuinely has no recent news).
+    Raises :class:`NewsUnavailable` on error / rate-limit. Cached per
+    (symbol, limit): successes for 5 min, failures for 30 s.
+    """
+    symbol = symbol.upper()
+    cache_key = f"news:{symbol}:{limit}"
+    cached = cache.get(cache_key)
+    if cached is _NEWS_ERROR:
+        raise NewsUnavailable(symbol)
+    if cached is not None:
+        return cached
+
+    try:
+        # NewsRequest.symbols is a comma-separated STRING (not a list).
+        resp = _news_client().get_news(
+            NewsRequest(symbols=symbol, limit=limit, exclude_contentless=True)
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Negative-cache so repeated requests during an outage / 429 don't
+        # pile more load onto the already-throttled free feed.
+        cache.set(cache_key, _NEWS_ERROR, ttl_seconds=_NEWS_ERR_TTL)
+        log.warning("alpaca news fetch failed for %s: %s", symbol, exc)
+        raise NewsUnavailable(symbol) from exc
+
+    raw = getattr(resp, "data", None) or {}
+    articles = raw.get("news", []) if isinstance(raw, dict) else []
+    items = [_trim_news(a) for a in articles]
+    cache.set(cache_key, items, ttl_seconds=_NEWS_TTL)
+    return items
+
+
+def _trim_news(article) -> dict:
+    """Map an Alpaca News model to the trimmed shape the frontend expects.
+    Empty summary collapses to "" (the frontend handles the empty case)."""
+    created = getattr(article, "created_at", None)
+    return {
+        "id": str(getattr(article, "id", "")),
+        "headline": getattr(article, "headline", "") or "",
+        "summary": getattr(article, "summary", "") or "",
+        "source": getattr(article, "source", "") or "",
+        "url": getattr(article, "url", "") or "",
+        "created_at": created.isoformat() if hasattr(created, "isoformat") else (created or ""),
+    }
