@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import { keepPreviousData, useQueries } from "@tanstack/react-query";
 
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
 import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
-import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
+import { fetchTradeAnalytics } from "@/lib/api";
 import { formatPercent, formatPrice } from "@/lib/formatters";
-import { useActivePosition } from "@/stores/activePosition";
 import { useUserSettings } from "@/stores/userSettings";
 import { isZeroDteTrade } from "@/types/journal";
 import type { TierKey, TierSpec } from "@/types/account";
@@ -234,32 +234,46 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
 function MetricPills() {
   const { data: account } = useAccountState();
   const { data: tradesData } = useTrades();
-  const activeTradeId = useActivePosition((s) => s.tradeId);
-  const scrubberDte = useActivePosition((s) => s.scrubberDte);
-  const elapsedHours = useActivePosition((s) => s.elapsedHours);
   const dllOverrides = useUserSettings((s) => s.dllOverrides);
   const activeTier = (account?.active_tier ?? "50K") as TierKey;
 
-  // Tier-filtered active trade. If the active trade was opened on a
-  // different combine than the one currently selected, it must not
-  // contribute its UPL to this tier's header — clear the analytics
-  // query's enabling condition by treating it as no-trade.
-  const activeTrade = useMemo(
+  // Header UP&L is an account-level number: the live unrealized P&L
+  // summed across ALL open positions on the active tier, independent of
+  // which row (if any) is selected on the chart. This is why the pill no
+  // longer reads $0.00 just because nothing is selected. We deliberately
+  // use live analytics (no scrubber override) — the theta scrubber is a
+  // per-position what-if for the chart/payoff panel, not something that
+  // should move the account's balance readout.
+  const openPositions = useMemo(
     () =>
-      (tradesData?.trades ?? []).find(
-        (t) => t.id === activeTradeId && (t.tier ?? "50K") === activeTier,
-      ) ?? null,
-    [tradesData, activeTradeId, activeTier],
+      (tradesData?.trades ?? []).filter(
+        (t) => t.status === "open" && (t.tier ?? "50K") === activeTier,
+      ),
+    [tradesData, activeTier],
   );
-  const isIntraday = useMemo(() => isZeroDteTrade(activeTrade), [activeTrade]);
-  // Only fetch + use analytics when the active trade matches the
-  // active tier. Passing null disables the query — UPL stays at 0.
-  const analyticsTradeId = activeTrade ? activeTradeId : null;
-  const analyticsQuery = useTradeAnalytics(analyticsTradeId, scrubberDte, {
-    intraday: isIntraday,
-    elapsedHours,
+  // One analytics query per open position. Keys/staleTime/poll cadence
+  // mirror useTradeAnalytics so the cache is shared with the chart's
+  // per-position query; 0DTE positions keep their 5s live poll.
+  const positionAnalytics = useQueries({
+    queries: openPositions.map((t) => {
+      const intraday = isZeroDteTrade(t);
+      return {
+        queryKey: ["trade-analytics", t.id, null, intraday ? "intraday" : "day", null],
+        queryFn: () => fetchTradeAnalytics(t.id, { dteOverride: null, elapsedHours: null }),
+        staleTime: intraday ? 3_000 : 10_000,
+        refetchInterval: intraday ? 5_000 : (false as const),
+        placeholderData: keepPreviousData,
+      };
+    }),
   });
-  const upl = analyticsQuery.data?.unrealized_pnl ?? 0;
+  const upl = useMemo(
+    () =>
+      positionAnalytics.reduce(
+        (sum, q) => sum + (q.data?.unrealized_pnl ?? 0),
+        0,
+      ),
+    [positionAnalytics],
+  );
   const todayRpl = useMemo(() => {
     if (!tradesData?.trades) return 0;
     const todayIso = new Date().toISOString().slice(0, 10);
