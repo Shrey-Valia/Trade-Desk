@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from calculations.black_scholes import bs_greeks
 from calculations.intraday_analytics import (
     SECONDS_PER_YEAR,
     bs_intraday,
@@ -120,6 +121,14 @@ class ChainStrikeRow(BaseModel):
     put_source: Literal["quote", "bs"]
     put_open_interest: int | None = None
     is_atm: bool = False
+    # Per-share greeks (display-only, at-a-glance on the chain). Computed
+    # from the EXISTING bs_greeks engine at the ATM-implied IV — same
+    # inputs (spot, strike, T-to-close, rate, iv) as the BS price fallback.
+    # delta is unitless; theta is per-day (the engine divides by 365).
+    call_delta: float = 0.0
+    call_theta: float = 0.0
+    put_delta: float = 0.0
+    put_theta: float = 0.0
 
 
 class ChainTableOut(BaseModel):
@@ -312,6 +321,11 @@ def get_chain_table(
         else:
             put_source = "quote"
 
+        # Display greeks via the existing engine — same inputs as the BS
+        # price fallback above (spot, strike, T-to-close, rate, ATM IV).
+        cg = bs_greeks(spot, k, t_close, rate, iv_used, "call")
+        pg = bs_greeks(spot, k, t_close, rate, iv_used, "put")
+
         rows.append(
             ChainStrikeRow(
                 strike=k,
@@ -322,6 +336,10 @@ def get_chain_table(
                 put_source=put_source,
                 put_open_interest=getattr(put, "open_interest", None) if put else None,
                 is_atm=(k == atm),
+                call_delta=round(cg["delta"], 4),
+                call_theta=round(cg["theta"], 4),
+                put_delta=round(pg["delta"], 4),
+                put_theta=round(pg["theta"], 4),
             )
         )
 

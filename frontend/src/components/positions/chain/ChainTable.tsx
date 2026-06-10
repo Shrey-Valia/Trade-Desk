@@ -40,10 +40,12 @@ interface Props {
 
 // Compact column widths so the chain reads like a desk ticket, not a
 // table spread across the panel. CALL_W and PUT_W are equal so the
-// strike column sits dead-center.
-const CALL_W = 84;
+// strike column sits dead-center. Widened from 84→140 to fit the
+// at-a-glance greeks (Δ + Θ) inline beside each price; 140+64+140=344px
+// still sits comfortably inside the 452px chain column.
+const CALL_W = 140;
 const STRIKE_W = 64;
-const PUT_W = 84;
+const PUT_W = 140;
 const CHAIN_GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
 // One row of the chain table. Tighter than the previous py-0.5 so more
 // strikes fit without scrolling; still legible at IBM Plex Mono 11px.
@@ -266,6 +268,8 @@ function ChainRow({
         source={row.call_source}
         align="right"
         price={row.call_price}
+        delta={row.call_delta}
+        theta={row.call_theta}
         action={action}
         side="call"
         strike={row.strike}
@@ -293,6 +297,8 @@ function ChainRow({
         source={row.put_source}
         align="left"
         price={row.put_price}
+        delta={row.put_delta}
+        theta={row.put_theta}
         action={action}
         side="put"
         strike={row.strike}
@@ -307,6 +313,8 @@ function ChainCell({
   source,
   align,
   price,
+  delta,
+  theta,
   action,
   side,
   strike,
@@ -316,12 +324,35 @@ function ChainCell({
   source: "quote" | "bs";
   align: "left" | "right";
   price: number;
+  delta: number;
+  theta: number;
   action: "buy" | "sell";
   side: "call" | "put";
   strike: number;
 }) {
   const dim = source === "bs";
   const verb = action === "buy" ? "Long" : "Short";
+  // Price hugs the strike (call → right edge, put → left edge); the
+  // dimmer Δ/Θ greeks sit outboard of the price so they read as
+  // secondary info without displacing the price's anchor on the strike.
+  const priceEl = (
+    <span className="whitespace-nowrap">
+      {price.toFixed(2)}
+      {source === "bs" && (
+        <span className="text-fg-tertiary ml-0.5" style={{ fontSize: 8 }}>
+          ·m
+        </span>
+      )}
+    </span>
+  );
+  const greeksEl = (
+    <span
+      className="text-fg-tertiary-2 whitespace-nowrap"
+      style={{ fontSize: 9 }}
+    >
+      Δ{delta.toFixed(2)} Θ{theta.toFixed(2)}
+    </span>
+  );
   return (
     <button
       type="button"
@@ -329,18 +360,24 @@ function ChainCell({
       disabled={disabled}
       className={[
         "h-full px-2 hover:bg-tier-2 disabled:opacity-30 disabled:cursor-not-allowed tabular-nums",
-        align === "right" ? "text-right" : "text-left",
+        "flex items-baseline gap-1.5",
+        align === "right" ? "justify-end" : "justify-start",
         dim ? "text-fg-secondary" : "text-fg-primary",
       ].join(" ")}
       title={`${verb} ${side} at ${strike} · ${
         source === "bs" ? "BS-model price (no live quote)" : "indicative quote"
-      }`}
+      } · Δ ${delta.toFixed(2)} · Θ ${theta.toFixed(2)}/day`}
     >
-      {price.toFixed(2)}
-      {source === "bs" && (
-        <span className="text-fg-tertiary ml-0.5" style={{ fontSize: 8 }}>
-          ·m
-        </span>
+      {align === "right" ? (
+        <>
+          {greeksEl}
+          {priceEl}
+        </>
+      ) : (
+        <>
+          {priceEl}
+          {greeksEl}
+        </>
       )}
     </button>
   );

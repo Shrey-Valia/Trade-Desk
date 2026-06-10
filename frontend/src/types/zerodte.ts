@@ -72,6 +72,12 @@ export const ChainStrikeRowSchema = z.object({
   put_source: z.enum(["quote", "bs"]),
   put_open_interest: z.number().nullable(),
   is_atm: z.boolean(),
+  // Per-share display greeks from the backend BS engine (delta unitless,
+  // theta per-day). Default 0 keeps the schema tolerant of older payloads.
+  call_delta: z.number().default(0),
+  call_theta: z.number().default(0),
+  put_delta: z.number().default(0),
+  put_theta: z.number().default(0),
 });
 export type ChainStrikeRow = z.infer<typeof ChainStrikeRowSchema>;
 
