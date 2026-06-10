@@ -290,6 +290,8 @@ function Row({
         align="right"
         price={row.call_price}
         source={row.call_source}
+        delta={row.call_delta}
+        theta={row.call_theta}
         disabled={disabled || row.call_price <= 0}
         side="call"
         strike={row.strike}
@@ -329,6 +331,8 @@ function Row({
         align="left"
         price={row.put_price}
         source={row.put_source}
+        delta={row.put_delta}
+        theta={row.put_theta}
         disabled={disabled || row.put_price <= 0}
         side="put"
         strike={row.strike}
@@ -344,6 +348,8 @@ function Cell({
   align,
   price,
   source,
+  delta,
+  theta,
   disabled,
   side,
   strike,
@@ -354,6 +360,8 @@ function Cell({
   align: "left" | "right";
   price: number;
   source: "quote" | "bs";
+  delta: number;
+  theta: number;
   disabled: boolean;
   side: "call" | "put";
   strike: number;
@@ -375,26 +383,12 @@ function Cell({
         : dim
           ? "text-fg-tertiary-2"
           : "text-fg-primary";
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={[
-        "h-full px-2 tabular-nums font-medium",
-        align === "right" ? "text-right" : "text-left",
-        baseColor,
-        disabled ? "" : "hover:text-amber",
-      ].join(" ")}
-      style={{ fontSize: 12, fontWeight: 500 }}
-      title={
-        disabled
-          ? "Market closed or no 0DTE today"
-          : `Select ${side} at ${strike} · ${
-              source === "bs" ? "BS-model price (no live quote)" : "indicative quote"
-            }`
-      }
-    >
+  // Price hugs the strike (call → right edge, put → left edge); the
+  // dimmer Δ/Θ greeks sit outboard so they read as secondary info
+  // without displacing the price's anchor on the strike. Greeks are
+  // display-only — same per-share values the backend already returns.
+  const priceEl = (
+    <span className="whitespace-nowrap">
       {price.toFixed(2)}
       {source === "bs" && (
         <span
@@ -404,6 +398,47 @@ function Cell({
         >
           ·m
         </span>
+      )}
+    </span>
+  );
+  const greeksEl = (
+    <span
+      className={`whitespace-nowrap ${disabled ? "text-fg-disabled" : "text-fg-tertiary-2"}`}
+      style={{ fontSize: 9, fontWeight: 400 }}
+    >
+      Δ{delta.toFixed(2)} Θ{theta.toFixed(2)}
+    </span>
+  );
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={[
+        "h-full px-2 tabular-nums font-medium flex items-baseline gap-1.5",
+        align === "right" ? "justify-end" : "justify-start",
+        baseColor,
+        disabled ? "" : "hover:text-amber",
+      ].join(" ")}
+      style={{ fontSize: 12, fontWeight: 500 }}
+      title={
+        disabled
+          ? "Market closed or no 0DTE today"
+          : `Select ${side} at ${strike} · ${
+              source === "bs" ? "BS-model price (no live quote)" : "indicative quote"
+            } · Δ ${delta.toFixed(2)} · Θ ${theta.toFixed(2)}/day`
+      }
+    >
+      {align === "right" ? (
+        <>
+          {greeksEl}
+          {priceEl}
+        </>
+      ) : (
+        <>
+          {priceEl}
+          {greeksEl}
+        </>
       )}
     </button>
   );
