@@ -17,6 +17,8 @@ import {
 } from "lightweight-charts";
 
 import { useTickerAnnotations, useTickerChart } from "@/hooks/useTickerChart";
+import { useMarketStatus } from "@/hooks/useMarket";
+import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useUserSettings } from "@/stores/userSettings";
@@ -94,6 +96,17 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
   // overlay lines when it resolves. The chart does NOT wait for this.
   const annotations = useTickerAnnotations(symbol, timeframe);
 
+  // Synthetic in-progress candle inputs — REUSE the existing quote
+  // (header price, 5s poll) and market-status (60s poll) queries; both
+  // share their react-query keys so this adds NO request volume. The
+  // quote is still ~15-min delayed on the free feed — this only makes
+  // the last candle tick between bar boundaries, it does not relabel
+  // delayed data as real-time.
+  const quote = useTickerDetail(symbol);
+  const market = useMarketStatus();
+  const quotePrice = quote.data?.price ?? null;
+  const marketOpen = market.data?.status === "open";
+
   const data = bars.data;
   const annotationData = annotations.data?.annotations;
 
@@ -142,6 +155,8 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
               annotations={annotationData ?? EMPTY_ANNOTATIONS}
               timeframe={timeframe}
               position={position ?? null}
+              quotePrice={quotePrice}
+              marketOpen={marketOpen}
             />
             <ChartLegend hasActivePosition={position != null} />
           </>
@@ -176,9 +191,21 @@ interface ChartProps {
   annotations: ChartAnnotations;
   timeframe: ChartTimeframe;
   position: PositionOverlay | null;
+  /** Latest (delayed) quote from the shared header price query. */
+  quotePrice?: number | null;
+  /** Whether the market is open — gates the synthetic in-progress candle. */
+  marketOpen?: boolean;
 }
 
-function LightweightChart({ symbol, bars, annotations, timeframe, position }: ChartProps) {
+function LightweightChart({
+  symbol,
+  bars,
+  annotations,
+  timeframe,
+  position,
+  quotePrice = null,
+  marketOpen = false,
+}: ChartProps) {
   const showMarketAnnotations = useChartPrefs((s) => s.showMarketAnnotations);
   const userBullish = useUserSettings((s) => s.bullishColor);
   const userBearish = useUserSettings((s) => s.bearishColor);
@@ -190,6 +217,16 @@ function LightweightChart({ symbol, bars, annotations, timeframe, position }: Ch
   const annotationLinesRef = useRef<IPriceLine[]>([]);
   const positionLinesRef = useRef<IPriceLine[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  // Synthetic in-progress candle: the current slot timestamp + running
+  // open/high/low so quote ticks update one bar in place (close = quote).
+  const syntheticRef = useRef<{
+    time: UTCTimestamp;
+    o: number;
+    h: number;
+    l: number;
+  } | null>(null);
+  // Resets the synthetic candle when the symbol changes.
+  const syntheticSymbolRef = useRef<string>(symbol);
 
   // The bars effect tears down + recreates the candle series whenever
   // bars / timeframe / candle colors change. The position effect alone
@@ -470,6 +507,77 @@ function LightweightChart({ symbol, bars, annotations, timeframe, position }: Ch
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [position]);
 
+  // Synthetic in-progress candle — REUSES the 5s header quote so the
+  // last candle ticks between bar boundaries. Declared AFTER the bars
+  // effect so on a bars change it runs once the series has been rebuilt.
+  //
+  // Pinned to the data's LEADING EDGE (lastRealBar.time + one interval),
+  // NOT wall-clock: this keeps it honest about the ~15-min feed delay and
+  // makes reconciliation automatic. The 60s bars refetch rebuilds the
+  // series via setData (wiping this candle); this effect re-runs and
+  // re-appends exactly ONE trailing candle. So when the authoritative
+  // real bar for a slot finally arrives in `bars`, setData places it and
+  // the synthetic advances one slot — the real bar REPLACES the synthetic
+  // with no duplicate and no drift.
+  //
+  // Touches ONLY the candle's last bar via series.update() — never
+  // setData, and never the marker / BE price lines, so attachPositionOverlay
+  // and its ref lifecycle are completely untouched. Gated to intraday
+  // timeframes and market-open so we don't draw a fake candle when nothing
+  // is in progress.
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+
+    if (syntheticSymbolRef.current !== symbol) {
+      syntheticSymbolRef.current = symbol;
+      syntheticRef.current = null;
+    }
+
+    const intervalSec = INTERVAL_SECONDS[timeframe];
+    if (
+      intervalSec == null ||
+      !marketOpen ||
+      quotePrice == null ||
+      !Number.isFinite(quotePrice) ||
+      bars.length === 0
+    ) {
+      syntheticRef.current = null;
+      return;
+    }
+
+    const lastReal = bars[bars.length - 1];
+    const lastRealT = toTime(lastReal.t);
+    const slotT = (lastRealT + intervalSec) as UTCTimestamp;
+
+    const prev = syntheticRef.current;
+    const next =
+      prev && prev.time === slotT
+        ? {
+            time: slotT,
+            o: prev.o,
+            h: Math.max(prev.h, quotePrice),
+            l: Math.min(prev.l, quotePrice),
+          }
+        : {
+            // Fresh slot / boundary rollover: carry the open from the
+            // last real bar's close; seed high/low from open + quote.
+            time: slotT,
+            o: lastReal.c,
+            h: Math.max(lastReal.c, quotePrice),
+            l: Math.min(lastReal.c, quotePrice),
+          };
+    syntheticRef.current = next;
+
+    series.update({
+      time: slotT,
+      open: next.o,
+      high: next.h,
+      low: next.l,
+      close: quotePrice,
+    });
+  }, [quotePrice, bars, timeframe, marketOpen, symbol]);
+
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
@@ -528,6 +636,18 @@ function buildPriceLines(
 function toTime(iso: string): UTCTimestamp {
   return Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp;
 }
+
+// Seconds per candle interval, by timeframe — drives the synthetic
+// in-progress candle's slot width. "1D" is intentionally absent: a
+// quote-driven intraday tick on a daily candle would misrepresent the
+// time axis, so the synthetic candle only applies to intraday grains.
+const INTERVAL_SECONDS: Partial<Record<ChartTimeframe, number>> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+  "4h": 14400,
+};
 
 /** Compose a #RRGGBBAA from #RRGGBB + 0..1 opacity. Falls back to the
  *  base hex if input doesn't parse. */

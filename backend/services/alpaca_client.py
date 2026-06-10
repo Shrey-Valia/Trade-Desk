@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical.news import NewsClient
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -522,7 +523,13 @@ def get_bars(symbol: str, timeframe: str) -> list | None:
     client = _stock_client()
     try:
         bars = client.get_stock_bars(
-            StockBarsRequest(symbol_or_symbols=symbol, timeframe=tf, start=start)
+            # feed=IEX: free-tier real-time bars (was unspecified → SDK
+            # default). Still ~15-min delayed on the free plan — this is a
+            # feed choice, NOT a delay removal; "indicative pricing"
+            # disclosures stay in place.
+            StockBarsRequest(
+                symbol_or_symbols=symbol, timeframe=tf, start=start, feed=DataFeed.IEX
+            )
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("get_bars failed for %s @ %s: %s", symbol, timeframe, exc)
