@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{PROJECT_ROOT / 'data' / 'dashboard.db'}"
     log_level: str = "INFO"
 
+    # Simulated brokerage commission, $ per contract per side (entry and
+    # exit each charge this × the position's contract count). The SINGLE
+    # place to change the rate. Folded into cost basis / unrealized P&L in
+    # the analytics endpoint and into realized P&L on close — display only;
+    # the MLL/DLL engine reads net P&L separately (a later prompt).
+    commission_per_contract: float = 0.65
+
     # ---------------------------------------------------------------------
     # Auth (multi-user prop-firm shell). bcrypt cost factor is 12 for
     # real use; tests drop it to 4 so signup-per-test stays fast.

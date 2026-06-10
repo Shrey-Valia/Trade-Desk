@@ -99,6 +99,9 @@ export const TradeAnalyticsSchema = z.object({
   cost_basis: z.number(),
   current_value: z.number(),
   unrealized_pnl: z.number(),
+  // Simulated commission, $ per side for this position. Default keeps the
+  // schema tolerant of older payloads.
+  commission: z.number().default(0),
   max_profit: z.number().nullable(),
   max_loss: z.number().nullable(),
   unlimited_gain: z.boolean(),

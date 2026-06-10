@@ -352,8 +352,11 @@ function OpenPositionCol({
   const queryClient = useQueryClient();
   const setActiveTradeId = useActivePosition((s) => s.setTradeId);
   // The position's true live unrealized P&L — independent of the theta
-  // scrubber. Closing books THIS, not the scrubber's what-if.
+  // scrubber. Closing books THIS, not the scrubber's what-if. `commission`
+  // is the $/side already folded into unrealized (entry side); on close we
+  // subtract the exit side too so realized reflects the round trip.
   const liveUpl = liveAnalytics?.unrealized_pnl ?? 0;
+  const commissionSide = liveAnalytics?.commission ?? 0;
   const close = useMutation({
     mutationFn: async () => {
       if (!trade || !liveAnalytics) return null;
@@ -361,7 +364,7 @@ function OpenPositionCol({
         status: "closed",
         exit_date: new Date().toISOString(),
         exit_underlying_price: liveAnalytics.spot,
-        realized_pnl: liveAnalytics.unrealized_pnl,
+        realized_pnl: liveAnalytics.unrealized_pnl - commissionSide,
       });
     },
     onSuccess: () => {
@@ -396,6 +399,16 @@ function OpenPositionCol({
             {formatTimestamp(trade.entry_date)} ET ·{" "}
             {totalContracts(trade)} contract{totalContracts(trade) === 1 ? "" : "s"}
           </div>
+          {commissionSide > 0 && (
+            <div
+              className="text-fg-tertiary mt-0.5"
+              style={{ fontSize: 9 }}
+              title="Simulated commission — folded into UP&L; round trip (entry + exit) booked on close"
+            >
+              incl. commission −${commissionSide.toFixed(2)}/side ·
+              −${(commissionSide * 2).toFixed(2)} round-trip
+            </div>
+          )}
           <div className="border-t border-hairline my-1.5" />
           <div className="flex items-baseline justify-between">
             <span

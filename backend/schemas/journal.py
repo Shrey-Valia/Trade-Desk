@@ -180,6 +180,10 @@ class TradeAnalyticsOut(BaseModel):
     cost_basis: float
     current_value: float
     unrealized_pnl: float
+    # Simulated commission, $ per SIDE for this position (contracts × rate).
+    # cost_basis includes the entry side; realized P&L on close subtracts
+    # the exit side too. 0.0 default keeps older payloads valid.
+    commission: float = 0.0
     max_profit: float | None = None
     max_loss: float | None = None
     unlimited_gain: bool

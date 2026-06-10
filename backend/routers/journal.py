@@ -36,6 +36,7 @@ from calculations.position_analytics import (
     build_legs_from_journal,
     compute_analytics,
 )
+from config import settings
 from database import get_session
 from models.combine import Combine
 from models.trade import Trade
@@ -305,6 +306,15 @@ def get_trade_analytics(
     if cached is not None:
         return cached
 
+    # Simulated commission for THIS position, $ per side. "Per contract per
+    # side": the position's contract count × the configured rate. Folded
+    # into cost basis + unrealized below (entry side); realized P&L on close
+    # subtracts the exit side too. Display-only — does not touch MLL/tier.
+    position_contracts = max(
+        (int(leg.get("contracts", 1)) for leg in trade.legs), default=1
+    )
+    commission_side = position_contracts * settings.commission_per_contract
+
     # Current underlying spot — prefer live quote, fall back to entry
     # price so analytics still render when the market data feed is cold
     # (e.g. nights / weekends in the demo).
@@ -333,6 +343,7 @@ def get_trade_analytics(
         response = _intraday_analytics(
             trade=trade, spot=spot, rate=rate, elapsed_hours=effective_elapsed
         )
+        response = _fold_commission(response, commission_side)
         # Short TTL for live polling — the chart hits this every 5s.
         cache.set(cache_key, response, ttl_seconds=3)
         return response
@@ -400,8 +411,27 @@ def get_trade_analytics(
         unlimited_loss=result.unlimited_loss,
         greeks=AnalyticsGreeks(**result.greeks),
     )
+    response = _fold_commission(response, commission_side)
     cache.set(cache_key, response, ttl_seconds=15)
     return response
+
+
+def _fold_commission(
+    response: TradeAnalyticsOut, commission_side: float
+) -> TradeAnalyticsOut:
+    """Fold the ENTRY-side commission into a computed analytics payload —
+    the single place both the day and 0DTE branches funnel through. Cost
+    basis rises by the entry commission and unrealized P&L falls by it
+    (unrealized = current_value − cost_basis), so the header and panel UP&L
+    (which both read unrealized) reflect it identically. `commission`
+    carries the per-side amount so the close can subtract the exit side."""
+    return response.model_copy(
+        update={
+            "cost_basis": response.cost_basis + commission_side,
+            "unrealized_pnl": response.unrealized_pnl - commission_side,
+            "commission": commission_side,
+        }
+    )
 
 
 @router.delete("/trades/{trade_id}", status_code=204)
