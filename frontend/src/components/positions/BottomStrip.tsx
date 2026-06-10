@@ -649,7 +649,7 @@ function HoursScrubber({
           className="text-fg-tertiary-2 uppercase tracking-label-up"
           style={{ fontSize: 9 }}
         >
-          today's session
+          entry → exp
         </span>
         <ScrubberTrack
           pct={pct}
@@ -661,7 +661,7 @@ function HoursScrubber({
           onChange={(v) => onChange(v >= totalHours - 0.01 ? totalHours : v)}
         />
         <div className="flex justify-between text-tiny text-fg-tertiary-2">
-          <span>NOW · {formatHours(value)}</span>
+          <span>ENTRY · NOW {formatHours(value)}</span>
           <span>{formatHours(totalHours)} EXP</span>
         </div>
         <BeDriftPreview analytics={analytics} totalSpan={totalHours} mode="hours" />
@@ -672,14 +672,17 @@ function HoursScrubber({
           >
             BEs widen toward expiry as theta burns
           </span>
-          <button
-            type="button"
-            onClick={() => onChange(null)}
-            className="text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber"
-            disabled={scrubberHours === null}
-          >
-            reset
-          </button>
+          {scrubberHours !== null && (
+            <button
+              type="button"
+              onClick={() => onChange(null)}
+              title="Snap the scrubber back to the current time"
+              className="text-tiny uppercase tracking-label-up text-amber border border-amber px-1.5 hover:bg-tier-2"
+              style={{ borderRadius: 0 }}
+            >
+              reset → now
+            </button>
+          )}
         </div>
       </div>
     </>
@@ -729,14 +732,17 @@ function DaysScrubber({
           >
             BEs widen toward expiry as theta burns
           </span>
-          <button
-            type="button"
-            onClick={() => onChange(null)}
-            className="text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber"
-            disabled={scrubberDte === currentDte}
-          >
-            reset
-          </button>
+          {scrubberDte !== currentDte && (
+            <button
+              type="button"
+              onClick={() => onChange(null)}
+              title="Snap the scrubber back to the current time"
+              className="text-tiny uppercase tracking-label-up text-amber border border-amber px-1.5 hover:bg-tier-2"
+              style={{ borderRadius: 0 }}
+            >
+              reset → now
+            </button>
+          )}
         </div>
       </div>
     </>
