@@ -41,6 +41,18 @@ export function BottomStrip() {
     elapsedHours,
   });
   const analytics = analyticsQuery.data ?? null;
+  // LIVE (scrubber-independent) analytics for the active position. The
+  // OPEN POSITION panel's UP&L — and the realized P&L booked on close —
+  // must reflect REAL P&L, never the theta scrubber's what-if. This uses
+  // the SAME per-position query key the header sums over (dteOverride +
+  // elapsedHours both null), so it's deduped against the header's query —
+  // zero new network calls. `analytics` above stays scrubbed and still
+  // drives the what-if visualizations (greeks / BE / payoff drift).
+  const liveAnalyticsQuery = useTradeAnalytics(activeTradeId, null, {
+    intraday: isIntraday,
+    elapsedHours: null,
+  });
+  const liveAnalytics = liveAnalyticsQuery.data ?? null;
 
   // No active position → collapsed single-row strip: just KEY LEVELS
   // inline + a TODAY summary row. Hides OPEN POSITION and THETA
@@ -69,7 +81,11 @@ export function BottomStrip() {
       }}
     >
       <Column>
-        <OpenPositionCol trade={activeTrade} analytics={analytics} />
+        <OpenPositionCol
+          trade={activeTrade}
+          analytics={analytics}
+          liveAnalytics={liveAnalytics}
+        />
       </Column>
       <Column>
         <ScrubberCol trade={activeTrade} analytics={analytics} isIntraday={isIntraday} />
@@ -325,20 +341,27 @@ function Column({ children }: { children: React.ReactNode }) {
 function OpenPositionCol({
   trade,
   analytics,
+  liveAnalytics,
 }: {
   trade: Trade | null;
+  /** Scrubbed analytics — drives the what-if greeks / BE only. */
   analytics: TradeAnalytics | null;
+  /** Live, scrubber-independent analytics — drives the UP&L + close. */
+  liveAnalytics: TradeAnalytics | null;
 }) {
   const queryClient = useQueryClient();
   const setActiveTradeId = useActivePosition((s) => s.setTradeId);
+  // The position's true live unrealized P&L — independent of the theta
+  // scrubber. Closing books THIS, not the scrubber's what-if.
+  const liveUpl = liveAnalytics?.unrealized_pnl ?? 0;
   const close = useMutation({
     mutationFn: async () => {
-      if (!trade || !analytics) return null;
+      if (!trade || !liveAnalytics) return null;
       return updateTrade(trade.id, {
         status: "closed",
         exit_date: new Date().toISOString(),
-        exit_underlying_price: analytics.spot,
-        realized_pnl: analytics.unrealized_pnl,
+        exit_underlying_price: liveAnalytics.spot,
+        realized_pnl: liveAnalytics.unrealized_pnl,
       });
     },
     onSuccess: () => {
@@ -383,14 +406,14 @@ function OpenPositionCol({
             </span>
             <span
               className={`text-large font-medium ${
-                (analytics?.unrealized_pnl ?? 0) > 0
+                liveUpl > 0
                   ? "text-bullish"
-                  : (analytics?.unrealized_pnl ?? 0) < 0
+                  : liveUpl < 0
                     ? "text-bearish"
                     : "text-fg-secondary"
               }`}
             >
-              {formatSignedDollar(analytics?.unrealized_pnl ?? 0)}
+              {formatSignedDollar(liveUpl)}
             </span>
           </div>
           {analytics && (
@@ -402,8 +425,8 @@ function OpenPositionCol({
           )}
           <div className="mt-auto pt-2">
             <CloseButton
-              disabled={!analytics || close.isPending}
-              upl={analytics?.unrealized_pnl ?? 0}
+              disabled={!liveAnalytics || close.isPending}
+              upl={liveUpl}
               onClick={() => close.mutate()}
             />
           </div>
