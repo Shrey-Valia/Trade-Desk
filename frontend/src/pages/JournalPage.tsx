@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { TradeEntryModal } from "@/components/positions/journal/TradeEntryModal";
 import { TradeList } from "@/components/positions/journal/TradeList";
 import { useTrades } from "@/hooks/useTrades";
+import { downloadCsv, tradesToCsv } from "@/lib/exportCsv";
 import { useSelectedTicker } from "@/stores/selectedTicker";
 import type { Trade } from "@/types/journal";
 
@@ -31,7 +32,7 @@ export function JournalPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [activeDay, setActiveDay] = useState<{ date: string; trade_ids: number[] } | null>(null);
 
-  const { data } = useTrades();
+  const { data, isError, refetch } = useTrades();
   const allTrades = data?.trades ?? [];
   // JOURNAL is closed-only — open positions live on the CHART view's
   // chain panel now. The calendar view already bucketed by exit_date so
@@ -92,6 +93,17 @@ export function JournalPage() {
         paperScope={paperScope}
         onPaperScopeChange={setPaperScope}
         onAddTrade={() => setModalOpen(true)}
+        onExport={() => {
+          // Export honors the paper/live scope filter; closed trades
+          // only, matching what the page shows.
+          const scoped =
+            isPaperFilter === null
+              ? trades
+              : trades.filter((t) => t.is_paper === isPaperFilter);
+          const stamp = new Date().toISOString().slice(0, 10);
+          downloadCsv(`trade-desk-journal-${stamp}.csv`, tradesToCsv(scoped));
+        }}
+        exportDisabled={trades.length === 0}
       />
       <main className="flex-1 min-h-0 flex flex-col">
         {view === "calendar" ? (
@@ -110,6 +122,8 @@ export function JournalPage() {
               onScopeChange={setListScope}
               selectedSymbol={selectedSymbol}
               onAddTrade={() => setModalOpen(true)}
+              loadFailed={isError}
+              onRetry={() => refetch()}
             />
           </div>
         )}
@@ -132,12 +146,16 @@ function Toolbar({
   paperScope,
   onPaperScopeChange,
   onAddTrade,
+  onExport,
+  exportDisabled,
 }: {
   view: View;
   onViewChange: (v: View) => void;
   paperScope: PaperScope;
   onPaperScopeChange: (s: PaperScope) => void;
   onAddTrade: () => void;
+  onExport: () => void;
+  exportDisabled: boolean;
 }) {
   return (
     <div className="flex items-center gap-3 px-4 py-2 border-b border-hairline bg-tier-0 shrink-0">
@@ -179,7 +197,21 @@ function Toolbar({
           </button>
         ))}
       </div>
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onExport}
+          disabled={exportDisabled}
+          title={
+            exportDisabled
+              ? "Nothing to export yet"
+              : "Download the closed trades shown (respects the paper/live filter) as CSV"
+          }
+          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ borderRadius: 0 }}
+        >
+          Export CSV
+        </button>
         <button
           type="button"
           onClick={onAddTrade}

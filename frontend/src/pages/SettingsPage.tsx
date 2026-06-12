@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/layout/PageHeader";
 import { UIButton } from "@/components/ui/UIButton";
 import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
-import { useUserSettings } from "@/stores/userSettings";
+import { APPEARANCE_DEFAULTS, useUserSettings } from "@/stores/userSettings";
 import type { TierKey, TierSpec } from "@/types/account";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 
@@ -288,19 +288,12 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
                 <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
                   $
                 </span>
-                <input
-                  type="number"
+                <DllInput
+                  tierKey={tierKey}
                   value={value}
                   min={min}
                   max={max}
-                  step={50}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    setOverride(tierKey, Number.isFinite(n) ? n : null);
-                  }}
-                  className="h-7 px-1.5 text-xs2 font-mono tabular-nums bg-tier-2 border border-tier-3 text-fg-primary rounded-btn"
-                  style={{ width: 80 }}
-                  aria-label={`${t.key} daily loss limit`}
+                  onCommit={(n) => setOverride(tierKey, n)}
                 />
                 {!isDefault && (
                   <button
@@ -323,6 +316,61 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
         })}
       </div>
     </div>
+  );
+}
+
+/** DLL override input — free typing, clamped commit.
+ *
+ * The store write happens on blur/Enter (not per keystroke) so typing
+ * "1500" doesn't get clamped at the intermediate "1". Commits clamp to
+ * the documented 1-10%-of-starting-balance band; garbage input reverts
+ * to the last committed value. */
+function DllInput({
+  tierKey,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  tierKey: TierKey;
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (n: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+  // Re-sync when the committed value changes underneath us (reset
+  // button, tier defaults loading).
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+  const commit = () => {
+    const n = Number(text);
+    if (!Number.isFinite(n) || text.trim() === "") {
+      setText(String(value));
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, Math.round(n)));
+    setText(String(clamped));
+    onCommit(clamped);
+  };
+  return (
+    <input
+      type="number"
+      value={text}
+      min={min}
+      max={max}
+      step={50}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      className="h-7 px-1.5 text-xs2 font-mono tabular-nums bg-tier-2 border border-tier-3 text-fg-primary rounded-btn"
+      style={{ width: 80 }}
+      aria-label={`${tierKey} daily loss limit`}
+      title={`$${min.toLocaleString()} – $${max.toLocaleString()}`}
+    />
   );
 }
 
@@ -537,14 +585,33 @@ function ChartAppearanceSection() {
   const setBgGradient = useUserSettings((s) => s.setBgGradient);
   const gridOpacity = useUserSettings((s) => s.gridOpacity);
   const setGridOpacity = useUserSettings((s) => s.setGridOpacity);
+  const resetAppearance = useUserSettings((s) => s.resetAppearance);
+  const isDefault =
+    bullishColor === APPEARANCE_DEFAULTS.bullishColor &&
+    bearishColor === APPEARANCE_DEFAULTS.bearishColor &&
+    bgGradient === APPEARANCE_DEFAULTS.bgGradient &&
+    gridOpacity === APPEARANCE_DEFAULTS.gridOpacity;
   return (
     <div className="border-t border-hairline">
       <div className="px-3 pt-3 pb-1">
-        <div
-          className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 10, letterSpacing: "0.08em" }}
-        >
-          Chart appearance
+        <div className="flex items-baseline justify-between">
+          <div
+            className="uppercase tracking-label-up text-fg-secondary"
+            style={{ fontSize: 10, letterSpacing: "0.08em" }}
+          >
+            Chart appearance
+          </div>
+          {!isDefault && (
+            <button
+              type="button"
+              onClick={resetAppearance}
+              className="text-fg-tertiary-2 hover:text-fg-secondary uppercase tracking-label-up"
+              style={{ fontSize: 9 }}
+              title="Restore the default candle colors, gradient, and grid opacity"
+            >
+              reset to defaults
+            </button>
+          )}
         </div>
         <div
           className="text-fg-tertiary mt-0.5"

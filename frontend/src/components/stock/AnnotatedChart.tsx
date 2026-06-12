@@ -147,6 +147,11 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
             {(bars.error as Error)?.message ?? "Failed to load chart"}
           </div>
         )}
+        {data && data.bars.length === 0 && !bars.isLoading && !bars.isError && (
+          <div className="h-full flex items-center justify-center text-tiny text-fg-tertiary px-4 text-center">
+            No {timeframe} bars for {symbol} right now — try another timeframe.
+          </div>
+        )}
         {data && data.bars.length > 0 && (
           <>
             <LightweightChart

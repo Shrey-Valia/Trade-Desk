@@ -48,7 +48,19 @@ interface UserSettingsState {
   setBgGradient: (on: boolean) => void;
   setGridOpacity: (pct: number) => void;
   setDllOverride: (tier: TierKey, amount: number | null) => void;
+  /** Restore the four chart-appearance knobs to factory values. */
+  resetAppearance: () => void;
 }
+
+/** Factory values for the chart-appearance knobs — single source for
+ * the store initializer, the reset action, and the Settings UI's
+ * "differs from default" check. */
+export const APPEARANCE_DEFAULTS = {
+  bullishColor: "#4DD17C",
+  bearishColor: "#E85C5C",
+  bgGradient: true,
+  gridOpacity: 30,
+} as const;
 
 const TIER_STARTING_BALANCE: Record<TierKey, number> = {
   "50K": 50_000,
@@ -62,10 +74,7 @@ export const useUserSettings = create<UserSettingsState>()(
       defaultTicker: "SPY",
       defaultContracts: 1,
       defaultTimeframe: DEFAULT_CHART_TIMEFRAME,
-      bullishColor: "#4DD17C",
-      bearishColor: "#E85C5C",
-      bgGradient: true,
-      gridOpacity: 30,
+      ...APPEARANCE_DEFAULTS,
       dllOverrides: {},
       setDefaultTicker: (s) => set({ defaultTicker: s.toUpperCase().trim() }),
       setDefaultContracts: (n) =>
@@ -93,6 +102,7 @@ export const useUserSettings = create<UserSettingsState>()(
           }
           return { dllOverrides: next };
         }),
+      resetAppearance: () => set({ ...APPEARANCE_DEFAULTS }),
     }),
     {
       name: "td:user-settings",

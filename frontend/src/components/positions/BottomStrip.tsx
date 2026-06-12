@@ -8,6 +8,7 @@ import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { updateTrade } from "@/lib/api";
+import { TOOLTIPS } from "@/lib/tooltips";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useSelectedTicker } from "@/stores/selectedTicker";
@@ -100,35 +101,47 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
   // row was visual noise; better to drop empties and keep the row tight.
   const items: { label: string; value: string; tooltip?: string }[] = [];
   if (a?.expected_move_upper != null)
-    items.push({ label: "EM↑", value: fmtPrice(a.expected_move_upper) });
+    items.push({
+      label: "EM↑",
+      value: fmtPrice(a.expected_move_upper),
+      tooltip: LEVEL_TOOLTIP["EM↑"],
+    });
   if (a?.expected_move_lower != null)
-    items.push({ label: "EM↓", value: fmtPrice(a.expected_move_lower) });
+    items.push({
+      label: "EM↓",
+      value: fmtPrice(a.expected_move_lower),
+      tooltip: LEVEL_TOOLTIP["EM↓"],
+    });
   if (a?.call_wall)
     items.push({
       label: "CW",
       value: `$${a.call_wall.strike.toFixed(2)}`,
-      tooltip: INLINE_VOL_TOOLTIP.CW,
+      tooltip: LEVEL_TOOLTIP.CW,
     });
   if (a?.put_wall)
     items.push({
       label: "PW",
       value: `$${a.put_wall.strike.toFixed(2)}`,
-      tooltip: INLINE_VOL_TOOLTIP.PW,
+      tooltip: LEVEL_TOOLTIP.PW,
     });
   if (a?.max_pain != null)
     items.push({
       label: "MP",
       value: fmtPrice(a.max_pain),
-      tooltip: INLINE_VOL_TOOLTIP.MP,
+      tooltip: LEVEL_TOOLTIP.MP,
     });
   if (a?.gamma_flip != null)
     items.push({
       label: "GF",
       value: fmtPrice(a.gamma_flip),
-      tooltip: INLINE_VOL_TOOLTIP.GF,
+      tooltip: LEVEL_TOOLTIP.GF,
     });
   if (m?.iv_rank != null)
-    items.push({ label: "IV", value: `${m.iv_rank.toFixed(0)}` });
+    items.push({
+      label: "IV",
+      value: `${m.iv_rank.toFixed(0)}`,
+      tooltip: LEVEL_TOOLTIP.IV,
+    });
 
   return (
     <div
@@ -145,7 +158,11 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
         {symbol ?? ""}
       </span>
       {items.length === 0 ? (
-        <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+        <span
+          className="text-fg-tertiary-2"
+          style={{ fontSize: 11 }}
+          title="Expected move, call/put walls, max pain and gamma flip are computed from the day's option chain. They appear once chain data is available — typically during market hours."
+        >
           No levels for {symbol ?? "—"} today
         </span>
       ) : (
@@ -203,14 +220,20 @@ function InlineLevel({
   );
 }
 
-// Same disclosure copy as the full-column tooltip; pinned here so the
-// inline strip can reach it without importing from the lower section.
-const INLINE_VOL_TOOLTIP = {
-  CW: "Call wall — computed from today's volume as OI proxy (free tier limitation)",
-  PW: "Put wall — computed from today's volume as OI proxy (free tier limitation)",
-  MP: "Max pain — computed from today's volume as OI proxy (free tier limitation)",
-  GF: "Gamma flip — computed from today's volume as OI proxy (free tier limitation)",
-};
+// Definition-grade tooltips from the shared vocabulary, with the
+// volume-as-OI-proxy disclosure appended to the four volume-derived
+// levels. EM and IV rank are straddle/IV-derived and carry no proxy note.
+const VOL_PROXY_NOTE =
+  "\n\nNote: computed from today's volume as an open-interest proxy (free data tier).";
+const LEVEL_TOOLTIP = {
+  "EM↑": TOOLTIPS.expected_move,
+  "EM↓": TOOLTIPS.expected_move,
+  CW: TOOLTIPS.call_wall + VOL_PROXY_NOTE,
+  PW: TOOLTIPS.put_wall + VOL_PROXY_NOTE,
+  MP: TOOLTIPS.max_pain + VOL_PROXY_NOTE,
+  GF: TOOLTIPS.gamma_flip + VOL_PROXY_NOTE,
+  IV: TOOLTIPS.iv_rank,
+} as const;
 
 /**
  * Rounded pill toggle — 24×14, amber when on. Replaces the previous
@@ -347,7 +370,7 @@ function OpenPositionCol({
           </div>
           <div className="text-fg-tertiary-2 mt-0.5" style={{ fontSize: 10 }}>
             {summarizeLegs(trade)} · entry{" "}
-            {formatTimestamp(trade.entry_date)} ·{" "}
+            {formatTimestamp(trade.entry_date)} ET ·{" "}
             {totalContracts(trade)} contract{totalContracts(trade) === 1 ? "" : "s"}
           </div>
           <div className="border-t border-hairline my-1.5" />
@@ -833,31 +856,47 @@ function KeyLevelsCol({ symbol }: { symbol: string | null }) {
   const showOnChart = useChartPrefs((s) => s.showMarketAnnotations);
   const toggle = useChartPrefs((s) => s.toggleMarketAnnotations);
 
+  const allEmpty =
+    a?.expected_move_upper == null &&
+    a?.expected_move_lower == null &&
+    !a?.call_wall &&
+    !a?.put_wall &&
+    a?.max_pain == null &&
+    a?.gamma_flip == null;
+
   return (
     <>
       <ColHeader left="Key levels" right={symbol ?? ""} />
       <div className="px-3 py-1.5 flex flex-col gap-0.5 flex-1 min-h-0 tabular-nums">
-        <LevelRow label="EM↑" value={fmtPrice(a?.expected_move_upper)} />
-        <LevelRow label="EM↓" value={fmtPrice(a?.expected_move_lower)} />
+        <LevelRow
+          label="EM↑"
+          value={fmtPrice(a?.expected_move_upper)}
+          tooltip={LEVEL_TOOLTIP["EM↑"]}
+        />
+        <LevelRow
+          label="EM↓"
+          value={fmtPrice(a?.expected_move_lower)}
+          tooltip={LEVEL_TOOLTIP["EM↓"]}
+        />
         <LevelRow
           label="CW"
           value={a?.call_wall ? `$${a.call_wall.strike.toFixed(2)}` : "—"}
-          tooltip={VOL_PROXY_TOOLTIP.CW}
+          tooltip={LEVEL_TOOLTIP.CW}
         />
         <LevelRow
           label="PW"
           value={a?.put_wall ? `$${a.put_wall.strike.toFixed(2)}` : "—"}
-          tooltip={VOL_PROXY_TOOLTIP.PW}
+          tooltip={LEVEL_TOOLTIP.PW}
         />
         <LevelRow
           label="MP"
           value={fmtPrice(a?.max_pain)}
-          tooltip={VOL_PROXY_TOOLTIP.MP}
+          tooltip={LEVEL_TOOLTIP.MP}
         />
         <LevelRow
           label="GF"
           value={fmtPrice(a?.gamma_flip)}
-          tooltip={VOL_PROXY_TOOLTIP.GF}
+          tooltip={LEVEL_TOOLTIP.GF}
         />
         <div className="border-t border-hairline my-1.5" />
         <LevelRow
@@ -867,7 +906,18 @@ function KeyLevelsCol({ symbol }: { symbol: string | null }) {
               ? "—"
               : `${m.iv_rank.toFixed(0)}${m.iv_rank_status ? ` · ${m.iv_rank_status}` : ""}`
           }
+          tooltip={LEVEL_TOOLTIP.IV}
         />
+        {allEmpty && (
+          <span
+            className="text-fg-tertiary-2 mt-1"
+            style={{ fontSize: 9, lineHeight: 1.4 }}
+          >
+            {annotations.isLoading
+              ? "Computing levels from today's option chain…"
+              : "Levels compute from the day's option chain — they appear once chain data is available."}
+          </span>
+        )}
         <div className="mt-auto pt-2 flex items-center justify-between">
           <span
             className="uppercase tracking-label-up text-fg-tertiary-2"
@@ -906,18 +956,6 @@ function LevelRow({
     </div>
   );
 }
-
-// Disclosure for the four volume-derived KEY LEVELS values. The free
-// Alpaca tier doesn't expose open_interest, so call wall / put wall /
-// max pain / gamma flip are computed against today's per-contract
-// VOLUME as an OI proxy. EM±/IV are NOT volume-derived and don't
-// carry this disclosure.
-const VOL_PROXY_TOOLTIP = {
-  CW: "Call wall — computed from today's volume as OI proxy (free tier limitation)",
-  PW: "Put wall — computed from today's volume as OI proxy (free tier limitation)",
-  MP: "Max pain — computed from today's volume as OI proxy (free tier limitation)",
-  GF: "Gamma flip — computed from today's volume as OI proxy (free tier limitation)",
-};
 
 function ToggleSwitch({ on, onClick }: { on: boolean; onClick: () => void }) {
   return (
@@ -1021,7 +1059,7 @@ function TodayRow({ trade, isActive }: { trade: Trade; isActive: boolean }) {
       }`}
     >
       <div className="flex items-baseline justify-between text-tiny">
-        <span className="text-fg-secondary">
+        <span className="text-fg-secondary" title="Eastern Time (market clock)">
           {formatClockEt(open ? trade.entry_date : trade.exit_date ?? trade.entry_date)}
         </span>
         <span className="text-fg-tertiary-2">

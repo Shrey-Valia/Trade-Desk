@@ -6,9 +6,9 @@ import { create } from "zustand";
  * Clicking a trade row in TradeList sets this; clicking the same row
  * again clears it. The active position drives:
  *   - the entry marker + breakeven price-lines on AnnotatedChart
- *   - the payoff curve + theta scrubber in JournalPanel
+ *   - the open-position panel + theta scrubber in BottomStrip
  *
- * Two scrubber states live here so the chart and the payoff panel read
+ * Two scrubber states live here so the chart and the bottom strip read
  * from the same source:
  *   - `scrubberDte`     — integer days remaining (multi-day positions)
  *   - `elapsedHours`    — fractional hours since entry (0DTE positions)

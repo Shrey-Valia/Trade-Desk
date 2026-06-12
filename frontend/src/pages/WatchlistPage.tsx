@@ -1,13 +1,15 @@
 import { PageHeader } from "@/components/layout/PageHeader";
 import { WatchlistColumn } from "@/components/watchlist/WatchlistColumn";
+import { WatchlistPreview } from "@/components/watchlist/WatchlistPreview";
 
 /**
- * Watchlist destination — Step 1 of the navigation revamp.
+ * Watchlist destination — scan view.
  *
- * The watchlist component still lives in the right rail of the chart
- * view; this page is a focused-scan view that reuses the same
- * component without the chart competing for attention. Restyle is
- * a later step in the revamp.
+ * Left: the same WatchlistColumn the chart view uses (row click writes
+ * the shared selectedTicker store). Right: WatchlistPreview renders
+ * the clicked symbol — price, sparkline, ranges, options vitals — with
+ * a jump-to-chart action, so a scan pass doesn't require bouncing to
+ * the terminal and back per symbol.
  */
 export function WatchlistPage() {
   return (
@@ -15,15 +17,7 @@ export function WatchlistPage() {
       <PageHeader title="Watchlist" subtitle="Scan view" />
       <main className="flex-1 min-h-0 flex border-t border-hairline">
         <WatchlistColumn />
-        <div className="flex-1 min-w-0 flex items-center justify-center text-tiny text-fg-tertiary">
-          <span className="max-w-md text-center leading-relaxed px-4">
-            Click any symbol to load it on the chart view.
-            <br />
-            <span className="text-fg-tertiary/70">
-              (Restyled full-screen watchlist is a later step in the revamp.)
-            </span>
-          </span>
-        </div>
+        <WatchlistPreview />
       </main>
     </div>
   );

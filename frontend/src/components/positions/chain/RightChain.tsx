@@ -120,6 +120,15 @@ export function RightChain({ symbol }: Props) {
         iv={data?.iv_used ?? null}
       />
       <ColumnHeader />
+      {!marketOpen && data && (
+        <div
+          className="px-3 py-1 border-b border-hairline bg-tier-1 text-warning text-center shrink-0"
+          style={{ fontSize: 10 }}
+          role="status"
+        >
+          Market closed — chain is read-only until the next session
+        </div>
+      )}
       <div
         ref={bodyRef}
         className="overflow-y-auto"

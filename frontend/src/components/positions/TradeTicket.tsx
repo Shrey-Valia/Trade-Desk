@@ -1,9 +1,12 @@
 import { useMemo, useRef } from "react";
 
+import { useAccountState } from "@/hooks/useAccountState";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
 import { useTradeTicket, type TicketSelection } from "@/stores/tradeTicket";
+import { useUserSettings } from "@/stores/userSettings";
+import type { TierKey } from "@/types/account";
 
 /**
  * Lower-right TRADE TICKET (184px tall).
@@ -117,10 +120,12 @@ export function TradeTicket() {
       <Header />
       <Summary selection={selection} contracts={contracts} />
       <QuantityRow contracts={contracts} setContracts={setContracts} />
+      <DllRiskHint selection={selection} contracts={contracts} />
       <Actions
         selection={selection}
         contracts={contracts}
         disabled={!canFire}
+        pending={pending}
         marketOpen={marketOpen}
         onBuy={() => fire("buy")}
         onSell={() => fire("sell")}
@@ -232,6 +237,69 @@ function computeBreakevens(sel: TicketSelection): string | null {
   return `$${lower.toFixed(2)} ↔ $${upper.toFixed(2)}`;
 }
 
+/**
+ * Sizing-discipline hint — relates the ticket's worst case (full debit,
+ * i.e. a BUY that expires worthless) to the remaining daily loss
+ * budget. Display-only, mirrors the header pill's budget resolution
+ * (Settings override → tier spec → backend); uses realized DLL usage
+ * only — open-position drawdown isn't folded in here.
+ *
+ * Deliberately silent for the SELL direction: a short's max loss isn't
+ * the premium, and pretending otherwise would be worse than nothing.
+ */
+function DllRiskHint({
+  selection,
+  contracts,
+}: {
+  selection: TicketSelection;
+  contracts: number;
+}) {
+  const { data: account } = useAccountState();
+  const dllOverrides = useUserSettings((s) => s.dllOverrides);
+  if (!account) return null;
+  const activeTier = (account.active_tier ?? "50K") as TierKey;
+  const dllBudget =
+    dllOverrides[activeTier] ??
+    account.tiers.find((t) => t.key === activeTier)?.dll_amount ??
+    account.dll_budget ??
+    0;
+  if (dllBudget <= 0) return null;
+  const remaining = Math.max(0, dllBudget - (account.dll_used ?? 0));
+  const cost = selection.price * 100 * contracts;
+  if (!Number.isFinite(cost) || cost <= 0) return null;
+
+  if (remaining <= 0) {
+    return (
+      <div
+        className="px-3 pb-1 text-bearish tabular-nums"
+        style={{ fontSize: 10 }}
+        title="Realized losses today already meet your daily loss limit. Display-only — opens are not blocked."
+      >
+        DLL exhausted — any further loss exceeds today&rsquo;s budget
+      </div>
+    );
+  }
+
+  const pct = (cost / remaining) * 100;
+  const tone =
+    pct > 100 ? "text-bearish" : pct >= 50 ? "text-warning" : "text-fg-tertiary-2";
+  return (
+    <div
+      className={`px-3 pb-1 tabular-nums ${tone}`}
+      style={{ fontSize: 10 }}
+      title={
+        "Worst case if bought: the full debit. Compared against what's left of today's " +
+        "daily loss budget (realized losses only). Display-only — opens are not blocked."
+      }
+    >
+      if bought, max loss ${cost.toFixed(2)} ·{" "}
+      {pct > 100
+        ? `exceeds remaining DLL ($${remaining.toFixed(0)})`
+        : `${Math.round(pct)}% of remaining DLL`}
+    </div>
+  );
+}
+
 function QuantityRow({
   contracts,
   setContracts,
@@ -332,6 +400,7 @@ function Actions({
   selection,
   contracts,
   disabled,
+  pending,
   marketOpen,
   onBuy,
   onSell,
@@ -339,28 +408,34 @@ function Actions({
   selection: TicketSelection | null;
   contracts: number;
   disabled: boolean;
+  pending: boolean;
   marketOpen: boolean;
   onBuy: () => void;
   onSell: () => void;
 }) {
   // Topstep idiom: "BUY +N" / "SELL -N" main label, small action sub
-  // line below.
+  // line below. While a mutation is in flight both subs read
+  // "submitting…" so the user knows the click registered.
   const cost = selection ? selection.price * 100 * contracts : 0;
   const sideLabel = selection
     ? selection.kind === "straddle"
       ? "straddle"
       : (selection.side ?? "call")
     : "—";
-  const buySub = selection
-    ? `long ${sideLabel} · $${cost.toFixed(2)} debit`
-    : marketOpen
-      ? "pick a strike ↑"
-      : "market closed";
-  const sellSub = selection
-    ? `short ${sideLabel} · $${cost.toFixed(2)} credit`
-    : marketOpen
-      ? "pick a strike ↑"
-      : "market closed";
+  const buySub = pending
+    ? "submitting…"
+    : selection
+      ? `long ${sideLabel} · $${cost.toFixed(2)} debit`
+      : marketOpen
+        ? "pick a strike ↑"
+        : "market closed";
+  const sellSub = pending
+    ? "submitting…"
+    : selection
+      ? `short ${sideLabel} · $${cost.toFixed(2)} credit`
+      : marketOpen
+        ? "pick a strike ↑"
+        : "market closed";
   return (
     <div className="grid grid-cols-2 gap-2 px-3 pb-2 mt-auto" style={{ height: 56 }}>
       <ActionButton

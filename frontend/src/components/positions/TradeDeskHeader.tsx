@@ -344,12 +344,21 @@ function MetricPills() {
           </span>
         )}
       </MetricPill>
+      {/* RP&L/UP&L are derivable (bottom strip TODAY column + position
+          panel show the same numbers) — hide them first when the header
+          runs out of room so BAL/MLL/DLL/MKT never wrap or clip. */}
       <MetricPill
         label="RP&L"
         value={formatSigned(todayRpl)}
         signed={todayRpl}
+        className="hidden min-[1440px]:flex"
       />
-      <MetricPill label="UP&L" value={formatSigned(upl)} signed={upl} />
+      <MetricPill
+        label="UP&L"
+        value={formatSigned(upl)}
+        signed={upl}
+        className="hidden min-[1440px]:flex"
+      />
       <MarketPill />
     </>
   );
@@ -381,6 +390,9 @@ interface MetricPillProps {
   signed?: number;
   valueClass?: string;
   title?: string;
+  /** Extra classes on the pill shell — used to priority-hide the
+   * derivable pills (RP&L/UP&L) at narrow widths. */
+  className?: string;
   children?: React.ReactNode;
 }
 
@@ -390,6 +402,7 @@ function MetricPill({
   signed,
   valueClass: valueClassOverride,
   title,
+  className,
   children,
 }: MetricPillProps) {
   const valueClass =
@@ -403,7 +416,7 @@ function MetricPill({
       : "text-fg-primary");
   return (
     <div
-      className="bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex flex-col leading-tight"
+      className={`bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex-col leading-tight shrink-0 ${className ?? "flex"}`}
       style={{ height: 44, minWidth: 110 }}
       title={title}
     >
@@ -414,7 +427,7 @@ function MetricPill({
         {label}
       </span>
       <span
-        className={`tabular-nums font-medium ${valueClass}`}
+        className={`tabular-nums font-medium whitespace-nowrap ${valueClass}`}
         style={{ fontSize: 15, marginTop: 2 }}
       >
         {value}
@@ -443,7 +456,7 @@ function MarketPill() {
   const tone = isOpen ? "text-bullish" : "text-bearish";
   return (
     <div
-      className="bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex flex-col leading-tight"
+      className="bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex flex-col leading-tight shrink-0"
       style={{ height: 44, minWidth: 150 }}
       title={status?.label}
     >
@@ -454,7 +467,7 @@ function MarketPill() {
         MKT
       </span>
       <span
-        className={`tabular-nums font-medium uppercase tracking-label-up ${tone}`}
+        className={`tabular-nums font-medium uppercase tracking-label-up whitespace-nowrap ${tone}`}
         style={{ fontSize: 11, marginTop: 4 }}
       >
         {isOpen ? "OPEN" : "CLOSED"}
