@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/layout/PageHeader";
 import { UIButton } from "@/components/ui/UIButton";
-import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
+import { Link, useNavigate } from "react-router-dom";
+
+import { useAccountState } from "@/hooks/useAccountState";
+import { useActivateCombine } from "@/hooks/useCombines";
+import { useMe, useSignout } from "@/hooks/useAuth";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { APPEARANCE_DEFAULTS, useUserSettings } from "@/stores/userSettings";
@@ -44,6 +48,7 @@ export function SettingsPage() {
       <PageHeader title="Settings" />
       <main className="flex-1 min-h-0 overflow-y-auto border-t border-hairline">
         <section className="max-w-2xl">
+          <AccountSection />
           <CombineTierSection />
           <SettingRow
             label="Default ticker"
@@ -100,6 +105,41 @@ export function SettingsPage() {
   );
 }
 
+/** Who's signed in + the way out. Signout clears the query cache and
+ * the route guard bounces to /signin. */
+function AccountSection() {
+  const me = useMe();
+  const signout = useSignout();
+  const navigate = useNavigate();
+  return (
+    <div className="border-b border-hairline px-3 py-3 flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <div
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        >
+          Account
+        </div>
+        <div className="text-fg-primary mt-0.5 truncate" style={{ fontSize: 12 }}>
+          {me.data?.display_name ? `${me.data.display_name} · ` : ""}
+          {me.data?.email ?? "—"}
+        </div>
+      </div>
+      <button
+        type="button"
+        disabled={signout.isPending}
+        onClick={() =>
+          signout.mutate(undefined, { onSuccess: () => navigate("/signin") })
+        }
+        className="h-7 px-3 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-50 shrink-0"
+        style={{ borderRadius: 0 }}
+      >
+        {signout.isPending ? "Signing out…" : "Sign out"}
+      </button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Row scaffold + atomic controls — pure DESIGN.md: hairlines, IBM Plex Mono,
 // 0 border-radius, amber for active, no shadows.
@@ -141,95 +181,114 @@ function SettingRow({
  * prompt so a stray click doesn't swap accounts.
  */
 function CombineTierSection() {
-  const { data: account, isLoading } = useAccountState();
-  const switchTier = useSwitchTier();
-  const [confirmTier, setConfirmTier] = useState<TierSpec | null>(null);
-  if (isLoading || !account) {
+  const { data: account, isError, isLoading } = useAccountState();
+  const activate = useActivateCombine();
+  if (isLoading) {
     return (
       <div className="px-3 py-3 border-b border-hairline text-tiny text-fg-tertiary-2">
         Loading combine state…
       </div>
     );
   }
-  const activeKey = account.active_tier;
+  if (isError || !account) {
+    // Zero combines (fresh signup or all archived) — /state 404s.
+    return (
+      <div className="border-b border-hairline px-3 py-3 flex items-center justify-between gap-3">
+        <div>
+          <div
+            className="uppercase tracking-label-up text-fg-secondary"
+            style={{ fontSize: 9, letterSpacing: "0.08em" }}
+          >
+            Combines
+          </div>
+          <div className="text-fg-tertiary mt-0.5" style={{ fontSize: 11 }}>
+            You don&rsquo;t own a combine yet — purchase one to unlock trading.
+          </div>
+        </div>
+        <Link
+          to="/combines/new"
+          className="h-7 px-3 inline-flex items-center text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 shrink-0"
+          style={{ borderRadius: 0 }}
+        >
+          Start a combine
+        </Link>
+      </div>
+    );
+  }
+  const combines = account.combines ?? [];
   return (
     <div className="border-b border-hairline">
-      <div className="px-3 pt-3 pb-1">
-        <div
-          className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 9, letterSpacing: "0.08em" }}
-        >
-          Combine tier
+      <div className="px-3 pt-3 pb-1 flex items-baseline justify-between">
+        <div>
+          <div
+            className="uppercase tracking-label-up text-fg-secondary"
+            style={{ fontSize: 9, letterSpacing: "0.08em" }}
+          >
+            Your combines
+          </div>
+          <div
+            className="text-fg-tertiary mt-0.5"
+            style={{ fontSize: 11, lineHeight: 1.35 }}
+          >
+            Each combine keeps its own balance, high-water mark, and trade
+            history. The active one drives the terminal; manage (rename,
+            archive) from the dashboard.
+          </div>
         </div>
-        <div
-          className="text-fg-tertiary mt-0.5"
-          style={{ fontSize: 11, lineHeight: 1.35 }}
+        <Link
+          to="/combines/new"
+          className="text-tiny uppercase tracking-label-up text-amber hover:underline shrink-0"
+          style={{ fontSize: 10 }}
         >
-          Pick a prop-firm-style combine. Each tier keeps its own balance,
-          high-water mark, and trade history. Switching saves progress on the
-          tier you're leaving.
-        </div>
+          + new combine
+        </Link>
       </div>
       <div className="grid grid-cols-3 gap-2 px-3 pb-3 pt-1">
-        {account.tiers.map((t) => {
-          const active = t.key === activeKey;
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => {
-                if (!active) setConfirmTier(t);
-              }}
-              className={[
-                "flex flex-col items-start gap-1 p-2 border text-left tabular-nums",
-                active
-                  ? "border-amber bg-tier-2"
-                  : "border-hairline bg-tier-1 hover:bg-tier-2",
-              ].join(" ")}
-              style={{ borderRadius: 0 }}
-              aria-pressed={active}
-            >
-              <span
+        {combines
+          .filter((c) => c.status !== "archived")
+          .map((c) => {
+            const active = c.id === account.combine_id;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => {
+                  if (!active) activate.mutate(c.id);
+                }}
                 className={[
-                  "uppercase tracking-label-up font-medium",
-                  active ? "text-amber" : "text-fg-primary",
-                ].join(" ")}
-                style={{ fontSize: 11 }}
-              >
-                {t.key} Combine
-              </span>
-              <span className="text-fg-secondary" style={{ fontSize: 11 }}>
-                Start ${t.starting_balance.toLocaleString()}
-              </span>
-              <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
-                Trail ${t.trailing_distance.toLocaleString()} · MLL $
-                {t.initial_mll.toLocaleString()}
-              </span>
-              {active && (
-                <span
-                  className="mt-0.5 uppercase tracking-label-up text-amber"
-                  style={{ fontSize: 9 }}
-                >
+                  "flex flex-col items-start gap-1 p-2 border text-left tabular-nums",
                   active
+                    ? "border-amber bg-tier-2"
+                    : "border-hairline bg-tier-1 hover:bg-tier-2",
+                ].join(" ")}
+                style={{ borderRadius: 0 }}
+                aria-pressed={active}
+              >
+                <span
+                  className={[
+                    "uppercase tracking-label-up font-medium",
+                    active ? "text-amber" : "text-fg-primary",
+                  ].join(" ")}
+                  style={{ fontSize: 11 }}
+                >
+                  {c.name}
                 </span>
-              )}
-            </button>
-          );
-        })}
+                <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+                  {c.tier} · {c.account_code}
+                </span>
+                {active && (
+                  <span
+                    className="mt-0.5 uppercase tracking-label-up text-amber"
+                    style={{ fontSize: 9 }}
+                  >
+                    active
+                  </span>
+                )}
+              </button>
+            );
+          })}
       </div>
       <DailyLossLimitRow tiers={account.tiers} />
-      {confirmTier && (
-        <ConfirmSwitch
-          target={confirmTier}
-          pending={switchTier.isPending}
-          onCancel={() => setConfirmTier(null)}
-          onConfirm={() => {
-            switchTier.mutate(confirmTier.key, {
-              onSettled: () => setConfirmTier(null),
-            });
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -371,66 +430,6 @@ function DllInput({
       aria-label={`${tierKey} daily loss limit`}
       title={`$${min.toLocaleString()} – $${max.toLocaleString()}`}
     />
-  );
-}
-
-function ConfirmSwitch({
-  target,
-  pending,
-  onCancel,
-  onConfirm,
-}: {
-  target: TierSpec;
-  pending: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-tier-0/80"
-      onClick={onCancel}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="border border-hairline-strong bg-tier-1 px-4 py-3 max-w-md"
-        style={{ borderRadius: 0 }}
-      >
-        <div
-          className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 9 }}
-        >
-          Switch combine?
-        </div>
-        <div className="text-fg-primary mt-1" style={{ fontSize: 13 }}>
-          Switch to the {target.key} combine?
-        </div>
-        <div className="text-fg-tertiary-2 mt-1" style={{ fontSize: 11 }}>
-          Your current tier's progress is saved automatically. Each tier keeps
-          its own trade history and high-water mark.
-        </div>
-        <div className="flex gap-2 mt-3 justify-end">
-          <UIButton
-            size="sm"
-            variant="ghost"
-            onClick={onCancel}
-            className="uppercase tracking-label-up"
-          >
-            Cancel
-          </UIButton>
-          <UIButton
-            size="sm"
-            active
-            onClick={onConfirm}
-            disabled={pending}
-            className="uppercase tracking-label-up"
-          >
-            {pending ? "Switching…" : `Switch to ${target.key}`}
-          </UIButton>
-        </div>
-      </div>
-    </div>
   );
 }
 

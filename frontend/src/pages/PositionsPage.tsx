@@ -81,8 +81,8 @@ export function PositionsPage() {
   const trades = tradesData?.trades ?? [];
   // Filter active-trade resolution by the current tier — a trade
   // opened on tier A must not surface as the active position on
-  // tier B's screen. Paired with useSwitchTier clearing the
-  // activePosition store, this gives a clean tier boundary.
+  // tier B's screen. Paired with useActivateCombine clearing the
+  // activePosition store, this gives a clean combine boundary.
   const activeTrade = useMemo(
     () =>
       trades.find(
