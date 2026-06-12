@@ -1,9 +1,12 @@
 import { useMemo, useRef } from "react";
 
+import { useAccountState } from "@/hooks/useAccountState";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
 import { useTradeTicket, type TicketSelection } from "@/stores/tradeTicket";
+import { useUserSettings } from "@/stores/userSettings";
+import type { TierKey } from "@/types/account";
 
 /**
  * Lower-right TRADE TICKET (184px tall).
@@ -117,6 +120,7 @@ export function TradeTicket() {
       <Header />
       <Summary selection={selection} contracts={contracts} />
       <QuantityRow contracts={contracts} setContracts={setContracts} />
+      <DllRiskHint selection={selection} contracts={contracts} />
       <Actions
         selection={selection}
         contracts={contracts}
@@ -230,6 +234,69 @@ function computeBreakevens(sel: TicketSelection): string | null {
   const lower = sel.strike - sel.price;
   const upper = sel.strike + sel.price;
   return `$${lower.toFixed(2)} ↔ $${upper.toFixed(2)}`;
+}
+
+/**
+ * Sizing-discipline hint — relates the ticket's worst case (full debit,
+ * i.e. a BUY that expires worthless) to the remaining daily loss
+ * budget. Display-only, mirrors the header pill's budget resolution
+ * (Settings override → tier spec → backend); uses realized DLL usage
+ * only — open-position drawdown isn't folded in here.
+ *
+ * Deliberately silent for the SELL direction: a short's max loss isn't
+ * the premium, and pretending otherwise would be worse than nothing.
+ */
+function DllRiskHint({
+  selection,
+  contracts,
+}: {
+  selection: TicketSelection;
+  contracts: number;
+}) {
+  const { data: account } = useAccountState();
+  const dllOverrides = useUserSettings((s) => s.dllOverrides);
+  if (!account) return null;
+  const activeTier = (account.active_tier ?? "50K") as TierKey;
+  const dllBudget =
+    dllOverrides[activeTier] ??
+    account.tiers.find((t) => t.key === activeTier)?.dll_amount ??
+    account.dll_budget ??
+    0;
+  if (dllBudget <= 0) return null;
+  const remaining = Math.max(0, dllBudget - (account.dll_used ?? 0));
+  const cost = selection.price * 100 * contracts;
+  if (!Number.isFinite(cost) || cost <= 0) return null;
+
+  if (remaining <= 0) {
+    return (
+      <div
+        className="px-3 pb-1 text-bearish tabular-nums"
+        style={{ fontSize: 10 }}
+        title="Realized losses today already meet your daily loss limit. Display-only — opens are not blocked."
+      >
+        DLL exhausted — any further loss exceeds today&rsquo;s budget
+      </div>
+    );
+  }
+
+  const pct = (cost / remaining) * 100;
+  const tone =
+    pct > 100 ? "text-bearish" : pct >= 50 ? "text-warning" : "text-fg-tertiary-2";
+  return (
+    <div
+      className={`px-3 pb-1 tabular-nums ${tone}`}
+      style={{ fontSize: 10 }}
+      title={
+        "Worst case if bought: the full debit. Compared against what's left of today's " +
+        "daily loss budget (realized losses only). Display-only — opens are not blocked."
+      }
+    >
+      if bought, max loss ${cost.toFixed(2)} ·{" "}
+      {pct > 100
+        ? `exceeds remaining DLL ($${remaining.toFixed(0)})`
+        : `${Math.round(pct)}% of remaining DLL`}
+    </div>
+  );
 }
 
 function QuantityRow({
