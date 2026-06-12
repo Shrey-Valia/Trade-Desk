@@ -11,13 +11,16 @@ import logging
 import math
 from datetime import date, datetime, time, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from calculations.journal_analytics import compose
 from database import get_session
+from models.combine import Combine
 from models.trade import Trade
+from models.user import User
+from services.auth import get_current_user
 from schemas.analytics import (
     AnalyticsFilters,
     AnalyticsResponse,
@@ -48,10 +51,28 @@ def get_analytics(
         ge=0,
         description="Active tier's MLL trailing distance — enables the days-near-MLL count.",
     ),
+    combine_id: int | None = Query(
+        default=None,
+        description="Scope to one owned combine (e.g. the dashboard's active one).",
+    ),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> AnalyticsResponse:
-    """Aggregate journal metrics. All filters optional."""
-    stmt = select(Trade)
+    """Aggregate journal metrics for the signed-in user. All filters optional."""
+    # Always scoped to the user's own combines; an explicit combine_id
+    # narrows to one (ownership-checked → 404 on foreign ids).
+    stmt = select(Trade).where(
+        Trade.combine_id.in_(select(Combine.id).where(Combine.user_id == user.id))
+    )
+    if combine_id is not None:
+        owned = session.execute(
+            select(Combine.id).where(
+                Combine.id == combine_id, Combine.user_id == user.id
+            )
+        ).scalar_one_or_none()
+        if owned is None:
+            raise HTTPException(404, f"combine {combine_id} not found")
+        stmt = stmt.where(Trade.combine_id == combine_id)
     if paper is not None:
         stmt = stmt.where(Trade.is_paper == paper)
     if strategy:
