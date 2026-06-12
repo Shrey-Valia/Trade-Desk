@@ -305,15 +305,31 @@ def get_trade_analytics(
     today = datetime.now(timezone.utc).date()
     entry_date = trade.entry_date.date() if trade.entry_date else today
 
-    legs_now, iv_used, iv_source = build_legs_from_journal(
-        trade.legs,
-        today=today,
-        rate=rate,
-        spot_at_entry=trade.entry_underlying_price,
-        entry_date=entry_date,
-    )
+    try:
+        legs_now, iv_used, iv_source = build_legs_from_journal(
+            trade.legs,
+            today=today,
+            rate=rate,
+            spot_at_entry=trade.entry_underlying_price,
+            entry_date=entry_date,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        # A leg dict that parses as JSON but is missing/garbling fields
+        # (hand-edited DB, partial write). Same class of problem as the
+        # empty case below — stored-data fault, not a server bug.
+        raise HTTPException(
+            422,
+            f"trade {trade_id} has malformed legs data ({exc!r})",
+        ) from exc
     if not legs_now:
-        raise HTTPException(500, f"trade {trade_id} has no usable legs")
+        # Stored row problem (empty or malformed legs_json), not a server
+        # fault — 422 so the client can show a real message instead of a
+        # generic 500.
+        raise HTTPException(
+            422,
+            f"trade {trade_id} has no usable legs — its stored legs data is "
+            "missing or malformed",
+        )
 
     result = compute_analytics(
         legs_now,
@@ -419,7 +435,12 @@ def _intraday_analytics(
     uses the sub-day-floored Black-Scholes from intraday_analytics."""
     legs = list(trade.legs or [])
     if not legs:
-        raise HTTPException(500, f"trade {trade.id} has no usable legs")
+        # See the multi-day path: stored-data problem → 422, not 500.
+        raise HTTPException(
+            422,
+            f"trade {trade.id} has no usable legs — its stored legs data is "
+            "missing or malformed",
+        )
 
     # Times: entry → expiry (today's 4pm ET).
     entry_dt = trade.entry_date if trade.entry_date else datetime.now(timezone.utc)
