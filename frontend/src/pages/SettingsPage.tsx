@@ -5,7 +5,7 @@ import { UIButton } from "@/components/ui/UIButton";
 import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
-import { useUserSettings } from "@/stores/userSettings";
+import { APPEARANCE_DEFAULTS, useUserSettings } from "@/stores/userSettings";
 import type { TierKey, TierSpec } from "@/types/account";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 
@@ -585,14 +585,33 @@ function ChartAppearanceSection() {
   const setBgGradient = useUserSettings((s) => s.setBgGradient);
   const gridOpacity = useUserSettings((s) => s.gridOpacity);
   const setGridOpacity = useUserSettings((s) => s.setGridOpacity);
+  const resetAppearance = useUserSettings((s) => s.resetAppearance);
+  const isDefault =
+    bullishColor === APPEARANCE_DEFAULTS.bullishColor &&
+    bearishColor === APPEARANCE_DEFAULTS.bearishColor &&
+    bgGradient === APPEARANCE_DEFAULTS.bgGradient &&
+    gridOpacity === APPEARANCE_DEFAULTS.gridOpacity;
   return (
     <div className="border-t border-hairline">
       <div className="px-3 pt-3 pb-1">
-        <div
-          className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 10, letterSpacing: "0.08em" }}
-        >
-          Chart appearance
+        <div className="flex items-baseline justify-between">
+          <div
+            className="uppercase tracking-label-up text-fg-secondary"
+            style={{ fontSize: 10, letterSpacing: "0.08em" }}
+          >
+            Chart appearance
+          </div>
+          {!isDefault && (
+            <button
+              type="button"
+              onClick={resetAppearance}
+              className="text-fg-tertiary-2 hover:text-fg-secondary uppercase tracking-label-up"
+              style={{ fontSize: 9 }}
+              title="Restore the default candle colors, gradient, and grid opacity"
+            >
+              reset to defaults
+            </button>
+          )}
         </div>
         <div
           className="text-fg-tertiary mt-0.5"
