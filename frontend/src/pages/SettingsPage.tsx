@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/layout/PageHeader";
 import { UIButton } from "@/components/ui/UIButton";
@@ -288,19 +288,12 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
                 <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
                   $
                 </span>
-                <input
-                  type="number"
+                <DllInput
+                  tierKey={tierKey}
                   value={value}
                   min={min}
                   max={max}
-                  step={50}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    setOverride(tierKey, Number.isFinite(n) ? n : null);
-                  }}
-                  className="h-7 px-1.5 text-xs2 font-mono tabular-nums bg-tier-2 border border-tier-3 text-fg-primary rounded-btn"
-                  style={{ width: 80 }}
-                  aria-label={`${t.key} daily loss limit`}
+                  onCommit={(n) => setOverride(tierKey, n)}
                 />
                 {!isDefault && (
                   <button
@@ -323,6 +316,61 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
         })}
       </div>
     </div>
+  );
+}
+
+/** DLL override input — free typing, clamped commit.
+ *
+ * The store write happens on blur/Enter (not per keystroke) so typing
+ * "1500" doesn't get clamped at the intermediate "1". Commits clamp to
+ * the documented 1-10%-of-starting-balance band; garbage input reverts
+ * to the last committed value. */
+function DllInput({
+  tierKey,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  tierKey: TierKey;
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (n: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+  // Re-sync when the committed value changes underneath us (reset
+  // button, tier defaults loading).
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+  const commit = () => {
+    const n = Number(text);
+    if (!Number.isFinite(n) || text.trim() === "") {
+      setText(String(value));
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, Math.round(n)));
+    setText(String(clamped));
+    onCommit(clamped);
+  };
+  return (
+    <input
+      type="number"
+      value={text}
+      min={min}
+      max={max}
+      step={50}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      className="h-7 px-1.5 text-xs2 font-mono tabular-nums bg-tier-2 border border-tier-3 text-fg-primary rounded-btn"
+      style={{ width: 80 }}
+      aria-label={`${tierKey} daily loss limit`}
+      title={`$${min.toLocaleString()} – $${max.toLocaleString()}`}
+    />
   );
 }
 
