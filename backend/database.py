@@ -58,17 +58,24 @@ def init_db() -> None:
     # Import models so SQLAlchemy registers them before create_all.
     from models import (  # noqa: F401
         account_state,
+        auth_session,
+        combine,
         historical_earnings_event,
         options_snapshot,
+        payment,
         ticker_selection,
         trade,
+        user,
         user_star,
         watchlist_item,
     )
 
     Base.metadata.create_all(bind=engine)
     _additive_migrate_trades()
-    _seed_account_state()
+    _create_missing_indexes()
+    # AccountState seeding retired with the multi-user shell — the table
+    # stays on disk purely as the migration source for legacy HWMs.
+    _backfill_multiuser(SessionLocal)
 
 
 # Single-user SQLite — Alembic would be overkill, but we DO need to
@@ -90,6 +97,9 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # were on the legacy $10K paper account. We wipe those legacy rows
     # immediately after adding the column (see _wipe_legacy_trades).
     ("tier", "VARCHAR(8) NOT NULL DEFAULT '50K'"),
+    # Multi-user shell — which combine instance owns this trade.
+    # Backfilled from `tier` by _backfill_multiuser().
+    ("combine_id", "INTEGER"),
 ]
 
 
@@ -114,17 +124,107 @@ def _additive_migrate_trades() -> None:
         conn.commit()
 
 
-def _seed_account_state() -> None:
-    """Ensure exactly one AccountState row exists (id=1) with default
-    values. Idempotent — does nothing if the row already exists.
-    """
-    from models.account_state import AccountState
+def _create_missing_indexes() -> None:
+    """Indexes the additive column list can't express. Idempotent via
+    IF NOT EXISTS."""
+    with engine.connect() as conn:
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_trades_combine_id ON trades(combine_id)")
+        )
+        conn.commit()
 
-    with SessionLocal() as session:
-        existing = session.get(AccountState, 1)
-        if existing is not None:
+
+def _backfill_multiuser(session_factory: sessionmaker) -> None:
+    """One-time adoption of a pre-multi-user database.
+
+    The guard is the idempotency key AND the fresh-install short-circuit:
+    if no trade rows have a NULL combine_id there is nothing to adopt —
+    a brand-new DB therefore gets NO dev user (signup-first flow).
+
+    For a legacy DB: create the dev user (settings creds), one combine
+    per distinct tier among unmapped trades (HWM carried from the old
+    AccountState per-tier columns), a 'migration_grant' payment per
+    combine, map the trades, and point active_combine_id at the combine
+    matching the legacy active_tier.
+
+    Takes the session factory as a parameter so tests can run it
+    against their own engine.
+    """
+    from sqlalchemy import select
+
+    from models.account_state import AccountState
+    from models.combine import Combine
+    from models.payment import Payment
+    from models.trade import Trade
+    from models.user import User
+    from services.account_tiers import DEFAULT_TIER, TIERS
+    from services.auth import hash_password
+    from services.combine_objectives import generate_account_code
+
+    with session_factory() as session:
+        unmapped_tiers = session.execute(
+            select(Trade.tier).where(Trade.combine_id.is_(None)).distinct()
+        ).scalars().all()
+        if not unmapped_tiers:
             return
-        session.add(AccountState(id=1))
+
+        legacy = session.get(AccountState, 1)
+        legacy_active_tier = legacy.active_tier if legacy else DEFAULT_TIER
+
+        dev_user = session.execute(
+            select(User).where(User.email == settings.dev_user_email)
+        ).scalar_one_or_none()
+        if dev_user is None:
+            dev_user = User(
+                email=settings.dev_user_email,
+                password_hash=hash_password(settings.dev_user_password),
+                display_name="Dev",
+            )
+            session.add(dev_user)
+            session.flush()
+
+        active_combine_id: int | None = None
+        first_combine_id: int | None = None
+        for tier_key in sorted(unmapped_tiers):
+            tier = TIERS.get(tier_key)
+            if tier is None:
+                # Unknown tier string in legacy data — leave those rows
+                # unmapped rather than guessing an account size.
+                continue
+            legacy_hwm = legacy.get_hwm(tier_key) if legacy else tier.starting_balance
+            combine = Combine(
+                user_id=dev_user.id,
+                tier=tier_key,
+                name=f"{tier_key} Combine",
+                account_code=generate_account_code(session, tier_key, dev_user.id),
+                hwm=max(legacy_hwm, tier.starting_balance),
+                status="active",
+            )
+            session.add(combine)
+            session.flush()
+            session.add(
+                Payment(
+                    user_id=dev_user.id,
+                    combine_id=combine.id,
+                    tier=tier_key,
+                    amount=None,
+                    status="migration_grant",
+                )
+            )
+            session.execute(
+                text(
+                    "UPDATE trades SET combine_id = :cid "
+                    "WHERE tier = :tier AND combine_id IS NULL"
+                ),
+                {"cid": combine.id, "tier": tier_key},
+            )
+            if first_combine_id is None:
+                first_combine_id = combine.id
+            if tier_key == legacy_active_tier:
+                active_combine_id = combine.id
+
+        if dev_user.active_combine_id is None:
+            dev_user.active_combine_id = active_combine_id or first_combine_id
         session.commit()
 
 
