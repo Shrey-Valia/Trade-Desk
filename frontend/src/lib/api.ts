@@ -47,6 +47,12 @@ import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
 import { WatchlistResponseSchema, type WatchlistResponse } from "@/types/watchlist";
 import { AccountStateSchema, type AccountState } from "@/types/account";
 import {
+  UserOutSchema,
+  type SigninInput,
+  type SignupInput,
+  type UserOut,
+} from "@/types/auth";
+import {
   PopularResponseSchema,
   StarsResponseSchema,
   TickerSearchResponseSchema,
@@ -61,7 +67,9 @@ async function request<S extends z.ZodTypeAny>(
   path: string,
   schema: S,
 ): Promise<z.infer<S>> {
-  const res = await fetch(`${API_BASE}${path}`);
+  // credentials: session-cookie auth. Same-origin through the Vite
+  // proxy in dev; "include" also covers direct-to-:8000 use.
+  const res = await fetch(`${API_BASE}${path}`, { credentials: "include" });
   if (!res.ok) {
     // Surface the backend's `detail` when present (FastAPI HTTPException
     // bodies look like `{"detail": "..."}`). UI components branch on
@@ -163,10 +171,24 @@ async function mutate<S extends z.ZodTypeAny>(
 ): Promise<z.infer<S>> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     ...init,
   });
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status} ${res.statusText}`);
+    // Surface FastAPI's `detail` like request() does — the purchase
+    // 5-cap 409 and auth errors carry their message there.
+    let detail = `Request failed: ${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* non-JSON body */
+    }
+    throw new Error(detail);
+  }
+  // 204s have no body to parse.
+  if (res.status === 204) {
+    return schema.parse(undefined);
   }
   const json = await res.json();
   return schema.parse(json);
@@ -226,6 +248,7 @@ export const logTickerSelection = async (symbol: string): Promise<void> => {
     await fetch(`${API_BASE}/api/ticker/selection`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ symbol }),
     });
   } catch {
@@ -239,6 +262,26 @@ export const switchAccountTier = (tier: string): Promise<AccountState> =>
     body: JSON.stringify({ tier }),
   });
 
+// -- auth --------------------------------------------------------------------
+
+export const fetchMe = (): Promise<UserOut> =>
+  request("/api/auth/me", UserOutSchema);
+
+export const signup = (input: SignupInput): Promise<UserOut> =>
+  mutate("/api/auth/signup", UserOutSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+export const signin = (input: SigninInput): Promise<UserOut> =>
+  mutate("/api/auth/signin", UserOutSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+export const signout = (): Promise<void> =>
+  mutate("/api/auth/signout", z.void(), { method: "POST" });
+
 export const updateTrade = (id: number, patch: TradeUpdateInput): Promise<Trade> =>
   mutate(`/api/journal/trades/${id}`, TradeOutSchema, {
     method: "PATCH",
@@ -246,7 +289,10 @@ export const updateTrade = (id: number, patch: TradeUpdateInput): Promise<Trade>
   });
 
 export const deleteTrade = async (id: number): Promise<void> => {
-  const res = await fetch(`${API_BASE}/api/journal/trades/${id}`, { method: "DELETE" });
+  const res = await fetch(`${API_BASE}/api/journal/trades/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
   if (!res.ok) {
     throw new Error(`Delete failed: ${res.status} ${res.statusText}`);
   }

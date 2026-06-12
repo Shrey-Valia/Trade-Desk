@@ -14,6 +14,15 @@ export const TierSpecSchema = z.object({
 });
 export type TierSpec = z.infer<typeof TierSpecSchema>;
 
+export const CombineSummarySchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  tier: z.string(),
+  account_code: z.string(),
+  status: z.string(),
+});
+export type CombineSummary = z.infer<typeof CombineSummarySchema>;
+
 export const AccountStateSchema = z.object({
   active_tier: z.string(),
   starting_balance: z.number(),
@@ -32,5 +41,16 @@ export const AccountStateSchema = z.object({
   dll_budget: z.number(),
   dll_breached: z.boolean(),
   tiers: z.array(TierSpecSchema),
+  // -- combine identity (multi-user shell). Optional until every
+  // consumer is on the combine-aware payload.
+  combine_id: z.number().int().optional(),
+  combine_name: z.string().optional(),
+  account_code: z.string().optional(),
+  combine_status: z.string().optional(),
+  /** Display-only objective — no enforcement. */
+  profit_target: z.number().optional(),
+  /** realized/target clamped to [0,1]. */
+  objective_progress: z.number().optional(),
+  combines: z.array(CombineSummarySchema).optional(),
 });
 export type AccountState = z.infer<typeof AccountStateSchema>;
