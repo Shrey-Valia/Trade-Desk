@@ -31,7 +31,7 @@ export function JournalPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [activeDay, setActiveDay] = useState<{ date: string; trade_ids: number[] } | null>(null);
 
-  const { data } = useTrades();
+  const { data, isError, refetch } = useTrades();
   const allTrades = data?.trades ?? [];
   // JOURNAL is closed-only — open positions live on the CHART view's
   // chain panel now. The calendar view already bucketed by exit_date so
@@ -110,6 +110,8 @@ export function JournalPage() {
               onScopeChange={setListScope}
               selectedSymbol={selectedSymbol}
               onAddTrade={() => setModalOpen(true)}
+              loadFailed={isError}
+              onRetry={() => refetch()}
             />
           </div>
         )}

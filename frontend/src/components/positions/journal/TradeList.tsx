@@ -15,6 +15,10 @@ interface Props {
   onScopeChange: (s: "current" | "all") => void;
   selectedSymbol: string | null;
   onAddTrade: () => void;
+  /** Trades query failed — render a retry state instead of the
+   * misleading "No trades logged yet" empty state. */
+  loadFailed?: boolean;
+  onRetry?: () => void;
 }
 
 /**
@@ -32,6 +36,8 @@ export function TradeList({
   onScopeChange,
   selectedSymbol,
   onAddTrade,
+  loadFailed = false,
+  onRetry,
 }: Props) {
   const [closingId, setClosingId] = useState<number | null>(null);
   const activeTradeId = useActivePosition((s) => s.tradeId);
@@ -58,7 +64,21 @@ export function TradeList({
         onAddTrade={onAddTrade}
       />
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {trades.length === 0 ? (
+        {loadFailed ? (
+          <div className="px-3 py-6 text-tiny text-center flex flex-col items-center gap-2">
+            <span className="text-bearish">Couldn&rsquo;t load trades.</span>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="h-6 px-2 uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
+                style={{ borderRadius: 0 }}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        ) : trades.length === 0 ? (
           <div className="px-3 py-6 text-tiny text-fg-tertiary text-center">
             No trades logged yet. Click <span className="text-fg-primary">+ Log Trade</span> to start.
           </div>
