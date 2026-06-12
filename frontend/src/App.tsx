@@ -5,6 +5,7 @@ import { RequireAuth } from "@/components/auth/RequireAuth";
 import { RailShell } from "@/components/layout/RailShell";
 import { AnalyticsPage } from "@/pages/AnalyticsPage";
 import { JournalPage } from "@/pages/JournalPage";
+import { NewCombinePage } from "@/pages/NewCombinePage";
 import { PositionsPage } from "@/pages/PositionsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SignInPage } from "@/pages/SignInPage";
@@ -35,11 +36,18 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<RootGate />} />
-        <Route path="/signin" element={<GuestOnly page={<SignInPage />} />} />
-        <Route path="/signup" element={<GuestOnly page={<SignUpPage />} />} />
+        <Route
+          path="/signin"
+          element={<GuestOnly page={<SignInPage />} authedTo="/positions" />}
+        />
+        <Route
+          path="/signup"
+          element={<GuestOnly page={<SignUpPage />} authedTo="/combines/new" />}
+        />
         <Route element={<RequireAuth />}>
           <Route element={<RailShell />}>
             <Route path="/positions" element={<PositionsPage />} />
+            <Route path="/combines/new" element={<NewCombinePage />} />
             <Route path="/journal" element={<JournalPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/watchlist" element={<WatchlistPage />} />
@@ -64,9 +72,22 @@ function RootGate() {
   );
 }
 
-/** Auth pages bounce already-signed-in users into the app. */
-function GuestOnly({ page }: { page: React.ReactElement }) {
+/**
+ * Auth pages bounce signed-in users into the app. The bounce honors
+ * ?next= and otherwise uses the page's natural destination — this is
+ * ALSO the post-submit redirect path: the signin/signup mutation sets
+ * the me-cache, this component re-renders authed, and the Navigate
+ * here wins. (The forms' own navigate() is a no-op backup.)
+ */
+function GuestOnly({
+  page,
+  authedTo,
+}: {
+  page: React.ReactElement;
+  authedTo: string;
+}) {
   const me = useMe();
+  const next = new URLSearchParams(window.location.search).get("next");
   if (me.isPending) return <div className="min-h-screen bg-tier-0" />;
-  return me.isSuccess ? <Navigate to="/positions" replace /> : page;
+  return me.isSuccess ? <Navigate to={next || authedTo} replace /> : page;
 }
