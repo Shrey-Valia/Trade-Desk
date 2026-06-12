@@ -127,6 +127,58 @@ thoughtful (tiers, DLL, chart appearance).
 - **Why**: bare ET times are ambiguous off-Eastern; explorer machine was on PT.
 - **Confidence**: sure.
 
+### 9. Trade ticket: DLL risk hint (372035e) + submitting state (bd488df)
+- **What**: "if bought, max loss $X · Y% of remaining DLL" line under the quantity row
+  (amber ≥50%, red >100%, explicit DLL-exhausted line); BUY/SELL sub-labels read
+  "submitting…" while the open mutation is in flight.
+- **Why**: the one number a combine trader sizes against (remaining daily budget) was
+  nowhere near the ticket; clicks gave no in-flight feedback.
+- **Confidence**: sure on display logic (verified in-browser: 205P ×1 → "2% of remaining
+  DLL"). Hint uses realized DLL usage only (header pill folds in open-position UPL; the
+  ticket doesn't) — tooltip says so. Deliberately silent for SELL (a short's max loss
+  isn't the premium).
+
+### 10. Digit-key timeframe shortcuts (039ae8b)
+- **What**: 1-6 switch the terminal chart timeframe; tooltips advertise the keys.
+- **Why**: zero keyboard support for the most-touched control.
+- **Confidence**: sure (verified incl. the input-focus guard).
+
+### 11. Watchlist preview panel (1ac83c5)
+- **What**: new WatchlistPreview fills the placeholder right panel — price/change,
+  daily-close sparkline, day/52w range bars, volume, earnings, IV rank/VRP/P/C/skew, and
+  OPEN ON CHART.
+- **Why**: page was two-thirds placeholder; symbol clicks had no visible effect.
+- **Confidence**: probably-right. Verified rendering + click-follow live (SPY → NVDA).
+  Uses only existing hooks/endpoints (detail/metrics/bars), so no new backend surface.
+
+### 12. Analytics 422 for corrupt legs + tests (b467d01)
+- **What**: corrupted/empty/missing-field legs_json → 422 with a per-trade message
+  (was 500). Router shields KeyError/TypeError/ValueError from build_legs_from_journal.
+  New offline test file (4 tests). Full backend suite: 295 passed.
+- **Why**: stored-data faults crashed as server errors; frontend shows error messages, so
+  a real message beats "Internal Server Error".
+- **Confidence**: sure.
+
+### 13. Chain market-closed banner + th scopes (105fcf1)
+- **What**: role=status strip in the chain when the market is closed; scope="col" on
+  TradeList headers.
+- **Why**: closed-market chain looked broken (dim cells, no-op clicks, explanation hidden
+  in per-cell tooltips).
+- **Confidence**: sure. Banner only shows when data exists; the no-0DTE case keeps its
+  existing message.
+
+### 14. Chart zero-bars empty state (6ae962e)
+- **What**: explicit "No {tf} bars for {symbol} right now" when the payload has an empty
+  array. Render-path only — chart mount + synthetic-candle effect untouched.
+- **Confidence**: sure (kept far from fence #4).
+
+### 15. Journal CSV export (3782222)
+- **What**: EXPORT CSV in the journal toolbar — client-side file of the closed trades
+  shown (honors paper/live filter); legs compacted per row; injection-defused quoting;
+  verified by intercepting the blob.
+- **Why**: traders move journals into Excel/Sheets; there was no way out of the app.
+- **Confidence**: sure.
+
 ---
 
 ## Needs verification at market open
@@ -163,3 +215,16 @@ thoughtful (tiers, DLL, chart appearance).
 - **KEY LEVELS all "—" for SPY during a live session** — the models endpoint computed no
   levels mid-session. Needs verification at market open (could be data availability, could be
   a real bug in the levels pipeline).
+- **RP&L pill vs balance is_paper inconsistency (needs human decision)** — the header RP&L
+  pill counts paper trades only (`TradeDeskHeader.tsx` todayRpl skips `!is_paper`), but the
+  backend's `_realized_sum_for_tier` (drives BAL/MLL/HWM) and `_dll_used_today_for_tier`
+  (drives DLL) sum ALL closed trades on the tier, live-journaled ones included. So closing a
+  LIVE trade moves BAL and DLL but not RP&L. Deciding which semantic is right (should
+  real-money journal entries touch the simulated combine at all?) changes what feeds the
+  fenced MLL/DLL engine, so I did not touch it. My read: live trades should probably be
+  journal-only (excluded from combine balance), which means the backend sums need an
+  `is_paper` filter — but that's a product decision.
+- **Chain shows 11 strikes (width=5)** — RightChain's comment says a deliberate
+  simplification pass reduced it from 16; there's spare vertical room below the ticket on
+  tall screens, but I respected the recorded decision and left it.
+- **`POST /api/zerodte/open-leg` dead endpoint** (also under fences): no frontend caller.
