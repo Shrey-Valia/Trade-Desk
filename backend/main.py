@@ -16,6 +16,7 @@ from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
 from routers import account as account_router
 from routers import analytics as analytics_router
+from routers import auth as auth_router
 from routers import bs as bs_router
 from routers import calendar as calendar_router
 from routers import journal as journal_router
@@ -170,6 +171,9 @@ app = FastAPI(title="Options Dashboard", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    # Session-cookie auth. Origins must stay an explicit list (never
+    # "*") once credentials are allowed.
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -188,6 +192,7 @@ app.include_router(journal_router.router)
 app.include_router(analytics_router.router)
 app.include_router(zerodte_router.router)
 app.include_router(account_router.router)
+app.include_router(auth_router.router)
 app.include_router(ticker_search_router.router)
 app.include_router(user_browse_router.router_user)
 app.include_router(user_browse_router.router_ticker)
