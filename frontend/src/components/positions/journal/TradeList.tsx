@@ -213,8 +213,10 @@ function TradeRow({
   onCancelClose: () => void;
   onClosed: () => void;
 }) {
-  const dte = computeDte(trade);
+  // DTE is a management number for OPEN positions; on closed rows it
+  // just counts days since expiry (negative), which reads like a bug.
   const isClosedRow = trade.status === "closed";
+  const dte = isClosedRow ? null : computeDte(trade);
   const rowClass = active
     ? "border-t border-hairline bg-tier-2 cursor-pointer"
     : "border-t border-hairline hover:bg-tier-1 cursor-pointer";
