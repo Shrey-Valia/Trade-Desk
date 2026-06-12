@@ -370,7 +370,7 @@ function OpenPositionCol({
           </div>
           <div className="text-fg-tertiary-2 mt-0.5" style={{ fontSize: 10 }}>
             {summarizeLegs(trade)} · entry{" "}
-            {formatTimestamp(trade.entry_date)} ·{" "}
+            {formatTimestamp(trade.entry_date)} ET ·{" "}
             {totalContracts(trade)} contract{totalContracts(trade) === 1 ? "" : "s"}
           </div>
           <div className="border-t border-hairline my-1.5" />
@@ -1059,7 +1059,7 @@ function TodayRow({ trade, isActive }: { trade: Trade; isActive: boolean }) {
       }`}
     >
       <div className="flex items-baseline justify-between text-tiny">
-        <span className="text-fg-secondary">
+        <span className="text-fg-secondary" title="Eastern Time (market clock)">
           {formatClockEt(open ? trade.entry_date : trade.exit_date ?? trade.entry_date)}
         </span>
         <span className="text-fg-tertiary-2">
