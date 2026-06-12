@@ -53,6 +53,13 @@ import {
   type UserOut,
 } from "@/types/auth";
 import {
+  CombineOutSchema,
+  CombinesOutSchema,
+  type CombineOut,
+  type CombinesOut,
+  type PurchaseInput,
+} from "@/types/combine";
+import {
   PopularResponseSchema,
   StarsResponseSchema,
   TickerSearchResponseSchema,
@@ -256,11 +263,29 @@ export const logTickerSelection = async (symbol: string): Promise<void> => {
   }
 };
 
-export const switchAccountTier = (tier: string): Promise<AccountState> =>
-  mutate("/api/account/state/switch", AccountStateSchema, {
+// -- combines ----------------------------------------------------------------
+
+export const fetchCombines = (): Promise<CombinesOut> =>
+  request("/api/combines", CombinesOutSchema);
+
+export const purchaseCombine = (input: PurchaseInput): Promise<CombineOut> =>
+  mutate("/api/combines/purchase", CombineOutSchema, {
     method: "POST",
-    body: JSON.stringify({ tier }),
+    body: JSON.stringify(input),
   });
+
+export const renameCombine = (id: number, name: string): Promise<CombineOut> =>
+  mutate(`/api/combines/${id}`, CombineOutSchema, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+
+export const archiveCombine = (id: number): Promise<CombineOut> =>
+  mutate(`/api/combines/${id}/archive`, CombineOutSchema, { method: "POST" });
+
+/** Returns the full account-state payload for direct cache swap. */
+export const activateCombine = (id: number): Promise<AccountState> =>
+  mutate(`/api/combines/${id}/activate`, AccountStateSchema, { method: "POST" });
 
 // -- auth --------------------------------------------------------------------
 
