@@ -5,51 +5,16 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from database import Base, get_session
-from main import app
+from database import get_session
 from models.ticker_selection import TickerSelection
 from services import ticker_analytics
 
 
 @pytest.fixture
-def client():
-    # Register every model that participates in create_all so the
-    # in-memory test schema is whole. Watchlist + account state are
-    # referenced indirectly via lifespan-less TestClient construction.
-    import models.account_state  # noqa: F401
-    import models.historical_earnings_event  # noqa: F401
-    import models.options_snapshot  # noqa: F401
-    import models.ticker_selection  # noqa: F401
-    import models.trade  # noqa: F401
-    import models.user_star  # noqa: F401
-    import models.watchlist_item  # noqa: F401
-
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        future=True,
-    )
-    Base.metadata.create_all(bind=engine)
-    TestingSession = sessionmaker(
-        bind=engine, autoflush=False, autocommit=False, future=True
-    )
-
-    def override_get_session():
-        session = TestingSession()
-        try:
-            yield session
-        finally:
-            session.close()
-
-    app.dependency_overrides[get_session] = override_get_session
-    # Network paths must be stubbed so unit tests don't reach out to
-    # Alpaca for the 0DTE-availability check on the popular slate.
+def client(auth_client):
+    """Authed client (stars/selections are per-user now) with the
+    Alpaca 0DTE-availability check stubbed so unit tests stay offline."""
     with patch(
         "routers.user_browse.has_zero_dte_bulk",
         return_value={
@@ -57,11 +22,7 @@ def client():
             "NVDA": True, "TSLA": False, "MSFT": True, "AMD": False,
         },
     ):
-        try:
-            yield TestClient(app)
-        finally:
-            app.dependency_overrides.pop(get_session, None)
-            engine.dispose()
+        yield auth_client
 
 
 # ---------------------------------------------------------------------------

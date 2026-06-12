@@ -61,8 +61,13 @@ def session_factory(db_engine):
 
 
 @pytest.fixture
-def client(db_engine, session_factory):
-    """Unauthenticated TestClient against a fresh in-memory DB."""
+def api_client(db_engine, session_factory):
+    """Unauthenticated TestClient against a fresh in-memory DB.
+
+    Named api_client (not `client`) so test modules can define their
+    own `client` fixture on top of auth_client without creating a
+    recursive fixture chain.
+    """
 
     def override_get_session():
         session = session_factory()
@@ -78,6 +83,12 @@ def client(db_engine, session_factory):
         app.dependency_overrides.pop(get_session, None)
 
 
+@pytest.fixture
+def client(api_client):
+    """Default unauthenticated client alias."""
+    return api_client
+
+
 def _signup(client: TestClient, email: str) -> TestClient:
     res = client.post(
         "/api/auth/signup",
@@ -88,9 +99,9 @@ def _signup(client: TestClient, email: str) -> TestClient:
 
 
 @pytest.fixture
-def auth_client(client):
+def auth_client(api_client):
     """Signed-up + signed-in client (cookie jar carries the session)."""
-    return _signup(client, "trader@test.local")
+    return _signup(api_client, "trader@test.local")
 
 
 @pytest.fixture

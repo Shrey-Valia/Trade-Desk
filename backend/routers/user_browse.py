@@ -7,9 +7,8 @@ Backs the new search modal:
   GET  /api/ticker/popular          — curated popular slate
   POST /api/ticker/selection        — fire-and-forget selection log
 
-`user_id` is hardcoded to 1 (single-tenant) — same convention as
-`account_state`. Adding auth later means swapping `_CURRENT_USER_ID`
-for a real dependency without touching the data model.
+Stars and the selection log are per-user (cookie auth); the popular
+slate is public market metadata and stays open.
 """
 
 from __future__ import annotations
@@ -22,11 +21,11 @@ from sqlalchemy.orm import Session
 
 from database import get_session
 from models.ticker_selection import TickerSelection
+from models.user import User
 from models.user_star import UserStar
 from services import curated_universe
+from services.auth import get_current_user
 from services.chain_availability import has_zero_dte_bulk
-
-_CURRENT_USER_ID = 1
 
 
 router_user = APIRouter(prefix="/api/user", tags=["user"])
@@ -59,17 +58,24 @@ class SelectionIn(BaseModel):
 
 
 @router_user.get("/stars", response_model=StarsOut)
-def list_stars(session: Session = Depends(get_session)) -> StarsOut:
+def list_stars(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> StarsOut:
     rows = session.execute(
         select(UserStar.symbol)
-        .where(UserStar.user_id == _CURRENT_USER_ID)
+        .where(UserStar.user_id == user.id)
         .order_by(UserStar.created_at.asc(), UserStar.id.asc())
     ).all()
     return StarsOut(symbols=[r[0] for r in rows])
 
 
 @router_user.post("/stars/{symbol}", response_model=StarsOut)
-def add_star(symbol: str, session: Session = Depends(get_session)) -> StarsOut:
+def add_star(
+    symbol: str,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> StarsOut:
     sym = (symbol or "").strip().upper()
     if not sym:
         raise HTTPException(400, "symbol is required")
@@ -80,29 +86,33 @@ def add_star(symbol: str, session: Session = Depends(get_session)) -> StarsOut:
             400, f"symbol '{sym}' is not in the curated universe"
         )
     try:
-        session.add(UserStar(user_id=_CURRENT_USER_ID, symbol=sym))
+        session.add(UserStar(user_id=user.id, symbol=sym))
         session.commit()
     except IntegrityError:
         # UniqueConstraint hit — already starred. Idempotent: re-read
         # and return the current list rather than 409.
         session.rollback()
-    return list_stars(session)
+    return list_stars(user=user, session=session)
 
 
 @router_user.delete("/stars/{symbol}", response_model=StarsOut)
-def remove_star(symbol: str, session: Session = Depends(get_session)) -> StarsOut:
+def remove_star(
+    symbol: str,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> StarsOut:
     sym = (symbol or "").strip().upper()
     if not sym:
         raise HTTPException(400, "symbol is required")
     row = session.execute(
         select(UserStar)
-        .where(UserStar.user_id == _CURRENT_USER_ID)
+        .where(UserStar.user_id == user.id)
         .where(UserStar.symbol == sym)
     ).scalar_one_or_none()
     if row is not None:
         session.delete(row)
         session.commit()
-    return list_stars(session)
+    return list_stars(user=user, session=session)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +150,7 @@ def get_popular_slate() -> PopularOut:
 @router_ticker.post("/selection", status_code=204)
 def log_selection(
     payload: SelectionIn,
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> None:
     """Append-only selection log. Fire-and-forget from the frontend —
@@ -153,5 +164,5 @@ def log_selection(
         raise HTTPException(
             400, f"symbol '{sym}' is not in the curated universe"
         )
-    session.add(TickerSelection(user_id=_CURRENT_USER_ID, symbol=sym))
+    session.add(TickerSelection(user_id=user.id, symbol=sym))
     session.commit()

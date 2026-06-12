@@ -12,38 +12,13 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from database import Base, get_session
-from main import app
 from models.trade import Trade
+from tests.conftest import make_combine
 
 
 @pytest.fixture
-def client_and_session(monkeypatch):
-    import models.trade  # noqa: F401 — registers Trade on Base.metadata
-
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        future=True,
-    )
-    Base.metadata.create_all(bind=engine)
-    TestingSession = sessionmaker(
-        bind=engine, autoflush=False, autocommit=False, future=True
-    )
-
-    def override_get_session():
-        session = TestingSession()
-        try:
-            yield session
-        finally:
-            session.close()
-
+def client_and_session(auth_client, session_factory, monkeypatch):
     # Keep the endpoint offline: quote fetch falls back to the entry
     # price, rate falls back to the hardcoded default.
     import routers.journal as journal_router
@@ -57,11 +32,8 @@ def client_and_session(monkeypatch):
     monkeypatch.setattr(journal_router, "get_quotes", _no_quotes)
     monkeypatch.setattr(journal_router, "latest_dgs3mo_rate", _no_rate)
 
-    app.dependency_overrides[get_session] = override_get_session
-    try:
-        yield TestClient(app), TestingSession
-    finally:
-        app.dependency_overrides.pop(get_session, None)
+    make_combine(auth_client, "50K")
+    return auth_client, session_factory
 
 
 def _multiday_payload():

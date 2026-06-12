@@ -37,8 +37,9 @@ from calculations.position_analytics import (
     compute_analytics,
 )
 from database import get_session
-from models.account_state import AccountState
+from models.combine import Combine
 from models.trade import Trade
+from models.user import User
 from schemas.calendar_journal import (
     CalendarDayOut,
     CalendarMonthOut,
@@ -56,6 +57,7 @@ from schemas.journal import (
     compute_net_debit_credit,
 )
 from services.alpaca_client import get_quotes
+from services.auth import get_active_combine, get_current_user
 from services.cache import cache
 from services.fred_client import latest_dgs3mo_rate
 
@@ -63,10 +65,32 @@ router = APIRouter(prefix="/api/journal", tags=["journal"])
 log = logging.getLogger(__name__)
 
 
+def _user_combine_ids(user: User):
+    """Subquery of combine ids owned by this user — the journal's
+    ownership boundary (trade → combine → user)."""
+    return select(Combine.id).where(Combine.user_id == user.id)
+
+
+def _owned_trade(session: Session, user: User, trade_id: int) -> Trade:
+    trade = session.get(Trade, trade_id)
+    if trade is None or trade.combine_id is None:
+        raise HTTPException(404, f"trade {trade_id} not found")
+    owned = session.execute(
+        select(Combine.id).where(
+            Combine.id == trade.combine_id, Combine.user_id == user.id
+        )
+    ).scalar_one_or_none()
+    if owned is None:
+        # Foreign trade — indistinguishable from nonexistent.
+        raise HTTPException(404, f"trade {trade_id} not found")
+    return trade
+
+
 @router.post("/trades", response_model=TradeOut, status_code=201)
 def create_trade(
     payload: TradeIn,
     response: Response,
+    combine: Combine = Depends(get_active_combine),
     session: Session = Depends(get_session),
 ) -> TradeOut:
     warnings = _validate_soft(payload)
@@ -79,8 +103,6 @@ def create_trade(
         else compute_net_debit_credit(payload.legs)
     )
 
-    state = session.get(AccountState, 1)
-    active_tier = state.active_tier if state else "50K"
     trade = Trade(
         symbol=payload.symbol,
         strategy=payload.strategy,
@@ -95,7 +117,8 @@ def create_trade(
         planned_exit=payload.planned_exit,
         risk_amount=payload.risk_amount,
         screenshot_url=payload.screenshot_url,
-        tier=active_tier,
+        tier=combine.tier,
+        combine_id=combine.id,
     )
     trade.legs = [leg.model_dump(mode="json") for leg in payload.legs]
     trade.tags = list(payload.tags)
@@ -111,9 +134,17 @@ def list_trades(
     status: Literal["open", "closed"] | None = None,
     is_paper: bool | None = None,
     symbol: str | None = None,
+    combine_id: int | None = None,
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> TradesResponse:
-    stmt = select(Trade).order_by(Trade.entry_date.desc(), Trade.id.desc())
+    stmt = (
+        select(Trade)
+        .where(Trade.combine_id.in_(_user_combine_ids(user)))
+        .order_by(Trade.entry_date.desc(), Trade.id.desc())
+    )
+    if combine_id is not None:
+        stmt = stmt.where(Trade.combine_id == combine_id)
     if status is not None:
         stmt = stmt.where(Trade.status == status)
     if is_paper is not None:
@@ -125,22 +156,22 @@ def list_trades(
 
 
 @router.get("/trades/{trade_id}", response_model=TradeOut)
-def get_trade(trade_id: int, session: Session = Depends(get_session)) -> TradeOut:
-    trade = session.get(Trade, trade_id)
-    if trade is None:
-        raise HTTPException(404, f"trade {trade_id} not found")
-    return _to_out(trade)
+def get_trade(
+    trade_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    return _to_out(_owned_trade(session, user, trade_id))
 
 
 @router.patch("/trades/{trade_id}", response_model=TradeOut)
 def update_trade(
     trade_id: int,
     payload: TradeUpdate,
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> TradeOut:
-    trade = session.get(Trade, trade_id)
-    if trade is None:
-        raise HTTPException(404, f"trade {trade_id} not found")
+    trade = _owned_trade(session, user, trade_id)
 
     if payload.status is not None:
         trade.status = payload.status
@@ -168,6 +199,7 @@ def update_trade(
 def get_calendar(
     month: str | None = None,
     is_paper: bool | None = None,
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CalendarMonthOut:
     """Monthly P&L calendar grid. Buckets closed trades by exit_date.
@@ -178,7 +210,11 @@ def get_calendar(
     """
     target = parse_month(month)
 
-    stmt = select(Trade).where(Trade.status == "closed")
+    stmt = (
+        select(Trade)
+        .where(Trade.status == "closed")
+        .where(Trade.combine_id.in_(_user_combine_ids(user)))
+    )
     if is_paper is not None:
         stmt = stmt.where(Trade.is_paper == is_paper)
     trades = session.execute(stmt).scalars().all()
@@ -225,6 +261,7 @@ def get_trade_analytics(
     trade_id: int,
     dte_override: int | None = Query(default=None, ge=0, le=3650),
     elapsed_hours: float | None = Query(default=None, ge=0, le=48),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> TradeAnalyticsOut:
     """Position analytics at current state (or at a scrubbed point in time).
@@ -238,9 +275,7 @@ def get_trade_analytics(
     Cached per (trade_id, dte_override, elapsed_hours bucket) for a short
     TTL. The intraday branch uses a 1-second bucket so live polling stays
     responsive; the day branch keeps its 15s TTL."""
-    trade = session.get(Trade, trade_id)
-    if trade is None:
-        raise HTTPException(404, f"trade {trade_id} not found")
+    trade = _owned_trade(session, user, trade_id)
 
     # Determine which branch to use BEFORE fetching live data so the
     # cache key reflects it. 0DTE positions ALWAYS use the intraday
@@ -370,10 +405,12 @@ def get_trade_analytics(
 
 
 @router.delete("/trades/{trade_id}", status_code=204)
-def delete_trade(trade_id: int, session: Session = Depends(get_session)) -> None:
-    trade = session.get(Trade, trade_id)
-    if trade is None:
-        raise HTTPException(404, f"trade {trade_id} not found")
+def delete_trade(
+    trade_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> None:
+    trade = _owned_trade(session, user, trade_id)
     session.delete(trade)
     session.commit()
 

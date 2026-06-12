@@ -17,6 +17,7 @@ from jobs.seed_trades import seed_example_trades
 from routers import account as account_router
 from routers import analytics as analytics_router
 from routers import auth as auth_router
+from routers import combines as combines_router
 from routers import bs as bs_router
 from routers import calendar as calendar_router
 from routers import journal as journal_router
@@ -193,6 +194,7 @@ app.include_router(analytics_router.router)
 app.include_router(zerodte_router.router)
 app.include_router(account_router.router)
 app.include_router(auth_router.router)
+app.include_router(combines_router.router)
 app.include_router(ticker_search_router.router)
 app.include_router(user_browse_router.router_user)
 app.include_router(user_browse_router.router_ticker)

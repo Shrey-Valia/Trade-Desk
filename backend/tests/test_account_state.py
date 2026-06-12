@@ -1,15 +1,14 @@
-"""Combine-tier account state — math + endpoints."""
+"""Combine account state — frozen math primitives + per-combine endpoints.
+
+Endpoint tests run through the real auth + purchase flow (conftest
+fixtures): every combine is a purchased instance, state is computed for
+the signed-in user's ACTIVE combine, and the legacy /state/switch shim
+activates the newest combine of the requested tier.
+"""
 
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from database import Base, get_session
-from main import app
-from models.account_state import AccountState
+from database import get_session
 from models.trade import Trade
 from services.account_tiers import (
     TIERS,
@@ -18,44 +17,11 @@ from services.account_tiers import (
     is_valid_tier,
     update_hwm,
 )
-
-
-@pytest.fixture
-def client():
-    # Register both models on Base.metadata before create_all.
-    import models.account_state  # noqa: F401
-    import models.trade  # noqa: F401
-
-    from sqlalchemy.pool import StaticPool
-
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        future=True,
-    )
-    Base.metadata.create_all(bind=engine)
-    TestingSession = sessionmaker(
-        bind=engine, autoflush=False, autocommit=False, future=True
-    )
-
-    def override_get_session():
-        session = TestingSession()
-        try:
-            yield session
-        finally:
-            session.close()
-
-    app.dependency_overrides[get_session] = override_get_session
-    try:
-        yield TestClient(app)
-    finally:
-        app.dependency_overrides.pop(get_session, None)
-        engine.dispose()
+from tests.conftest import make_combine
 
 
 # ---------------------------------------------------------------------------
-# Math primitives
+# Math primitives (frozen account_tiers module — tests unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -125,12 +91,23 @@ def test_compute_balance():
 
 
 # ---------------------------------------------------------------------------
-# /api/account/state endpoint
+# /api/account/state endpoint — combine-backed
 # ---------------------------------------------------------------------------
 
 
-def test_get_state_fresh_install_defaults_to_50k(client):
-    r = client.get("/api/account/state")
+def test_state_requires_auth(client):
+    assert client.get("/api/account/state").status_code == 401
+
+
+def test_state_404_with_zero_combines(auth_client):
+    r = auth_client.get("/api/account/state")
+    assert r.status_code == 404
+    assert "no active combine" in r.json()["detail"]
+
+
+def test_first_purchase_activates_and_state_reads_50k(auth_client):
+    combine = make_combine(auth_client, "50K")
+    r = auth_client.get("/api/account/state")
     assert r.status_code == 200
     body = r.json()
     assert body["active_tier"] == "50K"
@@ -139,139 +116,163 @@ def test_get_state_fresh_install_defaults_to_50k(client):
     assert body["balance"] == 50_000
     assert body["high_water_mark"] == 50_000
     assert body["mll"] == 48_000
-    # All three tiers exposed in the response.
+    # All three tiers still exposed (purchase catalog).
     assert {t["key"] for t in body["tiers"]} == {"50K", "100K", "150K"}
+    # Combine identity fields.
+    assert body["combine_id"] == combine["id"]
+    assert body["combine_name"] == "50K Combine"
+    assert body["account_code"] == combine["account_code"]
+    assert body["profit_target"] == 3_000
+    assert body["objective_progress"] == 0
+    assert len(body["combines"]) == 1
 
 
-def test_switch_to_100k(client):
-    r = client.post("/api/account/state/switch", json={"tier": "100K"})
+def test_legacy_switch_activates_combine_of_tier(auth_client):
+    make_combine(auth_client, "50K")
+    make_combine(auth_client, "100K")
+    r = auth_client.post("/api/account/state/switch", json={"tier": "100K"})
     assert r.status_code == 200
     body = r.json()
     assert body["active_tier"] == "100K"
     assert body["starting_balance"] == 100_000
-    assert body["balance"] == 100_000
     assert body["mll"] == 96_000
 
 
-def test_switch_to_unknown_tier_fails(client):
-    r = client.post("/api/account/state/switch", json={"tier": "25K"})
+def test_legacy_switch_404_when_no_combine_on_tier(auth_client):
+    make_combine(auth_client, "50K")
+    r = auth_client.post("/api/account/state/switch", json={"tier": "150K"})
+    assert r.status_code == 404
+
+
+def test_switch_to_unknown_tier_fails(auth_client):
+    r = auth_client.post("/api/account/state/switch", json={"tier": "25K"})
     # Pydantic Literal rejects with 422; that's the safer 4xx for us.
     assert r.status_code in (400, 422)
 
 
-def test_balance_includes_realized_pnl_for_active_tier_only(client):
-    # Seed: two closed trades on 50K, one closed on 100K.
-    _seed_closed_trade(client, tier="50K", realized=200)
-    _seed_closed_trade(client, tier="50K", realized=-50)
-    _seed_closed_trade(client, tier="100K", realized=1_000)
+def test_balance_includes_realized_pnl_for_active_combine_only(auth_client):
+    c50 = make_combine(auth_client, "50K")
+    c100 = make_combine(auth_client, "100K")
+    _seed_closed_trade(auth_client, combine_id=c50["id"], realized=200)
+    _seed_closed_trade(auth_client, combine_id=c50["id"], realized=-50)
+    _seed_closed_trade(auth_client, combine_id=c100["id"], realized=1_000)
 
-    r = client.get("/api/account/state").json()
+    # First purchase auto-activated the 50K combine.
+    r = auth_client.get("/api/account/state").json()
     assert r["active_tier"] == "50K"
     assert r["realized_pnl"] == 150          # 200 + (-50)
     assert r["balance"] == 50_150
     assert r["high_water_mark"] == 50_150
     assert r["mll"] == 48_150                # trails up by +150
 
-    # Switch tiers — 100K HWM trail reflects its own +1_000.
-    r2 = client.post("/api/account/state/switch", json={"tier": "100K"}).json()
+    # Activate the 100K combine — its own +1_000 only.
+    r2 = auth_client.post(f"/api/combines/{c100['id']}/activate").json()
     assert r2["realized_pnl"] == 1_000
     assert r2["balance"] == 101_000
     assert r2["high_water_mark"] == 101_000
     assert r2["mll"] == 97_000
 
 
-def test_mll_is_capped_at_starting_balance_via_endpoint(client):
-    _seed_closed_trade(client, tier="50K", realized=10_000)  # huge win
-    r = client.get("/api/account/state").json()
+def test_mll_is_capped_at_starting_balance_via_endpoint(auth_client):
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=10_000)
+    r = auth_client.get("/api/account/state").json()
     assert r["balance"] == 60_000
     assert r["high_water_mark"] == 60_000
     # MLL would be 58_000 if uncapped; caps at 50_000.
     assert r["mll"] == 50_000
 
 
-def test_switching_tiers_preserves_per_tier_hwm(client):
-    # 50K: win +300.
-    _seed_closed_trade(client, tier="50K", realized=300)
-    client.get("/api/account/state")  # commits HWM 50_300
+def test_two_combines_same_tier_are_independent(auth_client):
+    a = make_combine(auth_client, "50K", name="A")
+    b = make_combine(auth_client, "50K", name="B")
+    _seed_closed_trade(auth_client, combine_id=a["id"], realized=500)
+    _seed_closed_trade(auth_client, combine_id=b["id"], realized=-400)
 
-    # Switch to 100K, take a loss -100, switch back to 50K.
-    client.post("/api/account/state/switch", json={"tier": "100K"})
-    _seed_closed_trade(client, tier="100K", realized=-100)
-    client.get("/api/account/state")
+    ra = auth_client.post(f"/api/combines/{a['id']}/activate").json()
+    assert ra["realized_pnl"] == 500
+    assert ra["high_water_mark"] == 50_500
+    rb = auth_client.post(f"/api/combines/{b['id']}/activate").json()
+    assert rb["realized_pnl"] == -400
+    assert rb["high_water_mark"] == 50_000   # never dipped above start
+    assert rb["mll"] == 48_000
 
-    back = client.post("/api/account/state/switch", json={"tier": "50K"}).json()
+
+def test_hwm_preserved_across_activations(auth_client):
+    a = make_combine(auth_client, "50K")
+    b = make_combine(auth_client, "100K")
+    _seed_closed_trade(auth_client, combine_id=a["id"], realized=300)
+    auth_client.get("/api/account/state")  # commits HWM 50_300 on A
+
+    auth_client.post(f"/api/combines/{b['id']}/activate")
+    _seed_closed_trade(auth_client, combine_id=b["id"], realized=-100)
+    auth_client.get("/api/account/state")
+
+    back = auth_client.post(f"/api/combines/{a['id']}/activate").json()
     assert back["active_tier"] == "50K"
     assert back["realized_pnl"] == 300
-    # HWM stays at the 50K's peak (50_300), even though we left and came back.
+    # HWM stays at A's peak even after leaving and coming back.
     assert back["high_water_mark"] == 50_300
     assert back["mll"] == 48_300
 
 
 # ---------------------------------------------------------------------------
-# Daily Loss Limit (DLL) — display-only signal
+# Daily Loss Limit (DLL) — display-only signal, per combine
 # ---------------------------------------------------------------------------
 
 
-def test_dll_clean_state_returns_zero_used(client):
-    r = client.get("/api/account/state").json()
+def test_dll_clean_state_returns_zero_used(auth_client):
+    make_combine(auth_client, "50K")
+    r = auth_client.get("/api/account/state").json()
     assert r["dll_used"] == 0
     assert r["dll_budget"] == 1_500           # 50K tier default
     assert r["dll_breached"] is False
-    # TierSpec carries its own dll_amount so the frontend can render
-    # per-tier limits without re-deriving from active_tier.
     by_key = {t["key"]: t["dll_amount"] for t in r["tiers"]}
     assert by_key == {"50K": 1_500, "100K": 3_000, "150K": 4_500}
 
 
-def test_dll_used_counts_todays_realized_losses_only(client):
-    # Two losers and one winner closed today on the active tier. The
-    # spec is clamp(max(0, -sum_realized)) — gains net against losses
-    # in the realized sum, but the clamp prevents a positive day from
-    # producing a negative dll_used.
-    _seed_closed_trade(client, tier="50K", realized=-300, exit_at=_today_et_noon())
-    _seed_closed_trade(client, tier="50K", realized=-500, exit_at=_today_et_noon())
-    _seed_closed_trade(client, tier="50K", realized=+100, exit_at=_today_et_noon())
-    r = client.get("/api/account/state").json()
+def test_dll_used_counts_todays_realized_losses_only(auth_client):
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-300, exit_at=_today_et_noon())
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-500, exit_at=_today_et_noon())
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=+100, exit_at=_today_et_noon())
+    r = auth_client.get("/api/account/state").json()
     # -300 + -500 + +100 = -700 → dll_used = 700
     assert r["dll_used"] == 700
     assert r["dll_breached"] is False        # 700 < 1500
 
 
-def test_dll_used_ignores_yesterdays_losses(client):
-    # Two -$1000 losses yesterday, one -$200 today. Only today counts.
-    _seed_closed_trade(
-        client, tier="50K", realized=-1_000, exit_at=_yesterday_et_noon()
-    )
-    _seed_closed_trade(
-        client, tier="50K", realized=-1_000, exit_at=_yesterday_et_noon()
-    )
-    _seed_closed_trade(client, tier="50K", realized=-200, exit_at=_today_et_noon())
-    r = client.get("/api/account/state").json()
+def test_dll_used_ignores_yesterdays_losses(auth_client):
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-1_000, exit_at=_yesterday_et_noon())
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-1_000, exit_at=_yesterday_et_noon())
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-200, exit_at=_today_et_noon())
+    r = auth_client.get("/api/account/state").json()
     assert r["dll_used"] == 200
     assert r["dll_breached"] is False
 
 
-def test_dll_breached_when_realized_loss_exceeds_budget(client):
-    # 50K budget = $1500. Two closed losses today summing to -$1600.
-    _seed_closed_trade(client, tier="50K", realized=-900, exit_at=_today_et_noon())
-    _seed_closed_trade(client, tier="50K", realized=-700, exit_at=_today_et_noon())
-    r = client.get("/api/account/state").json()
+def test_dll_breached_when_realized_loss_exceeds_budget(auth_client):
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-900, exit_at=_today_et_noon())
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-700, exit_at=_today_et_noon())
+    r = auth_client.get("/api/account/state").json()
     assert r["dll_used"] == 1_600
     assert r["dll_breached"] is True
 
 
-def test_dll_used_is_tier_isolated(client):
-    # Losses on 100K must NOT contaminate the 50K DLL count and vice
-    # versa — each combine tracks its own day independently.
-    _seed_closed_trade(client, tier="50K", realized=-200, exit_at=_today_et_noon())
-    _seed_closed_trade(client, tier="100K", realized=-2_500, exit_at=_today_et_noon())
+def test_dll_used_is_combine_isolated(auth_client):
+    c50 = make_combine(auth_client, "50K")
+    c100 = make_combine(auth_client, "100K")
+    _seed_closed_trade(auth_client, combine_id=c50["id"], realized=-200, exit_at=_today_et_noon())
+    _seed_closed_trade(auth_client, combine_id=c100["id"], realized=-2_500, exit_at=_today_et_noon())
 
-    r50 = client.get("/api/account/state").json()
+    r50 = auth_client.get("/api/account/state").json()
     assert r50["active_tier"] == "50K"
     assert r50["dll_used"] == 200
     assert r50["dll_budget"] == 1_500
 
-    r100 = client.post("/api/account/state/switch", json={"tier": "100K"}).json()
+    r100 = auth_client.post(f"/api/combines/{c100['id']}/activate").json()
     assert r100["active_tier"] == "100K"
     assert r100["dll_used"] == 2_500
     assert r100["dll_budget"] == 3_000
@@ -283,7 +284,7 @@ def test_dll_used_is_tier_isolated(client):
 # ---------------------------------------------------------------------------
 
 
-def _seed_closed_trade(client, tier: str, realized: float, exit_at=None) -> None:
+def _seed_closed_trade(client, combine_id: int, realized: float, exit_at=None) -> None:
     """Write a closed trade directly via the test session so we don't
     have to route through the journal entry validation."""
     session = next(client.app.dependency_overrides[get_session]())
@@ -296,17 +297,14 @@ def _seed_closed_trade(client, tier: str, realized: float, exit_at=None) -> None
         status="closed",
         is_paper=True,
         notes="seeded",
-        tier=tier,
+        tier="50K",
+        combine_id=combine_id,
         exit_date=exit_at if exit_at is not None else _now(),
         exit_underlying_price=400.0,
         realized_pnl=realized,
         legs_json="[]",
     )
     session.add(trade)
-    # Make sure AccountState exists (mirrors what get_account_state does
-    # on first call) before any test reads.
-    if session.get(AccountState, 1) is None:
-        session.add(AccountState(id=1))
     session.commit()
     session.close()
 
@@ -335,6 +333,6 @@ def _yesterday_et_noon():
     from zoneinfo import ZoneInfo
 
     et = ZoneInfo("America/New_York")
-    yest_et = datetime.now(et).date() - timedelta(days=1)
-    noon_et = datetime.combine(yest_et, time(12, 0), tzinfo=et)
+    yday = datetime.now(et).date() - timedelta(days=1)
+    noon_et = datetime.combine(yday, time(12, 0), tzinfo=et)
     return noon_et.astimezone(ZoneInfo("UTC"))

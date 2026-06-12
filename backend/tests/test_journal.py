@@ -1,59 +1,25 @@
-"""Trade Desk journal — CRUD round-trips + net cost computation."""
+"""Trade Desk journal — CRUD round-trips + net cost computation.
+
+Multi-user world: journal endpoints require auth + an active combine.
+The local `client` fixture layers a purchased combine onto conftest's
+auth_client so the CRUD tests read exactly as before.
+"""
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from database import Base, get_session
-from main import app
 from schemas.journal import TradeLeg, compute_net_debit_credit
-
-
-# ---------------------------------------------------------------------------
-# Test scaffolding: fresh in-memory SQLite per test, overriding the get_session
-# dependency so neither the real DB nor the seed job interferes.
-# ---------------------------------------------------------------------------
+from tests.conftest import make_combine
 
 
 @pytest.fixture
-def client():
-    # Importing the Trade model has the side effect of registering it on
-    # Base.metadata — necessary before create_all on a brand-new engine.
-    import models.trade  # noqa: F401
-
-    # `:memory:` per-connection sqlite is a separate DB per connection,
-    # which fights SQLAlchemy's connection pool. StaticPool reuses one
-    # connection so the override session and any other call see the same
-    # in-memory schema.
-    from sqlalchemy.pool import StaticPool
-
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        future=True,
-    )
-    Base.metadata.create_all(bind=engine)
-    TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
-
-    def override_get_session():
-        session = TestingSession()
-        try:
-            yield session
-        finally:
-            session.close()
-
-    app.dependency_overrides[get_session] = override_get_session
-    try:
-        yield TestClient(app)
-    finally:
-        app.dependency_overrides.pop(get_session, None)
-        engine.dispose()
+def client(auth_client):
+    """Authed client that owns one active 50K combine."""
+    make_combine(auth_client, "50K")
+    return auth_client
 
 
 def _future_expiry(days: int = 21) -> str:
@@ -316,3 +282,55 @@ def test_mistake_vocab_endpoint(client):
     # Vocabulary is finite — keep this list aligned with the frontend
     # MISTAKE_TAG_VOCABULARY constant.
     assert len(tags) == 8
+
+
+# ---------------------------------------------------------------------------
+# Multi-user: gating, no-combine, cross-user isolation
+# ---------------------------------------------------------------------------
+
+
+def test_journal_requires_auth(client):
+    client.post("/api/auth/signout")
+    assert client.get("/api/journal/trades").status_code == 401
+    assert client.post("/api/journal/trades", json=_trade_payload()).status_code == 401
+
+
+def test_create_trade_without_combine_is_409(auth_client):
+    # conftest's auth_client owns NO combine (the local `client` fixture
+    # that purchases one is deliberately not requested here).
+    res = auth_client.post("/api/journal/trades", json=_trade_payload())
+    assert res.status_code == 409
+    assert "no active combine" in res.json()["detail"]
+
+
+def test_cross_user_trades_invisible(client, second_user_client):
+    created = client.post("/api/journal/trades", json=_trade_payload()).json()
+    tid = created["id"]
+
+    # Second user: empty list, 404 on direct access/patch/delete.
+    assert second_user_client.get("/api/journal/trades").json()["trades"] == []
+    assert second_user_client.get(f"/api/journal/trades/{tid}").status_code == 404
+    assert (
+        second_user_client.patch(
+            f"/api/journal/trades/{tid}", json={"notes": "mine now"}
+        ).status_code
+        == 404
+    )
+    assert second_user_client.delete(f"/api/journal/trades/{tid}").status_code == 404
+    # Owner still sees it untouched.
+    assert client.get(f"/api/journal/trades/{tid}").status_code == 200
+
+
+def test_list_trades_combine_filter(client):
+    from tests.conftest import make_combine as _mk
+
+    c2 = _mk(client, "100K", name="Second")
+    client.post("/api/journal/trades", json=_trade_payload(symbol="AAPL"))  # on 50K
+    # Activate the 100K combine and log a trade there.
+    client.post(f"/api/combines/{c2['id']}/activate")
+    client.post("/api/journal/trades", json=_trade_payload(symbol="MSFT"))
+
+    all_trades = client.get("/api/journal/trades").json()["trades"]
+    assert {t["symbol"] for t in all_trades} == {"AAPL", "MSFT"}
+    scoped = client.get(f"/api/journal/trades?combine_id={c2['id']}").json()["trades"]
+    assert {t["symbol"] for t in scoped} == {"MSFT"}
