@@ -17,7 +17,7 @@ import {
 } from "@/stores/selectedTicker";
 import { useUserSettings } from "@/stores/userSettings";
 import { isZeroDteTrade, STRATEGY_LABELS } from "@/types/journal";
-import type { ChartTimeframe } from "@/types/chart";
+import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 
 /**
  * Trade Desk POSITIONS mode — the chart-first product home.
@@ -51,6 +51,25 @@ export function PositionsPage() {
   useEffect(() => {
     setTicketContracts(defaultContracts);
   }, [defaultContracts, setTicketContracts]);
+
+  // Keyboard timeframe switching: plain digits 1-6 map onto the toolbar
+  // ladder (1m…1D). Skipped while focus is in any form field so typing
+  // in symbol search / trade forms never flips the chart. The header
+  // owns "/" and Cmd+K; digits were free.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']"))
+        return;
+      const idx = Number(e.key) - 1;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= CHART_TIMEFRAMES.length)
+        return;
+      setTimeframe(CHART_TIMEFRAMES[idx]);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const setActiveTradeId = useActivePosition((s) => s.setTradeId);

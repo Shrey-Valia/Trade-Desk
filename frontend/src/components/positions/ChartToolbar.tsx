@@ -62,7 +62,7 @@ function Toolbar({
     >
       {/* Timeframes — tight group, no internal separator. */}
       <div className="flex" style={{ gap: 4 }}>
-        {TF_OPTIONS.map((tf) => {
+        {TF_OPTIONS.map((tf, i) => {
           const active = timeframe === tf;
           return (
             <UIButton
@@ -71,7 +71,7 @@ function Toolbar({
               active={active}
               aria-pressed={active}
               onClick={() => onTimeframeChange(tf)}
-              title={`${tf} bars`}
+              title={`${tf} bars · press ${i + 1}`}
               className="min-w-[36px]"
             >
               {tf}
