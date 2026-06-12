@@ -485,6 +485,7 @@ function PaperChip({ isPaper }: { isPaper: boolean }) {
 function Th({ children, className }: { children?: React.ReactNode; className?: string }) {
   return (
     <th
+      scope="col"
       className={`px-2 py-1 font-normal text-tiny tracking-label-up ${className ?? ""}`}
     >
       {children}
