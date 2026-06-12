@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQueries } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
-import { useAccountState, useSwitchTier } from "@/hooks/useAccountState";
+import { useAccountState } from "@/hooks/useAccountState";
+import { useActivateCombine } from "@/hooks/useCombines";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { useTrades } from "@/hooks/useTrades";
@@ -10,7 +12,7 @@ import { fetchTradeAnalytics } from "@/lib/api";
 import { formatPercent, formatPrice } from "@/lib/formatters";
 import { useUserSettings } from "@/stores/userSettings";
 import { isZeroDteTrade } from "@/types/journal";
-import type { TierKey, TierSpec } from "@/types/account";
+import type { TierKey } from "@/types/account";
 
 /**
  * Persistent Trade-Desk top header (64px).
@@ -61,7 +63,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
       className="flex items-center gap-3 border-b border-hairline bg-tier-1 px-3 shrink-0 relative"
       style={{ height: 64 }}
     >
-      <TierPill />
+      <CombineSelector />
       <SearchTrigger
         symbol={symbol}
         onClick={() => setSearchOpen(true)}
@@ -127,13 +129,36 @@ function SearchTrigger({
   );
 }
 
-/** Combine-tier indicator + switcher. Restyled to the new pill chrome. */
-function TierPill() {
-  const { data } = useAccountState();
-  const switchTier = useSwitchTier();
+/**
+ * Combine selector — Topstep-style account dropdown.
+ *
+ * Lists every combine the user owns (name | account code, tier,
+ * status badge), active one highlighted; switching activates via
+ * POST /api/combines/{id}/activate with a direct cache swap. With
+ * zero combines (fresh signup) the pill becomes a START A COMBINE CTA.
+ */
+function CombineSelector() {
+  const { data, isError } = useAccountState();
+  const activate = useActivateCombine();
   const [open, setOpen] = useState(false);
-  const tierKey = data?.active_tier ?? "50K";
-  const tiers = data?.tiers ?? [];
+  const navigate = useNavigate();
+
+  const noCombine = isError || data?.combine_id == null;
+  if (noCombine) {
+    return (
+      <button
+        type="button"
+        onClick={() => navigate("/combines/new")}
+        className="h-10 px-3 rounded-btn uppercase tracking-label-up flex items-center gap-2 border border-amber text-amber bg-tier-2 hover:bg-tier-3 transition-colors duration-100"
+        style={{ fontSize: 12, fontWeight: 500 }}
+        title="You don't own a combine yet — start one to unlock trading"
+      >
+        + Start a combine
+      </button>
+    );
+  }
+
+  const combines = data?.combines ?? [];
   const breached = data ? data.balance < data.mll : false;
   return (
     <div className="relative">
@@ -141,7 +166,7 @@ function TierPill() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={[
-          "h-10 px-3 rounded-btn uppercase tracking-label-up tabular-nums",
+          "h-10 px-3 rounded-btn tabular-nums",
           "flex items-center gap-2 transition-colors duration-100",
           breached
             ? "bg-tier-2 border border-bearish text-bearish"
@@ -150,43 +175,72 @@ function TierPill() {
         style={{ fontSize: 12, fontWeight: 500 }}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title="Active combine tier — click to switch"
+        title={`${data?.account_code ?? ""} — click to switch combines`}
       >
-        <span>{tierKey} Combine</span>
+        <span className="uppercase tracking-label-up truncate" style={{ maxWidth: 160 }}>
+          {data?.combine_name ?? "Combine"}
+        </span>
         <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
           ▾
         </span>
       </button>
-      {open && tiers.length > 0 && (
+      {open && (
         <div
           role="listbox"
           className="absolute left-0 top-full mt-1 z-30 bg-tier-2 border border-tier-3 rounded-btn overflow-hidden"
-          style={{ minWidth: 180 }}
+          style={{ minWidth: 280 }}
         >
-          {tiers.map((t: TierSpec) => {
-            const active = t.key === tierKey;
+          {combines.map((c) => {
+            const active = c.id === data?.combine_id;
+            const archived = c.status === "archived";
             return (
               <button
-                key={t.key}
+                key={c.id}
                 type="button"
+                disabled={archived}
                 onClick={() => {
-                  if (!active) switchTier.mutate(t.key);
+                  if (!active && !archived) activate.mutate(c.id);
                   setOpen(false);
                 }}
                 className={[
                   "w-full text-left px-3 py-1.5 text-tiny tabular-nums",
-                  active ? "text-amber bg-tier-3" : "text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                  archived
+                    ? "text-fg-disabled cursor-not-allowed"
+                    : active
+                      ? "text-amber bg-tier-3"
+                      : "text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
                 ].join(" ")}
               >
-                <div className="uppercase tracking-label-up" style={{ fontSize: 11 }}>
-                  {t.key} Combine
+                <div className="flex items-center gap-2">
+                  <span className="uppercase tracking-label-up" style={{ fontSize: 11 }}>
+                    {c.name}
+                  </span>
+                  {archived && (
+                    <span
+                      className="border border-tier-3 text-fg-tertiary-2 px-1 uppercase tracking-label-up"
+                      style={{ fontSize: 8, borderRadius: 2 }}
+                    >
+                      archived
+                    </span>
+                  )}
                 </div>
                 <div className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
-                  ${(t.starting_balance / 1000).toFixed(0)}K · −${t.trailing_distance.toLocaleString()} MLL
+                  {c.tier} · {c.account_code}
                 </div>
               </button>
             );
           })}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              navigate("/combines/new");
+            }}
+            className="w-full text-left px-3 py-1.5 text-tiny text-amber hover:bg-tier-3 border-t border-tier-3 uppercase tracking-label-up"
+            style={{ fontSize: 10 }}
+          >
+            + Start a new combine
+          </button>
         </div>
       )}
     </div>
