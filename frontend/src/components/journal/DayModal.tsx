@@ -36,7 +36,9 @@ export function DayModal({ date, trades, onClose }: Props) {
   }, [onClose]);
 
   const net = trades.reduce((sum, t) => sum + (t.realized_pnl ?? 0), 0);
-  const wins = trades.filter((t) => (t.realized_pnl ?? 0) >= 0).length;
+  // Win = strictly positive P&L, matching the backend's win-rate
+  // definition (journal_analytics) so this modal and ANALYTICS agree.
+  const wins = trades.filter((t) => (t.realized_pnl ?? 0) > 0).length;
   const winRate = trades.length ? Math.round((wins / trades.length) * 100) : 0;
 
   return (
