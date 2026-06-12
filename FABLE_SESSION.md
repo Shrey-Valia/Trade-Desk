@@ -119,8 +119,12 @@ thoughtful (tiers, DLL, chart appearance).
 - **What**: DLL override input commits on blur/Enter, clamped to the documented 1-10% band;
   garbage reverts. Verified in-browser (typed 99999 → committed 5000 on 50K tier), then
   reset to default.
-- **Why**: store accepted any value while the copy promised a range.
-- **Confidence**: sure. Note: header DLL pill now updates on blur rather than per keystroke.
+- **Why**: the input wrote per keystroke, so typing "1500" passed the intermediate "1"
+  through the setter (clamping it to the band minimum mid-typing).
+- **Confidence**: sure. CORRECTION to my earlier framing: the store's setDllOverride
+  already clamped (I found this later) — the real bug was per-keystroke commits fighting
+  the clamp while typing, not a missing clamp. The blur-commit input fixes that and makes
+  the normalization visible. Header DLL pill now updates on blur rather than per keystroke.
 
 ### 7. Key levels tooltips + empty explanation (122250c)
 - **What**: EM/CW/PW/MP/GF/IV rows reuse lib/tooltips.ts definitions (+ OI-proxy note on the
@@ -209,6 +213,12 @@ thoughtful (tiers, DLL, chart appearance).
 ### 19. ChartToolbar stale docstring (d28c228)
 - **What**: comment claimed only 1D was wired; all six timeframes are real.
 
+### 20. Chart appearance reset-to-defaults (6be23a9)
+- **What**: APPEARANCE_DEFAULTS const + resetAppearance store action + a "reset to
+  defaults" link in Settings that appears only when something differs.
+- **Why**: no way back to factory values short of re-picking each knob.
+- **Confidence**: sure (verified the full loop in-browser).
+
 ---
 
 ## Needs verification at market open
@@ -275,3 +285,16 @@ thoughtful (tiers, DLL, chart appearance).
   simplification pass reduced it from 16; there's spare vertical room below the ticket on
   tall screens, but I respected the recorded decision and left it.
 - **`POST /api/zerodte/open-leg` dead endpoint** (also under fences): no frontend caller.
+- **Horizontal-line drawing tool: inconclusive QA** — the toolbar button mounts, but I
+  couldn't exercise a draw via synthetic browser events (lightweight-charts consumes its
+  own coordinate/click stream, so dispatched MouseEvents don't reach its subscription).
+  Needs a human mouse: click the ― tool, click the chart, confirm a line lands and
+  persists. I did not change any drawing code.
+- **Coachmark count** — Coachmark.tsx records a deliberate "two coachmarks max" Phase 1
+  spec; I considered a third for the chain → ticket flow and skipped it (the empty ticket
+  already says "Click a strike in the chain ↑").
+- **Pre-existing lint warnings (7)** — hook-deps patterns (`?? []` recreated per render
+  feeding useMemo deps) in BottomStrip/SymbolSearch/JournalPage/PositionsPage,
+  a chartRef-in-cleanup warning in ChartDrawingLayer, and one unused eslint-disable inside
+  the fenced overlay effect. All pre-existing behavior; fixing them is mechanical but
+  touches hot paths, so I left them visible rather than silently churning code.
