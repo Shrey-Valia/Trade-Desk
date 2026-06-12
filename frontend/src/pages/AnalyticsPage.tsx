@@ -66,7 +66,11 @@ export function AnalyticsPage() {
         ) : !data ? (
           <LoadingState />
         ) : (
-          <AnalyticsBody data={data} tier={tier} />
+          <AnalyticsBody
+            data={data}
+            tier={tier}
+            filtered={range !== "All" || paperFilter !== "all"}
+          />
         )}
       </main>
     </div>
@@ -146,9 +150,19 @@ function Toolbar({
   );
 }
 
-function AnalyticsBody({ data, tier }: { data: AnalyticsResponse; tier: string | null }) {
+function AnalyticsBody({
+  data,
+  tier,
+  filtered,
+}: {
+  data: AnalyticsResponse;
+  tier: string | null;
+  /** A range/paper filter is active — zero trades means "none match",
+   * not "you've never traded". */
+  filtered: boolean;
+}) {
   if (data.kpis.total_trades === 0) {
-    return <NoTradesYet />;
+    return filtered ? <NoTradesInRange /> : <NoTradesYet />;
   }
   return (
     <div className="flex flex-col gap-3.5 p-3.5">
@@ -165,6 +179,26 @@ function AnalyticsBody({ data, tier }: { data: AnalyticsResponse; tier: string |
       </div>
       <RiskPanel risk={data.risk} equity={data.equity} kpis={data.kpis} tier={tier} streaks={data.streaks} />
       <MistakeCostPanel rows={data.by_mistake} />
+    </div>
+  );
+}
+
+function NoTradesInRange() {
+  return (
+    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-3 text-center">
+      <span
+        className="uppercase tracking-label-up text-fg-secondary"
+        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+      >
+        No trades in this view
+      </span>
+      <span className="text-medium text-fg-primary">
+        Nothing matches the current range / account filter.
+      </span>
+      <span className="text-tiny text-fg-tertiary max-w-md">
+        Widen the range (try ALL) or switch the paper/live filter to see
+        your history.
+      </span>
     </div>
   );
 }
