@@ -25,8 +25,8 @@ import type { ChartTimeframe } from "@/types/chart";
  * The page wires three concerns to the same activePosition store:
  *   1. The chart pulls analytics for the active position and renders
  *      the entry marker + theta-adjusted BE lines.
- *   2. JournalPanel renders the same analytics as a payoff curve and
- *      exposes the theta scrubber.
+ *   2. BottomStrip renders the same analytics — open-position panel,
+ *      theta scrubber, key levels.
  *   3. TradeList click handlers + the 0DTE STRADDLE quick-entry button
  *      both write to the activePosition store.
  *
