@@ -125,6 +125,7 @@ export function TradeTicket() {
         selection={selection}
         contracts={contracts}
         disabled={!canFire}
+        pending={pending}
         marketOpen={marketOpen}
         onBuy={() => fire("buy")}
         onSell={() => fire("sell")}
@@ -399,6 +400,7 @@ function Actions({
   selection,
   contracts,
   disabled,
+  pending,
   marketOpen,
   onBuy,
   onSell,
@@ -406,28 +408,34 @@ function Actions({
   selection: TicketSelection | null;
   contracts: number;
   disabled: boolean;
+  pending: boolean;
   marketOpen: boolean;
   onBuy: () => void;
   onSell: () => void;
 }) {
   // Topstep idiom: "BUY +N" / "SELL -N" main label, small action sub
-  // line below.
+  // line below. While a mutation is in flight both subs read
+  // "submitting…" so the user knows the click registered.
   const cost = selection ? selection.price * 100 * contracts : 0;
   const sideLabel = selection
     ? selection.kind === "straddle"
       ? "straddle"
       : (selection.side ?? "call")
     : "—";
-  const buySub = selection
-    ? `long ${sideLabel} · $${cost.toFixed(2)} debit`
-    : marketOpen
-      ? "pick a strike ↑"
-      : "market closed";
-  const sellSub = selection
-    ? `short ${sideLabel} · $${cost.toFixed(2)} credit`
-    : marketOpen
-      ? "pick a strike ↑"
-      : "market closed";
+  const buySub = pending
+    ? "submitting…"
+    : selection
+      ? `long ${sideLabel} · $${cost.toFixed(2)} debit`
+      : marketOpen
+        ? "pick a strike ↑"
+        : "market closed";
+  const sellSub = pending
+    ? "submitting…"
+    : selection
+      ? `short ${sideLabel} · $${cost.toFixed(2)} credit`
+      : marketOpen
+        ? "pick a strike ↑"
+        : "market closed";
   return (
     <div className="grid grid-cols-2 gap-2 px-3 pb-2 mt-auto" style={{ height: 56 }}>
       <ActionButton
