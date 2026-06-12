@@ -80,6 +80,53 @@ thoughtful (tiers, DLL, chart appearance).
 - **Why**: required deliverable; review map for the session.
 - **Confidence**: sure.
 
+### 2. `@types/node` devDep (9a27653) + gitignore tsc artifacts (dd7be0b)
+- **What**: added @types/node; ignored `*.tsbuildinfo` + `vite.config.d.ts`.
+- **Why**: `tsc -b --force` (and therefore `npm run build`) failed from a fresh checkout;
+  building also littered untracked artifacts.
+- **Confidence**: sure. New dep is dev-only and standard for vite configs.
+
+### 3. Dead code removal (0703070, 2c6a87e)
+- **What**: deleted ChainPanel, ChainTable, TickerSearchBox, TradeDeskToolbar; then the
+  JournalPanel subtree (JournalPanel, PayoffPanel, ThetaScrubber). Updated two stale doc
+  comments that still pointed at JournalPanel.
+- **Why**: all verified unimported from any file (import-grep, then tsc). BottomStrip
+  superseded JournalPanel including its theta scrubber.
+- **Confidence**: sure on reachability (tsc-verified). The JournalPanel payoff-curve UI had
+  no replacement — if the user wanted to revive the payoff curve someday, revert 2c6a87e
+  (listed under reversible decisions).
+
+### 4. Journal list error state (a65f5f8)
+- **What**: TradeList renders "Couldn't load trades." + RETRY on query failure instead of
+  the "No trades logged yet" empty state.
+- **Why**: backend-down looked identical to an empty journal. Verified by killing the
+  backend and screenshotting.
+- **Confidence**: sure.
+
+### 5. DayModal win definition (bd68fdd)
+- **What**: day-modal win rate counts strictly-positive P&L only.
+- **Why**: backend analytics uses `> 0`; the modal used `>= 0`, so a $0 scratch made the two
+  surfaces disagree.
+- **Confidence**: sure.
+
+### 6. Settings DLL clamp (238565e)
+- **What**: DLL override input commits on blur/Enter, clamped to the documented 1-10% band;
+  garbage reverts. Verified in-browser (typed 99999 → committed 5000 on 50K tier), then
+  reset to default.
+- **Why**: store accepted any value while the copy promised a range.
+- **Confidence**: sure. Note: header DLL pill now updates on blur rather than per keystroke.
+
+### 7. Key levels tooltips + empty explanation (122250c)
+- **What**: EM/CW/PW/MP/GF/IV rows reuse lib/tooltips.ts definitions (+ OI-proxy note on the
+  volume-derived four); all-empty column explains where levels come from.
+- **Why**: six cryptic acronyms with dashes and zero explanation.
+- **Confidence**: sure (display-only).
+
+### 8. ET timestamp labels (bd09b53)
+- **What**: "entry 13:57 ET" in open-position panel; tooltip on TODAY row clocks.
+- **Why**: bare ET times are ambiguous off-Eastern; explorer machine was on PT.
+- **Confidence**: sure.
+
 ---
 
 ## Needs verification at market open
@@ -88,7 +135,13 @@ thoughtful (tiers, DLL, chart appearance).
 
 ## Decisions I made that the user may want to reverse
 
-(running list)
+- **Removed the JournalPanel/PayoffPanel/ThetaScrubber subtree** (2c6a87e). It was
+  unreachable, but the payoff-curve visualization has no equivalent in BottomStrip. Revert
+  that commit to restore.
+- **DLL input commits on blur instead of per keystroke** (238565e) — the header pill no
+  longer live-updates while typing.
+- **Day-modal win rate excludes $0 scratches** (bd68fdd) — matches ANALYTICS, but if you
+  preferred scratches-count-as-wins, that was the old behavior.
 
 ## Things I noticed but did NOT touch (and why)
 
