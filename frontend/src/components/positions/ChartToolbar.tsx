@@ -8,14 +8,11 @@ import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 /**
  * TradingView-style chart chrome — toolbar (36px) + OHLC strip (20px).
  *
- * Toolbar:
- *   timeframes (1m / 5m / 15m / 1h / 4h / 1D)  · candles ▾  · | / − / ▭ stubs · indicators ▾
- *
- * Only "1D" maps to a real backend timeframe today (the rest are
- * design-system placeholders for the planned timeframe expansion).
- * Clicking a not-yet-wired timeframe sets local UI state and shows a
- * "soon" tooltip; the underlying chart timeframe stays at "1D" so the
- * candles don't blank out.
+ * Toolbar: timeframes (1m / 5m / 15m / 1h / 4h / 1D) — all wired to
+ * real backend timeframes (the backend's _TIMEFRAME_CONFIG maps each
+ * to its candle interval + lookback). Digit keys 1-6 switch them too
+ * (handler lives in PositionsPage). Candle-type / drawing / indicator
+ * stubs are block-commented below until those features are real.
  *
  * OHLC strip reads the most-recent bar from useTickerChart to populate
  * O/H/L/C and computes change vs prior close. Right-edge change number
