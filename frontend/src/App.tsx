@@ -6,6 +6,7 @@ import { RailShell } from "@/components/layout/RailShell";
 import { AnalyticsPage } from "@/pages/AnalyticsPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { JournalPage } from "@/pages/JournalPage";
+import { LandingPage } from "@/pages/LandingPage";
 import { NewCombinePage } from "@/pages/NewCombinePage";
 import { PositionsPage } from "@/pages/PositionsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
@@ -62,17 +63,12 @@ export default function App() {
   );
 }
 
-/** "/" — authed users go to the management dashboard; guests to
- * sign-in. The marketing landing page takes over the guest slot in a
- * later phase. */
+/** "/" — authed users go to the management dashboard; guests get the
+ * marketing landing page. */
 function RootGate() {
   const me = useMe();
   if (me.isPending) return <div className="min-h-screen bg-tier-0" />;
-  return me.isSuccess ? (
-    <Navigate to="/dashboard" replace />
-  ) : (
-    <Navigate to="/signin" replace />
-  );
+  return me.isSuccess ? <Navigate to="/dashboard" replace /> : <LandingPage />;
 }
 
 /**
