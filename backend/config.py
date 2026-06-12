@@ -24,6 +24,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ---------------------------------------------------------------------
+    # Auth (multi-user prop-firm shell). bcrypt cost factor is 12 for
+    # real use; tests drop it to 4 so signup-per-test stays fast.
+    # cookie_secure stays False for local HTTP dev — flip on for HTTPS
+    # deployment. The dev_user_* creds are ONLY used by the one-time
+    # migration backfill that adopts a pre-multi-user database; a fresh
+    # install never creates this user.
+    bcrypt_rounds: int = 12
+    cookie_secure: bool = False
+    dev_user_email: str = "dev@local"
+    dev_user_password: str = "devpassword"
+
+    # ---------------------------------------------------------------------
     # 0DTE-eligible universe — the ONLY symbols Trade Desk allows users
     # to open positions on. Same-day-expiry options are limited to a
     # narrow set in practice; this allowlist gates the symbol search and

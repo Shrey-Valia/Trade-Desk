@@ -25,6 +25,7 @@ dependencies = [
     "torch>=2.4",
     "scikit-learn>=1.5",
     "pyarrow>=17.0",  # parquet for OOS prediction stacking
+    "bcrypt>=4.1",
 ]
 
 [project.optional-dependencies]

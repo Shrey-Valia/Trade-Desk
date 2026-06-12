@@ -44,6 +44,15 @@ class Trade(Base):
     # its own trade list. Defaults to "50K" for the fresh-install case.
     tier: Mapped[str] = mapped_column(String(8), nullable=False, default="50K")
 
+    # The combine instance this trade belongs to (multi-user shell).
+    # Nullable for the additive migration; _backfill_multiuser() maps
+    # every legacy row, so post-migration there are no NULLs in
+    # practice. Ownership scoping goes trade.combine_id → combines.user_id.
+    # `tier` stays as a denormalized convenience.
+    combine_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+
     # Phase 2 (overnight polish) — metadata enrichment. All fields below
     # are NULLABLE and DEFAULTED so existing trade rows keep working
     # without migration; new trades opt in by filling them.
