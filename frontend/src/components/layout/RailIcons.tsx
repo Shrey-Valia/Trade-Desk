@@ -23,6 +23,18 @@ const BASE_PROPS: IconProps = {
   strokeLinejoin: "round",
 };
 
+export function DashboardIcon(props: IconProps) {
+  // Four tiles, one filled — the management-overview cue.
+  return (
+    <svg {...BASE_PROPS} {...props}>
+      <rect x="3" y="3" width="6" height="6" fill="currentColor" />
+      <rect x="11" y="3" width="6" height="6" />
+      <rect x="3" y="11" width="6" height="6" />
+      <rect x="11" y="11" width="6" height="6" />
+    </svg>
+  );
+}
+
 export function ChartIcon(props: IconProps) {
   // Two candlesticks with wicks — the price-chart product cue.
   return (

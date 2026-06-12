@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { RailShell } from "@/components/layout/RailShell";
 import { AnalyticsPage } from "@/pages/AnalyticsPage";
+import { DashboardPage } from "@/pages/DashboardPage";
 import { JournalPage } from "@/pages/JournalPage";
 import { NewCombinePage } from "@/pages/NewCombinePage";
 import { PositionsPage } from "@/pages/PositionsPage";
@@ -38,7 +39,7 @@ export default function App() {
         <Route path="/" element={<RootGate />} />
         <Route
           path="/signin"
-          element={<GuestOnly page={<SignInPage />} authedTo="/positions" />}
+          element={<GuestOnly page={<SignInPage />} authedTo="/dashboard" />}
         />
         <Route
           path="/signup"
@@ -46,6 +47,7 @@ export default function App() {
         />
         <Route element={<RequireAuth />}>
           <Route element={<RailShell />}>
+            <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/positions" element={<PositionsPage />} />
             <Route path="/combines/new" element={<NewCombinePage />} />
             <Route path="/journal" element={<JournalPage />} />
@@ -60,13 +62,14 @@ export default function App() {
   );
 }
 
-/** "/" — authed users go to the terminal; guests to sign-in. The
- * marketing landing page takes over this slot in a later phase. */
+/** "/" — authed users go to the management dashboard; guests to
+ * sign-in. The marketing landing page takes over the guest slot in a
+ * later phase. */
 function RootGate() {
   const me = useMe();
   if (me.isPending) return <div className="min-h-screen bg-tier-0" />;
   return me.isSuccess ? (
-    <Navigate to="/positions" replace />
+    <Navigate to="/dashboard" replace />
   ) : (
     <Navigate to="/signin" replace />
   );

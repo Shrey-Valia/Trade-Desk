@@ -352,6 +352,8 @@ export interface JournalAnalyticsFilters {
   /** Active tier's MLL trailing distance — enables the days-near-MLL
    *  count in the risk panel. */
   trail?: number | null;
+  /** Scope to one owned combine (dashboard uses the active one). */
+  combineId?: number | null;
 }
 
 // -- Zero-DTE ---------------------------------------------------------------
@@ -430,6 +432,7 @@ export const fetchJournalAnalytics = (
   if (filters.since) p.set("since", filters.since);
   if (filters.until) p.set("until", filters.until);
   if (filters.trail != null) p.set("trail", String(filters.trail));
+  if (filters.combineId != null) p.set("combine_id", String(filters.combineId));
   const q = p.toString();
   return request(`/api/analytics${q ? `?${q}` : ""}`, AnalyticsResponseSchema);
 };

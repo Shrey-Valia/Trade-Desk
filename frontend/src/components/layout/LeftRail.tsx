@@ -5,6 +5,7 @@ import { TradeDeskMark } from "@/components/branding/TradeDeskMark";
 import {
   AnalyticsIcon,
   ChartIcon,
+  DashboardIcon,
   JournalIcon,
   SettingsIcon,
 } from "./RailIcons";
@@ -19,6 +20,7 @@ interface RailItem {
 // still reachable directly; we just don't surface it as a destination
 // in the primary nav until the watchlist concept comes back online.
 const TOP_ITEMS: RailItem[] = [
+  { to: "/dashboard", label: "Home", icon: DashboardIcon },
   { to: "/positions", label: "Chart", icon: ChartIcon },
   { to: "/journal", label: "Journal", icon: JournalIcon },
   { to: "/analytics", label: "Analytics", icon: AnalyticsIcon },
