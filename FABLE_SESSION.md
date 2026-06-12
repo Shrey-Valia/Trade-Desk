@@ -57,19 +57,25 @@ thoughtful (tiers, DLL, chart appearance).
 ## Plan (ordered, small commits)
 
 - [x] Write this log
-- [ ] Fix clean build (@types/node)
-- [ ] Remove dead code (ChainPanel, ChainTable, TickerSearchBox, TradeDeskToolbar)
-- [ ] TradeList error state
-- [ ] DayModal win definition align with backend
-- [ ] Settings: clamp DLL override input; fix "four knobs" copy
-- [ ] KEY LEVELS: tooltips + empty-state explanation
-- [ ] Trade ticket: in-flight (submitting) state on BUY/SELL
-- [ ] Trade ticket: position-size vs remaining-DLL hint (display-only)
-- [ ] Keyboard shortcuts: timeframe keys on the terminal
-- [ ] Watchlist: make the right panel useful (symbol preview + "Open on chart")
-- [ ] Backend: graceful 4xx for malformed legs + test
-- [ ] Accessibility pass on components I touched
-- [ ] ET timezone hint where times render
+- [x] Fix clean build (@types/node)
+- [x] Remove dead code (ChainPanel, ChainTable, TickerSearchBox, TradeDeskToolbar
+      + JournalPanel subtree found later)
+- [x] TradeList error state
+- [x] DayModal win definition align with backend
+- [x] Settings: clamp DLL override input ("four knobs" copy turned out to be accurate —
+      4 knobs exist; explorer report was wrong, no change)
+- [x] KEY LEVELS: tooltips + empty-state explanation
+- [x] Trade ticket: in-flight (submitting) state on BUY/SELL
+- [x] Trade ticket: position-size vs remaining-DLL hint (display-only)
+- [x] Keyboard shortcuts: timeframe keys on the terminal
+- [x] Watchlist: make the right panel useful (symbol preview + "Open on chart")
+- [x] Backend: graceful 4xx for malformed legs + test
+- [x] Accessibility pass on components I touched
+- [x] ET timezone hint where times render
+- [x] (added) Journal CSV export
+- [x] (added) Responsive header fix at 1280px
+- [x] (added) Analytics filtered-empty state
+- [x] (added) Restore npm run lint (ESLint 9 flat config)
 
 ## Change log
 
@@ -179,11 +185,47 @@ thoughtful (tiers, DLL, chart appearance).
 - **Why**: traders move journals into Excel/Sheets; there was no way out of the app.
 - **Confidence**: sure.
 
+### 16. Header responsive fix (38795f8)
+- **What**: pill values nowrap + shrink-0; RP&L/UP&L pills hidden below 1440px.
+- **Why**: at 1280px the DLL value wrapped mid-text and MKT clipped off-screen.
+- **Confidence**: sure (verified 1280 + 1600). Reversal note: if you want RP&L/UP&L
+  visible at every width, remove the `hidden min-[1440px]:flex` classes — but something
+  else then has to give at 1280.
+
+### 17. Analytics filtered-empty state (8b98b26)
+- **What**: TODAY/WEEK/paper-live with zero matches says "nothing matches this filter"
+  instead of "place your first paper trade".
+- **Confidence**: sure (verified live).
+
+### 18. ESLint restored (ec8feb1) + lint fixes (0f936bc)
+- **What**: flat eslint.config.js for the already-installed ESLint 9 stack; fixed the one
+  real error (ternary-as-statement); removed a pointless disable pair. 0 errors,
+  7 pre-existing warnings left (hook-deps patterns + one inside the fenced overlay effect
+  — deliberately untouched).
+- **Why**: `npm run lint` had been failing outright since the v9 upgrade.
+- **Confidence**: sure on config; the relaxed rules (no-explicit-any off etc.) are
+  my judgment call — tighten if you prefer.
+
+### 19. ChartToolbar stale docstring (d28c228)
+- **What**: comment claimed only 1D was wired; all six timeframes are real.
+
 ---
 
 ## Needs verification at market open
 
-(running list)
+- ~~KEY LEVELS all "—" for SPY~~ — RESOLVED during the session: once the backend's chain
+  cache warmed, all six levels populated (EM↑ $751.19 / EM↓ $732.33 / CW $745 / PW $735 /
+  MP $740 / GF $595 at ~15:00 ET). The all-dashes state was Alpaca rate-limit/warm-up,
+  not a pipeline bug. The new empty-state copy covers exactly this window.
+- **Watchlist stale-snapshot banner** — does it auto-clear when markets reopen Monday?
+- **DLL hint at the open** — verify the "% of remaining DLL" math against the header pill
+  after a real losing day (I only saw dll_used = 0).
+- **Market-closed chain banner** — added during market hours; confirm it renders (and the
+  ticket's "market closed" sub-labels) after 16:00 ET.
+- **Volume readout on watchlist preview** — Alpaca free-tier "today's volume" looked low
+  vs the 20d average mid-session (1.6M vs 53M for SPY). If it's still ~30x off at the
+  close, the backend's volume field (or the free feed) deserves a look — display code just
+  renders what `/detail` returns.
 
 ## Decisions I made that the user may want to reverse
 
@@ -194,6 +236,11 @@ thoughtful (tiers, DLL, chart appearance).
   longer live-updates while typing.
 - **Day-modal win rate excludes $0 scratches** (bd68fdd) — matches ANALYTICS, but if you
   preferred scratches-count-as-wins, that was the old behavior.
+- **RP&L/UP&L pills hidden below 1440px** (38795f8) — see change 16.
+- **ESLint rule relaxations** (ec8feb1) — no-explicit-any and only-export-components off;
+  re-enable if you want stricter linting.
+- **Analytics 422 contract change** (b467d01) — anything that relied on the old 500 for
+  corrupt legs (nothing in this repo did) sees 422 now.
 
 ## Things I noticed but did NOT touch (and why)
 
