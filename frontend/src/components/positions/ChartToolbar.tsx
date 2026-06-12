@@ -85,7 +85,6 @@ function Toolbar({
   );
 }
 
-/* eslint-disable */
 // Stubs retired from the toolbar before YC submission. Kept on disk
 // (block-commented to satisfy tsc noUnusedLocals) so they can be
 // restored intact once the underlying features are real:
@@ -138,7 +137,6 @@ function IndicatorsStub() {
   );
 }
 */
-/* eslint-enable */
 
 /**
  * Compact legend toggle. The chart legend was an on-chart overlay; the

@@ -261,7 +261,8 @@ function TradeRow({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                isClosing ? onCancelClose() : onStartClose();
+                if (isClosing) onCancelClose();
+                else onStartClose();
               }}
               className="text-tiny text-fg-tertiary hover:text-amber px-1"
             >
