@@ -22,6 +22,8 @@ node_modules/
 frontend/dist/
 *.tsbuildinfo
 frontend/vite.config.d.ts
+frontend/vite.config.js
+/package-lock.json
 
 # Data
 data/
@@ -34,3 +36,6 @@ data/
 # OS
 .DS_Store
 .gstack/
+
+# Local git worktrees (in-flight feature branches; not part of the main repo)
+.claude/worktrees/
