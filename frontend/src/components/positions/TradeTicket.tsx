@@ -1,6 +1,7 @@
 import { useMemo, useRef } from "react";
 
 import { useAccountState } from "@/hooks/useAccountState";
+import { useCombineStatus } from "@/hooks/useCombineStatus";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
@@ -44,6 +45,18 @@ export function TradeTicket() {
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
 
+  // Combine engine soft-gate: a DAY LOCK (DLL hit today) or a FAILED
+  // account blocks further opens — UX only; the backend open path is not
+  // touched (opens still 201 server-side, so nothing silently diverges).
+  const combine = useCombineStatus();
+  const passed = combine.passed;
+  // A PASSED combine is done (not locked) — passing isn't a trading lock.
+  const locked = !passed && (combine.dayLocked || combine.status === "failed");
+  const lockReason =
+    combine.status === "failed"
+      ? "Account FAILED — MLL floor breached."
+      : "DAY LOCK — daily loss limit hit; no further trading today.";
+
   const pending = legMutation.isPending || straddleMutation.isPending;
   const lastError = useMemo(() => {
     if (legMutation.isError) return (legMutation.error as Error)?.message;
@@ -52,7 +65,7 @@ export function TradeTicket() {
   }, [legMutation.isError, legMutation.error, straddleMutation.isError, straddleMutation.error]);
 
   const hasSelection = !!selection;
-  const canFire = hasSelection && marketOpen && !pending;
+  const canFire = hasSelection && marketOpen && !pending && !locked;
 
   // Synchronous double-click guard. The button's disabled prop tracks
   // mutation.isPending after react renders — but two synchronous clicks
@@ -108,6 +121,8 @@ export function TradeTicket() {
         aria-label="Trade ticket"
       >
         <Header />
+        {passed && <PassedBanner />}
+        {locked && <LockBanner reason={lockReason} />}
         <CompactEmpty marketOpen={marketOpen} />
       </section>
     );
@@ -118,6 +133,8 @@ export function TradeTicket() {
       aria-label="Trade ticket"
     >
       <Header />
+      {passed && <PassedBanner />}
+      {locked && <LockBanner reason={lockReason} />}
       <Summary selection={selection} contracts={contracts} />
       <QuantityRow contracts={contracts} setContracts={setContracts} />
       <DllRiskHint selection={selection} contracts={contracts} />
@@ -164,6 +181,33 @@ function CompactEmpty({ marketOpen }: { marketOpen: boolean }) {
           SELL
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Combine PASSED banner — informational (passing isn't a trading lock). */
+function PassedBanner() {
+  return (
+    <div
+      className="mx-3 mt-1 px-2 py-1 border border-bullish text-bullish text-tiny uppercase tracking-label-up"
+      style={{ borderRadius: 0, fontSize: 9 }}
+      role="status"
+    >
+      Combine PASSED — profit target, min days &amp; consistency met.
+    </div>
+  );
+}
+
+/** Combine soft-gate banner — shown when the account is day-locked or
+ *  FAILED. UX only; the backend open path is not gated. */
+function LockBanner({ reason }: { reason: string }) {
+  return (
+    <div
+      className="mx-3 mt-1 px-2 py-1 border border-bearish text-bearish text-tiny uppercase tracking-label-up"
+      style={{ borderRadius: 0, fontSize: 9 }}
+      role="status"
+    >
+      {reason}
     </div>
   );
 }

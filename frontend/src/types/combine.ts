@@ -5,15 +5,22 @@ export const CombineOutSchema = z.object({
   name: z.string(),
   tier: z.string(),
   account_code: z.string(),
+  /** Lifecycle: active | archived. */
   status: z.string(),
+  /** Settlement outcome: active | passed | failed (permanent). */
+  outcome: z.enum(["active", "passed", "failed"]).default("active"),
   starting_balance: z.number(),
   realized_pnl: z.number(),
   balance: z.number(),
   hwm: z.number(),
+  /** Settled HWM — basis of the fixed-intraday MLL floor. */
+  settled_hwm: z.number().default(0),
   mll: z.number(),
   dll_used: z.number(),
   dll_budget: z.number(),
-  /** Display-only objective — no enforcement. */
+  /** DLL hit today → day-locked (lifts at the 5pm-PT settlement). */
+  day_locked: z.boolean().default(false),
+  /** Realized profit needed to PASS (6% of starting balance). */
   profit_target: z.number(),
   /** realized/target clamped to [0,1]. */
   objective_progress: z.number(),

@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useActivateCombine } from "@/hooks/useCombines";
+import { useCombineStatus } from "@/hooks/useCombineStatus";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { useTrades } from "@/hooks/useTrades";
@@ -342,11 +343,37 @@ function MetricPills() {
   }, [tradesData, activeTier]);
 
   const bal = (account?.balance ?? 0) + upl;
-  const mll = account?.mll ?? 0;
   const trailing =
     account?.tiers.find((t) => t.key === activeTier)?.trailing_distance ?? 1;
-  const mllTone = mllToneClass(bal, mll, trailing);
-  const breached = bal < mll;
+  // Combine engine verdict — floors tested CONTINUOUSLY against live net
+  // (realized + URPL). The MLL pill is the hero ("how close to blowing
+  // up"); FAILED is permanent, DAY-LOCK lifts at the 5pm-PT settlement.
+  const combine = useCombineStatus();
+  const mll = combine.mllFloor;
+  const cushion = combine.mllCushion;
+  const mllTone =
+    combine.status === "failed"
+      ? "text-bearish font-medium"
+      : mllToneClass(combine.balanceLive, combine.mllFloor, trailing);
+  // Profit-target pole — how close to PASSING.
+  const tgtTone = combine.passed
+    ? "text-bullish font-medium"
+    : combine.passBlockedReason
+      ? "text-warning"
+      : combine.targetProximity >= 1
+        ? "text-bullish"
+        : combine.targetProximity >= 0.5
+          ? "text-fg-primary"
+          : "text-fg-secondary";
+  const passBadge = combine.passed
+    ? "PASSED"
+    : combine.targetMet && !combine.minDaysMet
+      ? "MIN DAYS"
+      : combine.targetMet && !combine.consistencyOk
+        ? "CONSIST"
+        : combine.targetMet
+          ? "TARGET"
+          : null;
 
   // DLL budget — user can override per-tier in Settings; default falls
   // back to the active tier's spec (Topstep-aligned 3% of starting
@@ -362,19 +389,74 @@ function MetricPills() {
   // folds UPL on top of the realized-only balance.
   const dllUsed = Math.max(0, (account?.dll_used ?? 0) + Math.max(0, -upl));
   const dllTone = dllToneClass(dllUsed, dllBudget);
-  const dllHit = dllBudget > 0 && dllUsed > dllBudget;
+  const dllHit = combine.dayLocked;
 
   return (
     <>
       <MetricPill label="BAL" value={formatDollar(bal)} />
-      <MetricPill label="MLL" value={formatDollar(mll)} valueClass={mllTone}>
-        {breached && (
+      <MetricPill
+        label="MLL"
+        value={formatDollar(mll)}
+        valueClass={mllTone}
+        title={`Fixed-intraday MLL floor — how close to blowing up. Live cushion ${
+          cushion >= 0 ? "+" : "−"
+        }$${Math.round(Math.abs(cushion)).toLocaleString()} (balance incl. open URPL vs the floor). Re-baselines up only at the 5pm-PT settlement.`}
+      >
+        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 9 }}>
+          {cushion >= 0
+            ? `+$${Math.round(cushion).toLocaleString()}`
+            : `−$${Math.round(-cushion).toLocaleString()}`}
+        </span>
+        {combine.status === "failed" ? (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
             style={{ fontSize: 8, height: 14 }}
-            title="Balance is below the trailing maximum-loss limit."
+            title="MLL floor breached — combine FAILED (permanent)."
+          >
+            FAILED
+          </span>
+        ) : cushion < 0 ? (
+          <span
+            className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
+            style={{ fontSize: 8, height: 14 }}
+            title="Live balance (incl. URPL) is below the MLL floor."
           >
             BREACH
+          </span>
+        ) : null}
+      </MetricPill>
+      <MetricPill
+        label="TGT"
+        value={formatDollar(combine.realizedProfit)}
+        valueClass={tgtTone}
+        title={`Profit target ${formatDollar(combine.profitTarget)} (6%). Realized ${formatDollar(
+          combine.realizedProfit,
+        )}${combine.targetMet ? " — target MET" : ""}. Min ${combine.minTradingDays} trading days (traded ${combine.daysTraded}). Consistency: largest day ${Math.round(
+          combine.largestDayPct,
+        )}% of profit${combine.consistencyOk ? " (ok)" : " — exceeds 50%"}.${
+          combine.passBlockedReason ? " " + combine.passBlockedReason : ""
+        }`}
+      >
+        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 9 }}>
+          / ${Math.round(combine.profitTarget / 1000)}K · D{combine.daysTraded}/
+          {combine.minTradingDays}
+        </span>
+        {passBadge && (
+          <span
+            className={`ml-1 inline-flex items-center px-1 border uppercase tracking-label-up rounded-btn ${
+              combine.passed
+                ? "border-bullish text-bullish"
+                : passBadge === "TARGET"
+                  ? "border-bullish text-bullish"
+                  : "border-warning text-warning"
+            }`}
+            style={{ fontSize: 8, height: 14 }}
+            title={
+              combine.passBlockedReason ??
+              (combine.passed ? "Combine PASSED." : "Profit target reached.")
+            }
+          >
+            {passBadge}
           </span>
         )}
       </MetricPill>
@@ -384,17 +466,17 @@ function MetricPills() {
         valueClass={dllTone}
         title={
           dllHit
-            ? "Daily loss limit hit — display only, trade open is not blocked."
-            : "Daily loss limit — resets at the next ET trading day."
+            ? "Daily loss limit hit — DAY LOCK: no further trading today (account survives). Lifts at the 5pm-PT settlement."
+            : "Daily loss limit (live, incl. open URPL) — resets at the 5pm-PT settlement."
         }
       >
         {dllHit && (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
             style={{ fontSize: 8, height: 14 }}
-            title="Daily loss limit hit — display only, trade open is not blocked."
+            title="Daily loss limit hit — DAY LOCK: no further trading today."
           >
-            DLL HIT
+            DAY LOCK
           </span>
         )}
       </MetricPill>
