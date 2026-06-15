@@ -54,18 +54,23 @@ export function BottomStrip() {
   });
   const liveAnalytics = liveAnalyticsQuery.data ?? null;
 
-  // No active position → collapsed single-row strip: just KEY LEVELS
-  // inline + a TODAY summary row. Hides OPEN POSITION and THETA
-  // SCRUBBER entirely (they're empty placeholders when no trade is
-  // active) and gives the freed vertical space back to the chart.
+  // No active position → pre-execution strip: KEY LEVELS inline + a TODAY
+  // summary row, PLUS the NEWS panel so the user can read ticker news
+  // before deciding to open a trade. OPEN POSITION and THETA SCRUBBER stay
+  // hidden (empty placeholders without a trade). News reuses the same
+  // self-contained NewsPanel as the expanded grid — keyed on the active
+  // symbol (zero extra network); it just needs a flex-column height box.
   if (!activeTrade) {
     return (
       <div
         className="border-t border-hairline bg-tier-0 shrink-0 flex flex-col"
-        style={{ height: 80 }}
+        style={{ height: 220 }}
       >
         <KeyLevelsInline symbol={symbol} />
         <TodayInline trades={trades} />
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-t border-hairline">
+          <NewsPanel symbol={symbol} />
+        </div>
       </div>
     );
   }
