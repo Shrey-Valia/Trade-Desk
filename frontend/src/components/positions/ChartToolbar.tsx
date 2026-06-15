@@ -1,9 +1,23 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { UIButton } from "@/components/ui/UIButton";
+import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerChart } from "@/hooks/useTickerChart";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
+
+// Seconds per candle interval — mirrors AnnotatedChart's private
+// INTERVAL_SECONDS (the synthetic-candle slot width). "1D" is absent:
+// no synthetic candle there, so the countdown hides for it too. These
+// interval lengths are canonical and never change, so the small
+// duplication is safe and avoids coupling to the chart-engine file.
+const TF_INTERVAL_SECONDS: Partial<Record<ChartTimeframe, number>> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+  "4h": 14400,
+};
 
 /**
  * TradingView-style chart chrome — toolbar (36px) + OHLC strip (20px).
@@ -186,6 +200,19 @@ function OhlcStrip({
   timeframe: ChartTimeframe;
 }) {
   const { data } = useTickerChart(symbol, timeframe);
+  const { data: market } = useMarketStatus();
+  const marketOpen = market?.status === "open";
+  const intervalSec = TF_INTERVAL_SECONDS[timeframe];
+  // Leading-edge real bar — the SAME reference AnnotatedChart's
+  // synthetic-candle effect pins to (bars[last]). Its timestamp changes
+  // exactly when a new candle rolls in on this chart, so it's the
+  // countdown's reset key.
+  const leadingBarKey =
+    data && data.bars.length > 0 ? data.bars[data.bars.length - 1].t : null;
+  // Show only when a candle is actually forming/rolling: intraday grain
+  // (1D excluded), market open, and a bar exists to anchor on.
+  const showCountdown =
+    intervalSec != null && marketOpen && leadingBarKey != null;
   const ohlc = useMemo(() => {
     if (!data || data.bars.length === 0) return null;
     const last = data.bars[data.bars.length - 1];
@@ -209,6 +236,12 @@ function OhlcStrip({
     >
       <span className="uppercase tracking-label-up text-fg-tertiary-2">
         {symbol ?? "—"} · {timeframe}
+        {showCountdown && (
+          <NextCandleCountdown
+            barKey={leadingBarKey as string}
+            intervalSec={intervalSec as number}
+          />
+        )}
       </span>
       {ohlc ? (
         <>
@@ -250,6 +283,70 @@ function OhlcCell({
       <span className="text-fg-tertiary-2">{label}</span>
       <span className={accent ? "text-fg-primary" : "text-fg-secondary"}>
         {value.toFixed(2)}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * "Time until the next candle on this chart" — anchored to the CURRENT
+ * candle's BOUNDARY, derived from the leading-edge bar's timestamp
+ * (`barKey`, the same bar the synthetic candle pins to). NOT a wall-clock
+ * :00 timer, and NOT "now at mount/switch": the current bar's timestamp is
+ * the start of the current interval and its close is one interval later, so
+ *     remaining = (barStart + intervalSec) - now
+ * is correct IMMEDIATELY on mount and on every timeframe switch — switching
+ * 5m→1m mid-candle instantly shows the true 1m remaining, not 1:00. Bars are
+ * interval-spaced, so the phase stays locked to the candle grid and the
+ * countdown is continuous across rolls.
+ *
+ * Honest about the delay: the feed is ~15min delayed and bars refresh
+ * ~every 60s, so the next real bar may not have arrived yet and `remaining`
+ * can compute ≤ 0 — we forward-wrap by whole intervals so it never parks at
+ * 0:00. This is "time left in the current candle on THIS chart" relative to
+ * the bar's timestamp, NOT the live market wall clock; never labeled "live".
+ *
+ * Pure client-side: one 1s setInterval, cleaned up on unmount. No network —
+ * reads the already-fetched bars + market-status queries.
+ */
+function NextCandleCountdown({
+  barKey,
+  intervalSec,
+}: {
+  barKey: string;
+  intervalSec: number;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Single 1s ticker, cleaned up on unmount.
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Current candle start = the leading-edge bar's timestamp (seconds).
+  const barStartSec = Math.floor(new Date(barKey).getTime() / 1000);
+  if (!Number.isFinite(barStartSec)) return null;
+
+  // Remaining = time from now until this candle's boundary (start + one
+  // interval). Correct on mount + timeframe switch with no roll needed.
+  let remaining = barStartSec + intervalSec - nowMs / 1000;
+  // Delayed feed: the next real bar may not have landed yet, so this can be
+  // ≤ 0. Wrap forward by whole intervals (bars are interval-spaced) so it
+  // stays phase-aligned and never parks at/below 0:00.
+  while (remaining <= 0) remaining += intervalSec;
+  const total = Math.ceil(remaining);
+  const mm = Math.floor(total / 60);
+  const ss = total % 60;
+
+  return (
+    <span title="Seconds until the next candle on this chart (delayed feed)">
+      <span aria-hidden className="text-fg-tertiary mx-1.5">
+        ·
+      </span>
+      next{" "}
+      <span className="text-fg-secondary tabular-nums">
+        {mm}:{String(ss).padStart(2, "0")}
       </span>
     </span>
   );
