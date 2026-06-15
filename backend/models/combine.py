@@ -36,11 +36,26 @@ class Combine(Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     # Topstep-style: "{tier}TC-{user_id}-{8 digits}", unique app-wide.
     account_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
-    # Per-combine high-water mark — seeded to the tier's starting
-    # balance at purchase; advanced monotonically by the same frozen
-    # update_hwm() the single-account model used.
+    # Per-combine RUNNING high-water mark — seeded to the tier's starting
+    # balance at purchase; advanced monotonically intraday by the same
+    # frozen update_hwm() the single-account model used. Tracks the day
+    # high; drives the SETTLED HWM at settlement, not the MLL floor directly.
     hwm: Mapped[float] = mapped_column(Float, nullable=False)
+    # Per-combine SETTLED high-water mark — the basis of the MLL floor.
+    # Advances ONLY at the 5pm-PT settlement (settled = max(settled,
+    # running)), so the floor is FIXED intraday and re-baselines UP only.
+    settled_hwm: Mapped[float] = mapped_column(Float, nullable=False)
+    # Last 5pm-PT settlement. None = never settled (settle on first read).
+    last_settled_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True
+    )
+    # Lifecycle status: "active" | "archived". Orthogonal to `outcome`.
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    # Settlement OUTCOME: "active" | "passed" | "failed". Permanent once
+    # passed/failed (a combine breaching its MLL fails for good; one meeting
+    # the profit target + min-days + consistency passes). Kept separate from
+    # `status` so archiving never erases the outcome.
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,

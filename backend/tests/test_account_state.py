@@ -9,6 +9,7 @@ activates the newest combine of the requested tier.
 from __future__ import annotations
 
 from database import get_session
+from models.combine import Combine
 from models.trade import Trade
 from services.account_tiers import (
     TIERS,
@@ -16,6 +17,12 @@ from services.account_tiers import (
     compute_mll,
     is_valid_tier,
     update_hwm,
+)
+from services.combine_settlement import (
+    consistency_ok,
+    needs_settlement,
+    settle_hwm,
+    trading_day_start,
 )
 from tests.conftest import make_combine
 
@@ -162,25 +169,39 @@ def test_balance_includes_realized_pnl_for_active_combine_only(auth_client):
     assert r["active_tier"] == "50K"
     assert r["realized_pnl"] == 150          # 200 + (-50)
     assert r["balance"] == 50_150
-    assert r["high_water_mark"] == 50_150
-    assert r["mll"] == 48_150                # trails up by +150
+    assert r["high_water_mark"] == 50_150    # running HWM walks up intraday
+    # MLL is FIXED intraday from the settled HWM (settled at purchase =
+    # 50_000); it does NOT trail the +150 until the next 5pm-PT settlement.
+    assert r["settled_hwm"] == 50_000
+    assert r["mll"] == 48_000
 
     # Activate the 100K combine — its own +1_000 only.
     r2 = auth_client.post(f"/api/combines/{c100['id']}/activate").json()
     assert r2["realized_pnl"] == 1_000
     assert r2["balance"] == 101_000
-    assert r2["high_water_mark"] == 101_000
-    assert r2["mll"] == 97_000
+    assert r2["high_water_mark"] == 101_000  # running HWM
+    assert r2["mll"] == 96_000               # fixed floor from settled 100_000
 
 
-def test_mll_is_capped_at_starting_balance_via_endpoint(auth_client):
+def test_mll_is_fixed_intraday_then_caps_at_starting_balance_after_settlement(
+    auth_client,
+):
     c = make_combine(auth_client, "50K")
     _seed_closed_trade(auth_client, combine_id=c["id"], realized=10_000)
     r = auth_client.get("/api/account/state").json()
     assert r["balance"] == 60_000
-    assert r["high_water_mark"] == 60_000
-    # MLL would be 58_000 if uncapped; caps at 50_000.
-    assert r["mll"] == 50_000
+    assert r["high_water_mark"] == 60_000        # running HWM
+    # Intraday the floor stays put: settled at purchase (50_000), so MLL is
+    # 48_000 even though the running HWM is now 60_000.
+    assert r["settled_hwm"] == 50_000
+    assert r["mll"] == 48_000
+
+    # Cross a 5pm-PT settlement: settled HWM re-baselines up to 60_000, and
+    # the MLL trail caps at the starting balance (would be 58_000 uncapped).
+    _force_resettlement(auth_client, c["id"])
+    r2 = auth_client.get("/api/account/state").json()
+    assert r2["settled_hwm"] == 60_000
+    assert r2["mll"] == 50_000
 
 
 def test_two_combines_same_tier_are_independent(auth_client):
@@ -213,7 +234,9 @@ def test_hwm_preserved_across_activations(auth_client):
     assert back["realized_pnl"] == 300
     # HWM stays at A's peak even after leaving and coming back.
     assert back["high_water_mark"] == 50_300
-    assert back["mll"] == 48_300
+    # MLL is the fixed-intraday floor from the settled HWM (settled at
+    # purchase = 50_000); the intraday +300 doesn't move it.
+    assert back["mll"] == 48_000
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +303,115 @@ def test_dll_used_is_combine_isolated(auth_client):
 
 
 # ---------------------------------------------------------------------------
+# Settlement engine — pure helpers (services/combine_settlement)
+# ---------------------------------------------------------------------------
+
+
+def test_settle_hwm_advances_up_only():
+    assert settle_hwm(50_000, 50_150) == 50_150   # re-baselines up
+    assert settle_hwm(50_150, 50_000) == 50_150   # never down
+    assert settle_hwm(50_000, 50_000) == 50_000
+
+
+def test_needs_settlement_when_never_settled_or_boundary_passed():
+    now = _now()
+    assert needs_settlement(None, now) is True              # never settled
+    assert needs_settlement(now, now) is False              # already this day
+    # A settlement stamped before the current trading day → settle again.
+    assert needs_settlement(trading_day_start(now), now) is False
+    from datetime import timedelta
+
+    assert needs_settlement(trading_day_start(now) - timedelta(seconds=1), now) is True
+
+
+def test_consistency_rule():
+    assert consistency_ok(1_600, 3_200) is True    # exactly 50%
+    assert consistency_ok(2_900, 3_100) is False   # one day dominates
+    assert consistency_ok(0, 0) is True            # no profit yet → vacuous
+    assert consistency_ok(-100, -500) is True      # net loss → vacuous
+
+
+# ---------------------------------------------------------------------------
+# Settlement engine — PASS / FAIL / day-lock through the endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_combine_fails_permanently_on_mll_breach(auth_client):
+    c = make_combine(auth_client, "50K")
+    # Floor is 48_000 (settled at purchase). A -2_500 realized loss drops
+    # balance to 47_500 ≤ 48_000 → FAILED.
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-2_500)
+    r = auth_client.get("/api/account/state").json()
+    assert r["balance"] == 47_500
+    assert r["status"] == "failed"
+
+    # FAILED is terminal: a later winning trade does NOT un-fail it.
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=+5_000)
+    r2 = auth_client.get("/api/account/state").json()
+    assert r2["balance"] == 52_500
+    assert r2["status"] == "failed"
+
+
+def test_combine_passes_on_target_min_days_and_consistency(auth_client):
+    c = make_combine(auth_client, "50K")
+    # 50K target = 3_000. Two distinct trading days, neither > 50% of total.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_600, exit_at=_yesterday_et_noon()
+    )
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_600, exit_at=_today_et_noon()
+    )
+    r = auth_client.get("/api/account/state").json()
+    assert r["realized_pnl"] == 3_200
+    assert r["days_traded"] == 2
+    assert r["consistency_ok"] is True
+    assert r["status"] == "passed"
+
+
+def test_pass_blocked_until_min_trading_days(auth_client):
+    c = make_combine(auth_client, "50K")
+    # Target met in a SINGLE day → min-trading-days not satisfied.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=3_500, exit_at=_today_et_noon()
+    )
+    r = auth_client.get("/api/account/state").json()
+    assert r["realized_pnl"] == 3_500          # target met
+    assert r["days_traded"] == 1
+    assert r["min_trading_days"] == 2
+    assert r["status"] == "active"             # not yet passed
+
+
+def test_pass_blocked_when_consistency_violated(auth_client):
+    c = make_combine(auth_client, "50K")
+    # Two days, target met, but one day is 2_900/3_100 ≈ 94% > 50%.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=2_900, exit_at=_yesterday_et_noon()
+    )
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=200, exit_at=_today_et_noon()
+    )
+    r = auth_client.get("/api/account/state").json()
+    assert r["realized_pnl"] == 3_100          # target met
+    assert r["days_traded"] == 2
+    assert r["consistency_ok"] is False
+    assert r["status"] == "active"             # blocked by consistency
+
+
+def test_day_locked_at_dll_without_failing(auth_client):
+    c = make_combine(auth_client, "50K")
+    # Exactly the DLL budget (1_500): day-locks (≥) but does not breach (>),
+    # and balance 48_500 stays above the 48_000 floor → still active.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=-1_500, exit_at=_today_et_noon()
+    )
+    r = auth_client.get("/api/account/state").json()
+    assert r["dll_used"] == 1_500
+    assert r["day_locked"] is True
+    assert r["dll_breached"] is False          # uses >, not ≥
+    assert r["status"] == "active"
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
@@ -305,6 +437,19 @@ def _seed_closed_trade(client, combine_id: int, realized: float, exit_at=None) -
         legs_json="[]",
     )
     session.add(trade)
+    session.commit()
+    session.close()
+
+
+def _force_resettlement(client, combine_id: int) -> None:
+    """Clear a combine's last_settled_at so the next state read crosses a
+    5pm-PT boundary and re-baselines the settled HWM up to the running
+    HWM. Lets a test exercise post-settlement behavior (e.g. the MLL cap)
+    without waiting for a real 5pm-PT rollover."""
+    session = next(client.app.dependency_overrides[get_session]())
+    combine = session.get(Combine, combine_id)
+    combine.last_settled_at = None
+    session.add(combine)
     session.commit()
     session.close()
 

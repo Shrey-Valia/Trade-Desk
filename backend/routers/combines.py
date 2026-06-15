@@ -41,14 +41,19 @@ class CombineOut(BaseModel):
     name: str
     tier: str
     account_code: str
-    status: str
+    status: str = Field(..., description="Lifecycle: active | archived.")
+    outcome: str = Field(
+        ..., description="Settlement outcome: active | passed | failed (permanent)."
+    )
     starting_balance: float
     realized_pnl: float
     balance: float
     hwm: float
+    settled_hwm: float
     mll: float
     dll_used: float
     dll_budget: float
+    day_locked: bool
     profit_target: float
     objective_progress: float
     created_at: datetime
@@ -78,13 +83,16 @@ def _to_out(session: Session, combine: Combine) -> CombineOut:
         tier=combine.tier,
         account_code=combine.account_code,
         status=combine.status,
+        outcome=snap.outcome,
         starting_balance=snap.starting_balance,
         realized_pnl=snap.realized_pnl,
         balance=snap.balance,
         hwm=snap.hwm,
+        settled_hwm=snap.settled_hwm,
         mll=snap.mll,
         dll_used=snap.dll_used,
         dll_budget=snap.dll_budget,
+        day_locked=snap.day_locked,
         profit_target=snap.profit_target,
         objective_progress=snap.objective_progress,
         created_at=combine.created_at,
@@ -158,7 +166,9 @@ def purchase_combine(
         name=(payload.name or "").strip() or f"{payload.tier} Combine",
         account_code=generate_account_code(session, payload.tier, user.id),
         hwm=tier.starting_balance,
+        settled_hwm=tier.starting_balance,
         status="active",
+        outcome="active",
     )
     session.add(combine)
     session.flush()

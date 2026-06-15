@@ -59,25 +59,60 @@ class AccountStateOut(BaseModel):
     starting_balance: float
     realized_pnl: float = Field(..., description="Sum of closed-trade realized P&L on the active combine.")
     balance: float = Field(..., description="starting_balance + realized_pnl. Unrealized is added client-side.")
-    high_water_mark: float
-    mll: float
+    high_water_mark: float = Field(..., description="Running (monotonic) HWM.")
+    settled_hwm: float = Field(
+        ..., description="Settled HWM — basis of the fixed-intraday MLL floor."
+    )
+    mll: float = Field(
+        ...,
+        description=(
+            "MLL floor — FIXED intraday (from the settled HWM); re-baselines UP"
+            " only at the 5pm-PT settlement. The combine FAILS if balance (incl."
+            " live URPL, folded client-side) ≤ this."
+        ),
+    )
+    status: Literal["active", "passed", "failed"] = Field(
+        ..., description="Settlement outcome. FAILED (MLL breach) is permanent."
+    )
+    day_locked: bool = Field(
+        ...,
+        description=(
+            "True when today's realized loss has hit the DLL — no further trading"
+            " today (the combine survives); lifts at the 5pm-PT settlement."
+        ),
+    )
     dll_used: float = Field(
         ...,
         description=(
-            "Today's realized loss on the active combine (ET trading day),"
+            "Today's realized loss on the active combine (5pm-PT trading day),"
             " clamped to ≥0. Frontend folds in any active-position UPL at"
             " display time, mirroring the BAL pattern."
         ),
     )
     dll_budget: float
     dll_breached: bool
+    # -- PASS / profit-target progress (realized-based) ------------------------
+    days_traded: int = Field(
+        ..., description="Distinct 5pm-PT trading days with ≥1 closed trade."
+    )
+    min_trading_days: int = Field(..., description="Min distinct trading days to pass.")
+    largest_day_profit: float = Field(
+        ..., description="Biggest single trading day's realized P&L (consistency basis)."
+    )
+    consistency_ok: bool = Field(
+        ...,
+        description=(
+            "True when no single day's realized profit exceeds 50% of total"
+            " realized profit (or there is no realized profit yet)."
+        ),
+    )
     tiers: list[TierSpec]
     # -- combine identity (multi-user shell) ----------------------------------
     combine_id: int
     combine_name: str
     account_code: str
-    combine_status: str
-    profit_target: float = Field(..., description="Display-only objective — no enforcement.")
+    combine_status: str = Field(..., description="Lifecycle: active | archived.")
+    profit_target: float = Field(..., description="Realized profit needed to PASS (6%).")
     objective_progress: float = Field(..., description="realized/target clamped to [0,1].")
     combines: list[CombineSummary]
 
@@ -105,10 +140,17 @@ def get_account_state(
         realized_pnl=snap.realized_pnl,
         balance=snap.balance,
         high_water_mark=snap.hwm,
+        settled_hwm=snap.settled_hwm,
         mll=snap.mll,
+        status=snap.outcome,  # type: ignore[arg-type]
+        day_locked=snap.day_locked,
         dll_used=snap.dll_used,
         dll_budget=snap.dll_budget,
         dll_breached=snap.dll_breached,
+        days_traded=snap.days_traded,
+        min_trading_days=snap.min_trading_days,
+        largest_day_profit=snap.largest_day_profit,
+        consistency_ok=snap.consistency_ok,
         tiers=_tier_specs(),
         combine_id=combine.id,
         combine_name=combine.name,

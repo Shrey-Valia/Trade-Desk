@@ -72,6 +72,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _additive_migrate_trades()
+    _additive_migrate_combines()
     _create_missing_indexes()
     # AccountState seeding retired with the multi-user shell — the table
     # stays on disk purely as the migration source for legacy HWMs.
@@ -121,6 +122,38 @@ def _additive_migrate_trades() -> None:
         # would otherwise pollute the 50K combine's history. Wipe them.
         if needs_wipe:
             conn.execute(text("DELETE FROM trades"))
+        conn.commit()
+
+
+# Combine settlement engine added a settled HWM, a settlement timestamp,
+# and a permanent pass/fail outcome to `combines`. Same idempotent
+# additive pattern. settled_hwm is backfilled to each row's running hwm
+# so the migration is behaviour-preserving at the instant it runs (the
+# MLL floor doesn't jump), then stays fixed intraday going forward.
+_COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
+    ("settled_hwm", "FLOAT NOT NULL DEFAULT 0"),
+    ("last_settled_at", "DATETIME"),
+    ("outcome", "VARCHAR(16) NOT NULL DEFAULT 'active'"),
+]
+
+
+def _additive_migrate_combines() -> None:
+    inspector = inspect(engine)
+    if "combines" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("combines")}
+    pending = [
+        (name, ddl) for name, ddl in _COMBINE_COLUMN_ADDITIONS if name not in existing
+    ]
+    if not pending:
+        return
+    with engine.connect() as conn:
+        for name, ddl in pending:
+            conn.execute(text(f"ALTER TABLE combines ADD COLUMN {name} {ddl}"))
+        # Seed settled_hwm to the existing running hwm so the floor is
+        # unchanged at migration time (DEFAULT 0 would crater it).
+        if "settled_hwm" in {name for name, _ in pending}:
+            conn.execute(text("UPDATE combines SET settled_hwm = hwm"))
         conn.commit()
 
 
@@ -198,7 +231,9 @@ def _backfill_multiuser(session_factory: sessionmaker) -> None:
                 name=f"{tier_key} Combine",
                 account_code=generate_account_code(session, tier_key, dev_user.id),
                 hwm=max(legacy_hwm, tier.starting_balance),
+                settled_hwm=max(legacy_hwm, tier.starting_balance),
                 status="active",
+                outcome="active",
             )
             session.add(combine)
             session.flush()
