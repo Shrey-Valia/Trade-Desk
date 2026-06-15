@@ -11,11 +11,18 @@ import type { TradeInput, TradeUpdateInput } from "@/types/journal";
 
 const TRADES_KEY = ["journal", "trades"] as const;
 
-export function useTrades(filters: TradeListFilters = {}) {
+export function useTrades(
+  filters: TradeListFilters = {},
+  options: { refetchInterval?: number | false } = {},
+) {
   return useQuery({
     queryKey: [...TRADES_KEY, filters],
     queryFn: () => fetchTrades(filters),
     staleTime: 10_000,
+    // Off by default — only the live feed opts into polling. Because the
+    // ["journal","trades",{}] key is shared, the interval applies to that
+    // cache entry whenever the feed is mounted (no duplicate requests).
+    refetchInterval: options.refetchInterval,
   });
 }
 

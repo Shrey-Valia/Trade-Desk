@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { NewsPanel } from "@/components/positions/NewsPanel";
+import { BottomNewsFeedTabs } from "@/components/positions/BottomNewsFeedTabs";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
@@ -69,7 +69,7 @@ export function BottomStrip() {
         <KeyLevelsInline symbol={symbol} />
         <TodayInline trades={trades} />
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-t border-hairline">
-          <NewsPanel symbol={symbol} />
+          <BottomNewsFeedTabs symbol={symbol} />
         </div>
       </div>
     );
@@ -102,7 +102,7 @@ export function BottomStrip() {
         <TodayCol trades={trades} activeTradeId={activeTradeId} />
       </Column>
       <Column>
-        <NewsPanel symbol={symbol} />
+        <BottomNewsFeedTabs symbol={symbol} />
       </Column>
     </div>
   );

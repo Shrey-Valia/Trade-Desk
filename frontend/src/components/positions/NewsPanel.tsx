@@ -1,3 +1,6 @@
+import type { ReactNode } from "react";
+
+import { PanelHeader, relativeTime } from "@/components/positions/panelChrome";
 import { Badge } from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useTickerNews } from "@/hooks/useTickerNews";
@@ -17,7 +20,13 @@ import type { NewsItem } from "@/types/news";
  *   - empty   : quiet tertiary line "No recent news for SYM"
  *   - error   : quiet "News unavailable" + ghost retry (the 503/429 case)
  */
-export function NewsPanel({ symbol }: { symbol: string | null }) {
+export function NewsPanel({
+  symbol,
+  headerControl,
+}: {
+  symbol: string | null;
+  headerControl?: ReactNode;
+}) {
   const query = useTickerNews(symbol);
   const items = query.data?.items ?? [];
   const showError = query.isError && items.length === 0;
@@ -31,7 +40,11 @@ export function NewsPanel({ symbol }: { symbol: string | null }) {
 
   return (
     <>
-      <Header left={`News${symbol ? ` · ${symbol}` : ""}`} right={refreshedLabel} />
+      <PanelHeader
+        left={`News${symbol ? ` · ${symbol}` : ""}`}
+        right={refreshedLabel}
+        headerControl={headerControl}
+      />
       {showLoading ? (
         <LoadingCards />
       ) : showError ? (
@@ -134,41 +147,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-/** Exact replica of BottomStrip's ColHeader chrome so the NEWS panel
- *  header matches the other four panels (1px hairline, bg-tier-1, the
- *  9–10px uppercase tracked label). Kept local to avoid exporting/
- *  refactoring BottomStrip internals. */
-function Header({ left, right }: { left: string; right: string }) {
-  return (
-    <div className="flex items-baseline justify-between px-3 py-1 border-b border-hairline bg-tier-1 shrink-0">
-      <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
-        {left}
-      </span>
-      <span
-        className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
-      >
-        {right}
-      </span>
-    </div>
-  );
-}
-
 function truncateSource(source: string): string {
   const s = source.trim();
   return s.length > 18 ? `${s.slice(0, 17)}…` : s;
-}
-
-/** Compact relative time: "just now", "12m ago", "3h ago", "2d ago". */
-function relativeTime(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "";
-  const diffSec = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (diffSec < 60) return "just now";
-  const min = Math.floor(diffSec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  return `${day}d ago`;
 }
