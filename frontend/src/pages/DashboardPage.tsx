@@ -1,18 +1,15 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
+import { GaugeDial } from "@/components/analytics/GaugeDial";
+import { CombineCardsGrid } from "@/components/combines/CombineCards";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { colors } from "@/lib/design";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useAccountState } from "@/hooks/useAccountState";
-import {
-  useActivateCombine,
-  useArchiveCombine,
-  useCombines,
-  useRenameCombine,
-} from "@/hooks/useCombines";
+import { useCombines } from "@/hooks/useCombines";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
-import type { CombineOut } from "@/types/combine";
 
 /**
  * /dashboard — the prop-firm management home (Topstep-style).
@@ -139,8 +136,15 @@ function DashboardBody() {
             startingBalance={account?.starting_balance ?? 0}
             combineName={account?.combine_name}
             analytics={analytics}
+            mll={account?.mll}
+            profitTargetBalance={
+              account
+                ? account.starting_balance + (account.profit_target ?? 0)
+                : undefined
+            }
           />
           <PerformancePanel analytics={analytics} />
+          <TradesByDurationPanel analytics={analytics} />
         </div>
         <PathToFunding />
       </div>
@@ -156,10 +160,14 @@ function BalancePanel({
   startingBalance,
   combineName,
   analytics,
+  mll,
+  profitTargetBalance,
 }: {
   startingBalance: number;
   combineName: string | undefined;
   analytics: ReturnType<typeof useJournalAnalytics>;
+  mll: number | undefined;
+  profitTargetBalance: number | undefined;
 }) {
   const equity = analytics.data?.equity;
   // The equity curve is cumulative closed P&L; offset by the combine's
@@ -184,6 +192,9 @@ function BalancePanel({
             points={points}
             drawdownPeakDate={equity?.drawdown_peak_date}
             drawdownTroughDate={equity?.drawdown_trough_date}
+            baseline={startingBalance}
+            mll={mll}
+            profitTarget={profitTargetBalance}
           />
         </div>
       ) : (
@@ -208,63 +219,115 @@ function PerformancePanel({
   analytics: ReturnType<typeof useJournalAnalytics>;
 }) {
   const k = analytics.data?.kpis;
+  const win = k?.win_rate ?? null;
+  const avgWin = k?.avg_winner ?? null;
+  const avgLoss = k?.avg_loser != null ? Math.abs(k.avg_loser) : null;
+  // Avg-win / avg-loss gauges fill by their share of the win/loss balance
+  // (a meaningful, bounded visual); the center value is the real dollar
+  // figure. With only one side present, that side fills fully.
+  const denom = (avgWin ?? 0) + (avgLoss ?? 0);
+  const winShare =
+    avgWin == null ? null : denom > 0 ? avgWin / denom : 1;
+  const lossShare =
+    avgLoss == null ? null : denom > 0 ? avgLoss / denom : 1;
+
   return (
     <Panel title="Performance tracker" right="closed trades on this combine">
-      <div className="grid grid-cols-4 gap-3">
-        <Stat
+      <div className="grid grid-cols-3 gap-3">
+        <GaugeDial
           label="Win rate"
-          value={k?.win_rate != null ? `${Math.round(k.win_rate * 100)}%` : "—"}
+          value={win != null ? `${Math.round(win * 100)}%` : "—"}
+          fraction={win}
+          color={colors.accentAmber}
           sub={k ? `${k.closed_trades} closed` : undefined}
         />
-        <Stat
+        <GaugeDial
           label="Avg winning trade"
-          value={k?.avg_winner != null ? formatDollar(k.avg_winner) : "—"}
-          tone="bullish"
+          value={avgWin != null ? formatDollar(avgWin) : "—"}
+          fraction={winShare}
+          color={colors.bullish}
         />
-        <Stat
+        <GaugeDial
           label="Avg losing trade"
-          value={k?.avg_loser != null ? formatDollar(Math.abs(k.avg_loser)) : "—"}
-          tone="bearish"
+          value={avgLoss != null ? formatDollar(avgLoss) : "—"}
+          fraction={lossShare}
+          color={colors.bearish}
         />
-        <Stat
-          label="Avg hold"
-          value={k?.avg_hold_min != null ? formatMinutes(k.avg_hold_min) : "—"}
-        />
+      </div>
+      <div className="mt-3 pt-3 border-t border-hairline text-center text-tiny text-fg-tertiary-2 tabular-nums">
+        Avg hold {k?.avg_hold_min != null ? formatMinutes(k.avg_hold_min) : "—"}
       </div>
     </Panel>
   );
 }
 
-function Stat({
-  label,
-  value,
-  sub,
-  tone,
+// -- trades by duration ----------------------------------------------------------
+
+function TradesByDurationPanel({
+  analytics,
 }: {
-  label: string;
-  value: string;
-  sub?: string;
-  tone?: "bullish" | "bearish";
+  analytics: ReturnType<typeof useJournalAnalytics>;
 }) {
-  const cls =
-    tone === "bullish"
-      ? "text-bullish"
-      : tone === "bearish"
-        ? "text-bearish"
-        : "text-fg-primary";
+  const buckets = analytics.data?.by_hold_duration ?? [];
+  const maxTrades = Math.max(1, ...buckets.map((b) => b.trades));
+  const anyTrades = buckets.some((b) => b.trades > 0);
+
   return (
-    <div className="flex flex-col gap-0.5">
-      <span
-        className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
-      >
-        {label}
-      </span>
-      <span className={`text-large font-medium tabular-nums ${cls}`}>{value}</span>
-      {sub && (
-        <span className="text-tiny text-fg-tertiary-2 tabular-nums">{sub}</span>
+    <Panel title="Successful trades by duration" right="closed trades · by hold time">
+      {anyTrades ? (
+        <div className="flex flex-col gap-2">
+          {buckets.map((b) => {
+            const pct = (b.trades / maxTrades) * 100;
+            const barCls =
+              b.net_pnl > 0
+                ? "bg-bullish"
+                : b.net_pnl < 0
+                  ? "bg-bearish"
+                  : "bg-tier-3";
+            return (
+              <div key={b.label} className="flex items-center gap-2">
+                <span
+                  className="text-tiny tabular-nums text-fg-tertiary-2 text-right shrink-0"
+                  style={{ width: 56 }}
+                >
+                  {b.label}
+                </span>
+                <div className="flex-1 h-3 bg-tier-2 relative min-w-0">
+                  <div
+                    className={`absolute inset-y-0 left-0 ${barCls}`}
+                    style={{ width: `${pct}%`, opacity: 0.85 }}
+                  />
+                </div>
+                <span
+                  className="text-tiny tabular-nums text-fg-secondary text-right shrink-0"
+                  style={{ width: 96 }}
+                >
+                  {b.trades} {b.trades === 1 ? "trade" : "trades"}
+                  {b.win_rate != null && (
+                    <span className="text-fg-tertiary-2">
+                      {" "}
+                      · {Math.round(b.win_rate * 100)}%
+                    </span>
+                  )}
+                </span>
+              </div>
+            );
+          })}
+          <span className="text-tiny text-fg-tertiary-2">
+            Bar length = trade count; green = net-winning bucket, red =
+            net-losing. % is the bucket win rate.
+          </span>
+        </div>
+      ) : (
+        <div
+          className="flex items-center justify-center text-tiny text-fg-tertiary-2 text-center px-4"
+          style={{ height: 120 }}
+        >
+          No closed intraday trades yet — duration buckets appear once timed
+          trades close.
+        </div>
       )}
-    </div>
+    </Panel>
   );
 }
 
@@ -277,6 +340,13 @@ function PathToFunding() {
   const progress = account.objective_progress ?? 0;
   const cushion = account.balance - account.mll;
   const dllRemaining = Math.max(0, account.dll_budget - account.dll_used);
+  const totalProfit = account.realized_pnl;
+  const largestDayPct =
+    totalProfit > 0 ? (account.largest_day_profit / totalProfit) * 100 : 0;
+  const daysFraction =
+    account.min_trading_days > 0
+      ? account.days_traded / account.min_trading_days
+      : 0;
 
   return (
     <Panel title="Path to funding" right={account.account_code ?? ""}>
@@ -328,14 +398,55 @@ function PathToFunding() {
               ? { text: "HIT TODAY", tone: "bearish" }
               : { text: "ok", tone: "ok" }
           }
-          hint="Resets at the next ET trading day. Display-only."
+          hint="Resets at the 5pm-PT settlement. Display-only."
         />
+        <RuleRow
+          label="Consistency target"
+          value={
+            totalProfit > 0
+              ? `Largest day is ${Math.round(largestDayPct)}% of total profit`
+              : "No realized profit yet"
+          }
+          status={
+            account.consistency_ok
+              ? { text: "ok", tone: "ok" }
+              : { text: "EXCEEDS 50%", tone: "bearish" }
+          }
+          hint="No single trading day may exceed 50% of total realized profit."
+        />
+
+        {/* Min trading days — a pass requirement alongside the target. */}
+        <div className="flex flex-col gap-1">
+          <div className="flex items-baseline justify-between">
+            <span
+              className="uppercase tracking-label-up text-fg-secondary"
+              style={{ fontSize: 10 }}
+            >
+              Trading days
+            </span>
+            <span className="text-tiny tabular-nums text-fg-secondary">
+              {account.days_traded} / {account.min_trading_days}
+            </span>
+          </div>
+          <ProgressBar
+            fraction={daysFraction}
+            tone={
+              account.days_traded >= account.min_trading_days
+                ? "bullish"
+                : "amber"
+            }
+          />
+          <span className="text-tiny text-fg-tertiary-2">
+            Minimum distinct trading days required to pass.
+          </span>
+        </div>
 
         <div className="border-t border-hairline" />
         <span className="text-tiny text-fg-tertiary leading-relaxed">
-          Rules are computed from closed trades — the same numbers as the
-          terminal header. Pass/fail settlement is not automated yet;
-          objectives here are your scoreboard.
+          Profit target, consistency, and min trading days are the pass
+          conditions the combine engine evaluates; the MLL/DLL floors are
+          the same numbers as the terminal header. Funding payout is still a
+          manual step.
         </span>
       </div>
     </Panel>
@@ -414,215 +525,11 @@ function CombineCards() {
       title="Your combines"
       right={`${data?.slots_used ?? 0} of ${data?.slots_total ?? 5} slots used`}
     >
-      <div
-        className="grid gap-3"
-        style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}
-      >
-        {combines.map((c) => (
-          <CombineCard
-            key={c.id}
-            combine={c}
-            isActive={c.id === data?.active_combine_id}
-          />
-        ))}
-      </div>
+      <CombineCardsGrid
+        combines={combines}
+        activeCombineId={data?.active_combine_id}
+      />
     </Panel>
-  );
-}
-
-function CombineCard({
-  combine,
-  isActive,
-}: {
-  combine: CombineOut;
-  isActive: boolean;
-}) {
-  const activate = useActivateCombine();
-  const archive = useArchiveCombine();
-  const rename = useRenameCombine();
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(combine.name);
-  const [confirmArchive, setConfirmArchive] = useState(false);
-  const archived = combine.status === "archived";
-
-  const commitRename = () => {
-    const trimmed = name.trim();
-    setEditing(false);
-    if (trimmed && trimmed !== combine.name) {
-      rename.mutate({ id: combine.id, name: trimmed });
-    } else {
-      setName(combine.name);
-    }
-  };
-
-  return (
-    <div
-      className={[
-        "border bg-tier-1 flex flex-col",
-        archived
-          ? "border-hairline opacity-60"
-          : isActive
-            ? "border-amber"
-            : "border-hairline-strong",
-      ].join(" ")}
-      style={{ borderRadius: 4 }}
-    >
-      <div className="px-3 pt-2.5 pb-2 border-b border-hairline">
-        <div className="flex items-center gap-2">
-          {editing ? (
-            <input
-              type="text"
-              value={name}
-              autoFocus
-              maxLength={64}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={commitRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                if (e.key === "Escape") {
-                  setName(combine.name);
-                  setEditing(false);
-                }
-              }}
-              className="flex-1 h-6 px-1.5 bg-tier-2 border border-tier-3 text-fg-primary focus:border-amber focus:outline-none rounded-btn"
-              style={{ fontSize: 12 }}
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => !archived && setEditing(true)}
-              title={archived ? undefined : "Rename"}
-              className="text-fg-primary font-medium truncate text-left hover:text-amber"
-              style={{ fontSize: 13 }}
-            >
-              {combine.name}
-            </button>
-          )}
-          {isActive && !archived && (
-            <span
-              className="border border-amber text-amber px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
-            >
-              active
-            </span>
-          )}
-          {archived && (
-            <span
-              className="border border-tier-3 text-fg-tertiary-2 px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
-            >
-              archived
-            </span>
-          )}
-        </div>
-        <div
-          className="text-fg-tertiary-2 tabular-nums mt-0.5"
-          style={{ fontSize: 10 }}
-        >
-          {combine.tier} · {combine.account_code}
-        </div>
-      </div>
-      <div className="px-3 py-2 flex flex-col gap-1 tabular-nums flex-1">
-        <CardRow label="Balance" value={formatDollar(combine.balance)} />
-        <CardRow
-          label="Closed P&L"
-          value={formatSigned(combine.realized_pnl)}
-          tone={
-            combine.realized_pnl > 0
-              ? "bullish"
-              : combine.realized_pnl < 0
-                ? "bearish"
-                : undefined
-          }
-        />
-        <CardRow label="MLL" value={formatDollar(combine.mll)} />
-        <div className="mt-1">
-          <ProgressBar
-            fraction={combine.objective_progress}
-            tone={combine.objective_progress >= 1 ? "bullish" : "amber"}
-          />
-          <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 9 }}>
-            {Math.round(combine.objective_progress * 100)}% of $
-            {combine.profit_target.toLocaleString()} target
-          </span>
-        </div>
-      </div>
-      {!archived && (
-        <div className="px-3 pb-2.5 flex items-center gap-2">
-          {!isActive && (
-            <button
-              type="button"
-              disabled={activate.isPending}
-              onClick={() => activate.mutate(combine.id)}
-              className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
-              style={{ borderRadius: 0 }}
-            >
-              Activate
-            </button>
-          )}
-          <div className="ml-auto">
-            {confirmArchive ? (
-              <span className="flex items-center gap-2">
-                <span className="text-tiny text-fg-tertiary-2">sure?</span>
-                <button
-                  type="button"
-                  disabled={archive.isPending}
-                  onClick={() => archive.mutate(combine.id)}
-                  className="h-6 px-2 text-tiny uppercase tracking-label-up border border-bearish text-bearish hover:bg-tier-2"
-                  style={{ borderRadius: 0 }}
-                >
-                  Archive
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmArchive(false)}
-                  className="text-tiny text-fg-tertiary-2 hover:text-fg-primary"
-                >
-                  cancel
-                </button>
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmArchive(true)}
-                title="Frees a combine slot. History is kept; archived combines can't trade."
-                className="h-6 px-2 text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-bearish"
-              >
-                Archive
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CardRow({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: "bullish" | "bearish";
-}) {
-  const cls =
-    tone === "bullish"
-      ? "text-bullish"
-      : tone === "bearish"
-        ? "text-bearish"
-        : "text-fg-secondary";
-  return (
-    <div className="flex items-baseline justify-between">
-      <span
-        className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
-      >
-        {label}
-      </span>
-      <span className={`text-tiny ${cls}`}>{value}</span>
-    </div>
   );
 }
 

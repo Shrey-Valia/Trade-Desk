@@ -35,6 +35,17 @@ export function DashboardIcon(props: IconProps) {
   );
 }
 
+export function AccountsIcon(props: IconProps) {
+  // Two stacked cards — the multi-account ("all your accounts") cue; the
+  // front card is filled to read as the active one.
+  return (
+    <svg {...BASE_PROPS} {...props}>
+      <rect x="6" y="3" width="11" height="7" rx="1" />
+      <rect x="3" y="10" width="11" height="7" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function ChartIcon(props: IconProps) {
   // Two candlesticks with wicks — the price-chart product cue.
   return (

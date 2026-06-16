@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { RailShell } from "@/components/layout/RailShell";
+import { AccountsPage } from "@/pages/AccountsPage";
 import { AnalyticsPage } from "@/pages/AnalyticsPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { JournalPage } from "@/pages/JournalPage";
@@ -49,6 +50,7 @@ export default function App() {
         <Route element={<RequireAuth />}>
           <Route element={<RailShell />}>
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/positions" element={<PositionsPage />} />
             <Route path="/combines/new" element={<NewCombinePage />} />
             <Route path="/journal" element={<JournalPage />} />

@@ -1,0 +1,269 @@
+import { useState } from "react";
+
+import {
+  useActivateCombine,
+  useArchiveCombine,
+  useRenameCombine,
+} from "@/hooks/useCombines";
+import type { CombineOut } from "@/types/combine";
+
+/**
+ * Responsive grid of combine ("account") cards — balance, closed P&L, MLL,
+ * profit-target progress, plus rename / activate / archive. Shared by the
+ * dashboard's "Your combines" panel and the dedicated Accounts page so the
+ * card behavior lives in one place. Renders just the grid (no panel
+ * chrome) — callers wrap it however they like.
+ */
+export function CombineCardsGrid({
+  combines,
+  activeCombineId,
+}: {
+  combines: CombineOut[];
+  activeCombineId: number | null | undefined;
+}) {
+  return (
+    <div
+      className="grid gap-3"
+      style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}
+    >
+      {combines.map((c) => (
+        <CombineCard
+          key={c.id}
+          combine={c}
+          isActive={c.id === activeCombineId}
+        />
+      ))}
+    </div>
+  );
+}
+
+function CombineCard({
+  combine,
+  isActive,
+}: {
+  combine: CombineOut;
+  isActive: boolean;
+}) {
+  const activate = useActivateCombine();
+  const archive = useArchiveCombine();
+  const rename = useRenameCombine();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(combine.name);
+  const [confirmArchive, setConfirmArchive] = useState(false);
+  const archived = combine.status === "archived";
+
+  const commitRename = () => {
+    const trimmed = name.trim();
+    setEditing(false);
+    if (trimmed && trimmed !== combine.name) {
+      rename.mutate({ id: combine.id, name: trimmed });
+    } else {
+      setName(combine.name);
+    }
+  };
+
+  return (
+    <div
+      className={[
+        "border bg-tier-1 flex flex-col",
+        archived
+          ? "border-hairline opacity-60"
+          : isActive
+            ? "border-amber"
+            : "border-hairline-strong",
+      ].join(" ")}
+      style={{ borderRadius: 4 }}
+    >
+      <div className="px-3 pt-2.5 pb-2 border-b border-hairline">
+        <div className="flex items-center gap-2">
+          {editing ? (
+            <input
+              type="text"
+              value={name}
+              autoFocus
+              maxLength={64}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") {
+                  setName(combine.name);
+                  setEditing(false);
+                }
+              }}
+              className="flex-1 h-6 px-1.5 bg-tier-2 border border-tier-3 text-fg-primary focus:border-amber focus:outline-none rounded-btn"
+              style={{ fontSize: 12 }}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => !archived && setEditing(true)}
+              title={archived ? undefined : "Rename"}
+              className="text-fg-primary font-medium truncate text-left hover:text-amber"
+              style={{ fontSize: 13 }}
+            >
+              {combine.name}
+            </button>
+          )}
+          {isActive && !archived && (
+            <span
+              className="border border-amber text-amber px-1 uppercase tracking-label-up shrink-0"
+              style={{ fontSize: 8, borderRadius: 2 }}
+            >
+              active
+            </span>
+          )}
+          {archived && (
+            <span
+              className="border border-tier-3 text-fg-tertiary-2 px-1 uppercase tracking-label-up shrink-0"
+              style={{ fontSize: 8, borderRadius: 2 }}
+            >
+              archived
+            </span>
+          )}
+        </div>
+        <div
+          className="text-fg-tertiary-2 tabular-nums mt-0.5"
+          style={{ fontSize: 10 }}
+        >
+          {combine.tier} · {combine.account_code}
+        </div>
+      </div>
+      <div className="px-3 py-2 flex flex-col gap-1 tabular-nums flex-1">
+        <CardRow label="Balance" value={formatDollar(combine.balance)} />
+        <CardRow
+          label="Closed P&L"
+          value={formatSigned(combine.realized_pnl)}
+          tone={
+            combine.realized_pnl > 0
+              ? "bullish"
+              : combine.realized_pnl < 0
+                ? "bearish"
+                : undefined
+          }
+        />
+        <CardRow label="MLL" value={formatDollar(combine.mll)} />
+        <div className="mt-1">
+          <ProgressBar
+            fraction={combine.objective_progress}
+            tone={combine.objective_progress >= 1 ? "bullish" : "amber"}
+          />
+          <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 9 }}>
+            {Math.round(combine.objective_progress * 100)}% of $
+            {combine.profit_target.toLocaleString()} target
+          </span>
+        </div>
+      </div>
+      {!archived && (
+        <div className="px-3 pb-2.5 flex items-center gap-2">
+          {!isActive && (
+            <button
+              type="button"
+              disabled={activate.isPending}
+              onClick={() => activate.mutate(combine.id)}
+              className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
+              style={{ borderRadius: 0 }}
+            >
+              Activate
+            </button>
+          )}
+          <div className="ml-auto">
+            {confirmArchive ? (
+              <span className="flex items-center gap-2">
+                <span className="text-tiny text-fg-tertiary-2">sure?</span>
+                <button
+                  type="button"
+                  disabled={archive.isPending}
+                  onClick={() => archive.mutate(combine.id)}
+                  className="h-6 px-2 text-tiny uppercase tracking-label-up border border-bearish text-bearish hover:bg-tier-2"
+                  style={{ borderRadius: 0 }}
+                >
+                  Archive
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmArchive(false)}
+                  className="text-tiny text-fg-tertiary-2 hover:text-fg-primary"
+                >
+                  cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmArchive(true)}
+                title="Frees a combine slot. History is kept; archived combines can't trade."
+                className="h-6 px-2 text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-bearish"
+              >
+                Archive
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CardRow({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "bullish" | "bearish";
+}) {
+  const cls =
+    tone === "bullish"
+      ? "text-bullish"
+      : tone === "bearish"
+        ? "text-bearish"
+        : "text-fg-secondary";
+  return (
+    <div className="flex items-baseline justify-between">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 9 }}
+      >
+        {label}
+      </span>
+      <span className={`text-tiny ${cls}`}>{value}</span>
+    </div>
+  );
+}
+
+function ProgressBar({
+  fraction,
+  tone,
+}: {
+  fraction: number;
+  tone: "amber" | "bullish";
+}) {
+  const pct = Math.max(0, Math.min(1, fraction)) * 100;
+  return (
+    <div className="h-1.5 bg-tier-2 relative">
+      <div
+        className={`absolute inset-y-0 left-0 ${tone === "bullish" ? "bg-bullish" : "bg-amber"}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+function formatDollar(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  return `$${v.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatSigned(v: number): string {
+  if (!Number.isFinite(v)) return "$0.00";
+  const sign = v > 0 ? "+" : v < 0 ? "−" : "";
+  return `${sign}$${Math.abs(v).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}

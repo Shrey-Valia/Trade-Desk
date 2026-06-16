@@ -162,6 +162,13 @@ def get_analytics(
             )
             for b in result.by_day_of_week
         ],
+        by_hold_duration=[
+            TimeBucketOut(
+                label=b.label, trades=b.trades, win_rate=b.win_rate,
+                avg_pnl=b.avg_pnl, net_pnl=b.net_pnl,
+            )
+            for b in result.by_hold_duration
+        ],
         by_mistake=[
             MistakeBucketOut(
                 tag=b.tag, trades=b.trades, net_pnl=b.net_pnl,

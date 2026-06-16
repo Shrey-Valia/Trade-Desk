@@ -117,6 +117,7 @@ export const AnalyticsResponseSchema = z.object({
   by_dte: z.array(DteBucketSchema),
   by_time_of_day: z.array(TimeBucketSchema).default([]),
   by_day_of_week: z.array(TimeBucketSchema).default([]),
+  by_hold_duration: z.array(TimeBucketSchema).default([]),
   by_mistake: z.array(MistakeBucketSchema),
   streaks: StreakStatsSchema,
   equity: EquityCurveSchema,

@@ -105,6 +105,7 @@ class AnalyticsResponse(BaseModel):
     by_dte: list[DteBucketOut] = Field(default_factory=list)
     by_time_of_day: list[TimeBucketOut] = Field(default_factory=list)
     by_day_of_week: list[TimeBucketOut] = Field(default_factory=list)
+    by_hold_duration: list[TimeBucketOut] = Field(default_factory=list)
     by_mistake: list[MistakeBucketOut] = Field(default_factory=list)
     streaks: StreakStatsOut
     equity: EquityCurveOut

@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import { TradeDeskMark } from "@/components/branding/TradeDeskMark";
 
 import {
+  AccountsIcon,
   AnalyticsIcon,
   ChartIcon,
   DashboardIcon,
@@ -21,6 +22,7 @@ interface RailItem {
 // in the primary nav until the watchlist concept comes back online.
 const TOP_ITEMS: RailItem[] = [
   { to: "/dashboard", label: "Home", icon: DashboardIcon },
+  { to: "/accounts", label: "Accounts", icon: AccountsIcon },
   { to: "/positions", label: "Chart", icon: ChartIcon },
   { to: "/journal", label: "Journal", icon: JournalIcon },
   { to: "/analytics", label: "Analytics", icon: AnalyticsIcon },

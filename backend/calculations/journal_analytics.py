@@ -40,6 +40,9 @@ _OPEN_END_MIN = 10 * 60 + 30        # 10:30
 _MIDDAY_END_MIN = 13 * 60           # 13:00
 TIME_OF_DAY_ORDER = ("Open", "Midday", "Power hour")
 DAY_OF_WEEK_ORDER = ("Mon", "Tue", "Wed", "Thu", "Fri")
+# Hold-duration buckets (entry→exit minutes). 0DTE-oriented — most paper
+# trades here are short intraday holds, so the fine buckets sit under 1h.
+HOLD_DURATION_ORDER = ("<1m", "1-5m", "5-15m", "15-60m", ">60m")
 _WEEKDAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
@@ -169,6 +172,7 @@ class JournalAnalytics:
     by_dte: list[DteBucket]
     by_time_of_day: list[TimeBucket]
     by_day_of_week: list[TimeBucket]
+    by_hold_duration: list[TimeBucket]
     by_mistake: list[MistakeBucket]
     streaks: StreakStats
     equity: EquityCurve
@@ -241,6 +245,18 @@ def _hold_minutes(t: Trade) -> int | None:
     if delta < 0:
         return None
     return int(round(delta))
+
+
+def _hold_bucket(minutes: int) -> str:
+    if minutes < 1:
+        return "<1m"
+    if minutes < 5:
+        return "1-5m"
+    if minutes < 15:
+        return "5-15m"
+    if minutes < 60:
+        return "15-60m"
+    return ">60m"
 
 
 def _time_of_day_bucket(minutes: int) -> str:
@@ -582,6 +598,16 @@ def compute_by_time_of_day(trades: Iterable[Trade]) -> list[TimeBucket]:
     return _time_buckets(trades, key, TIME_OF_DAY_ORDER)
 
 
+def compute_by_hold_duration(trades: Iterable[Trade]) -> list[TimeBucket]:
+    """Bucket closed trades by hold time (entry→exit minutes). Trades
+    without a real intraday entry timestamp are excluded (the hold span is
+    undefined — see _hold_minutes). Drives the 'trades by duration' chart."""
+    def key(t: Trade) -> str | None:
+        mins = _hold_minutes(t)
+        return _hold_bucket(mins) if mins is not None else None
+    return _time_buckets(trades, key, HOLD_DURATION_ORDER)
+
+
 def compute_by_day_of_week(trades: Iterable[Trade]) -> list[TimeBucket]:
     """Bucket closed trades by ET entry weekday (Mon–Fri)."""
     return _time_buckets(trades, _entry_weekday_label, DAY_OF_WEEK_ORDER)
@@ -690,6 +716,7 @@ def compose(trades: Iterable[Trade], trail: float | None = None) -> JournalAnaly
         by_dte=compute_by_dte(trades),
         by_time_of_day=compute_by_time_of_day(trades),
         by_day_of_week=compute_by_day_of_week(trades),
+        by_hold_duration=compute_by_hold_duration(trades),
         by_mistake=compute_by_mistake(trades),
         streaks=compute_streaks(trades),
         equity=compute_equity_curve(trades),
@@ -700,6 +727,7 @@ def compose(trades: Iterable[Trade], trail: float | None = None) -> JournalAnaly
 __all__ = [
     "DAY_OF_WEEK_ORDER",
     "DTE_BUCKET_ORDER",
+    "HOLD_DURATION_ORDER",
     "TIME_OF_DAY_ORDER",
     "DteBucket",
     "EquityCurve",
@@ -715,6 +743,7 @@ __all__ = [
     "compose",
     "compute_by_day_of_week",
     "compute_by_dte",
+    "compute_by_hold_duration",
     "compute_by_mistake",
     "compute_by_strategy",
     "compute_by_symbol",

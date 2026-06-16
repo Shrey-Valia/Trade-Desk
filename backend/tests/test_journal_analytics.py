@@ -24,6 +24,7 @@ from calculations.journal_analytics import (
     compose,
     compute_by_day_of_week,
     compute_by_dte,
+    compute_by_hold_duration,
     compute_by_mistake,
     compute_by_strategy,
     compute_by_symbol,
@@ -253,6 +254,46 @@ def test_by_dte_emits_zero_rows_for_empty_buckets():
     for r in rows:
         assert r.trades == 0
         assert r.win_rate is None
+
+
+# ---------------------------------------------------------------------------
+# Hold-duration buckets
+# ---------------------------------------------------------------------------
+
+
+def test_by_hold_duration_buckets_by_entry_to_exit_minutes():
+    entry = _et(2026, 5, 22, 10, 0)  # intraday entry (14:00 UTC, not midnight)
+    trades = [
+        FakeTrade(realized_pnl=50, entry_date=entry, exit_date=entry + timedelta(seconds=20)),   # <1m, win
+        FakeTrade(realized_pnl=-20, entry_date=entry, exit_date=entry + timedelta(minutes=3)),    # 1-5m, loss
+        FakeTrade(realized_pnl=100, entry_date=entry, exit_date=entry + timedelta(minutes=10)),   # 5-15m, win
+        FakeTrade(realized_pnl=30, entry_date=entry, exit_date=entry + timedelta(minutes=45)),    # 15-60m, win
+        FakeTrade(realized_pnl=-10, entry_date=entry, exit_date=entry + timedelta(minutes=90)),   # >60m, loss
+    ]
+    rows = compute_by_hold_duration(trades)
+    # Canonical order, every bucket emitted (stable chart axis).
+    assert [r.label for r in rows] == ["<1m", "1-5m", "5-15m", "15-60m", ">60m"]
+    by = {r.label: r for r in rows}
+    assert by["<1m"].trades == 1 and by["<1m"].win_rate == 1.0
+    assert by["1-5m"].trades == 1 and by["1-5m"].net_pnl == -20
+    assert by["5-15m"].trades == 1 and by["5-15m"].net_pnl == 100
+    assert by["15-60m"].trades == 1
+    assert by[">60m"].trades == 1 and by[">60m"].win_rate == 0.0
+
+
+def test_by_hold_duration_excludes_date_only_entries():
+    # A date-only entry serializes to 00:00 UTC → no intraday time → the
+    # hold span is undefined, so the trade is excluded (all buckets zero).
+    trades = [
+        FakeTrade(
+            realized_pnl=100,
+            entry_date=datetime(2026, 5, 22, tzinfo=timezone.utc),
+            exit_date=datetime(2026, 5, 22, 1, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    rows = compute_by_hold_duration(trades)
+    assert [r.label for r in rows] == ["<1m", "1-5m", "5-15m", "15-60m", ">60m"]
+    assert all(r.trades == 0 for r in rows)
 
 
 # ---------------------------------------------------------------------------
