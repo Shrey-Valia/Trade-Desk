@@ -88,6 +88,17 @@ function FeedBadge({ ev }: { ev: FeedEvent }) {
   if (ev.kind === "trade_open") {
     return <Badge tone="amber">OPEN</Badge>;
   }
+  if (ev.kind === "lifecycle") {
+    const tone: BadgeTone =
+      ev.tone === "bullish"
+        ? "bullish"
+        : ev.tone === "bearish"
+          ? "bearish"
+          : ev.eventType === "settled"
+            ? "cyan"
+            : "muted";
+    return <Badge tone={tone}>{ev.eventType.toUpperCase()}</Badge>;
+  }
   const tone: BadgeTone =
     ev.tone === "bullish" ? "bullish" : ev.tone === "bearish" ? "bearish" : "muted";
   return <Badge tone={tone}>CLOSE</Badge>;

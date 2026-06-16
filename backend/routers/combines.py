@@ -14,7 +14,7 @@ fulfillment hook and the row gains a real amount/status.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,12 +24,13 @@ from sqlalchemy.orm import Session
 
 from database import get_session
 from models.combine import Combine
+from models.combine_event import CombineEvent
 from models.payment import Payment
 from models.user import User
 from services.account_tiers import TIERS
 from services.auth import get_current_user
 from services.combine_objectives import generate_account_code
-from services.combine_state import combine_snapshot
+from services.combine_state import combine_snapshot, record_event
 
 router = APIRouter(prefix="/api/combines", tags=["combines"])
 
@@ -56,6 +57,15 @@ class CombineOut(BaseModel):
     day_locked: bool
     profit_target: float
     objective_progress: float
+    # --- funded-account lifecycle ---
+    funded: bool = Field(..., description="True once the eval passed (auto-funded).")
+    funded_at: datetime | None = None
+    payout_eligible: float = Field(
+        ..., description="Available payout: trader's split of profit, net of prior requests."
+    )
+    payout_requested: float = Field(
+        ..., description="Lifetime payout already requested on this account."
+    )
     created_at: datetime
 
 
@@ -75,8 +85,36 @@ class RenameIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
 
 
+class PayoutOut(BaseModel):
+    combine_id: int
+    amount: float = Field(..., description="Amount requested in this payout.")
+    requested_at: datetime
+
+
+class CombineEventOut(BaseModel):
+    id: int
+    combine_id: int
+    combine_name: str | None
+    type: str = Field(..., description="funded | failed | settled | reset | payout")
+    message: str
+    amount: float | None
+    created_at: datetime
+
+
+def _payouts_requested(session: Session, combine_id: int) -> float:
+    """Sum of payout amounts already requested on this combine."""
+    rows = session.execute(
+        select(CombineEvent.amount).where(
+            CombineEvent.combine_id == combine_id, CombineEvent.type == "payout"
+        )
+    ).all()
+    return float(sum((r[0] or 0.0) for r in rows))
+
+
 def _to_out(session: Session, combine: Combine) -> CombineOut:
     snap = combine_snapshot(session, combine)
+    requested = _payouts_requested(session, combine.id)
+    available = max(0.0, snap.payout_eligible - requested)
     return CombineOut(
         id=combine.id,
         name=combine.name,
@@ -95,6 +133,10 @@ def _to_out(session: Session, combine: Combine) -> CombineOut:
         day_locked=snap.day_locked,
         profit_target=snap.profit_target,
         objective_progress=snap.objective_progress,
+        funded=snap.funded,
+        funded_at=snap.funded_at,
+        payout_eligible=available,
+        payout_requested=requested,
         created_at=combine.created_at,
     )
 
@@ -134,6 +176,41 @@ def list_combines(
         slots_used=sum(1 for c in combines if c.status != "archived"),
         slots_total=MAX_COMBINES,
     )
+
+
+@router.get("/events", response_model=list[CombineEventOut])
+def list_events(
+    limit: int = 50,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[CombineEventOut]:
+    """The user's recent lifecycle events across all combines, newest
+    first — funded / failed / settled / reset / payout. Drives the
+    dashboard live-feed. Note: most transitions are written lazily by
+    combine_snapshot on read, so polling account/state keeps this fresh."""
+    names = dict(
+        session.execute(
+            select(Combine.id, Combine.name).where(Combine.user_id == user.id)
+        ).all()
+    )
+    rows = session.execute(
+        select(CombineEvent)
+        .where(CombineEvent.user_id == user.id)
+        .order_by(CombineEvent.created_at.desc(), CombineEvent.id.desc())
+        .limit(max(1, min(limit, 200)))
+    ).scalars().all()
+    return [
+        CombineEventOut(
+            id=e.id,
+            combine_id=e.combine_id,
+            combine_name=names.get(e.combine_id),
+            type=e.type,
+            message=e.message,
+            amount=e.amount,
+            created_at=e.created_at,
+        )
+        for e in rows
+    ]
 
 
 @router.post("/purchase", response_model=CombineOut, status_code=201)
@@ -225,6 +302,63 @@ def archive_combine(
         session.commit()
         session.refresh(combine)
     return _to_out(session, combine)
+
+
+@router.post("/{combine_id}/reset", response_model=CombineOut)
+def reset_combine(
+    combine_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> CombineOut:
+    """Restart a FAILED evaluation. Stamps eval_reset_at (the engine then
+    counts only trades opened after it), re-baselines the HWM/MLL to the
+    tier start, and clears the outcome — the trade history is preserved."""
+    combine = _owned_combine(session, user, combine_id)
+    if combine.outcome != "failed":
+        raise HTTPException(409, "only a failed combine can be reset")
+    now = datetime.now(timezone.utc)
+    tier = TIERS[combine.tier]
+    combine.outcome = "active"
+    combine.funded_at = None
+    combine.eval_reset_at = now
+    combine.hwm = tier.starting_balance
+    combine.settled_hwm = tier.starting_balance
+    # Treat the reset instant as the day's settlement so the next read
+    # doesn't immediately log a spurious "settled" event.
+    combine.last_settled_at = now
+    record_event(session, combine, "reset", "Evaluation reset — fresh start.")
+    session.add(combine)
+    session.commit()
+    session.refresh(combine)
+    return _to_out(session, combine)
+
+
+@router.post("/{combine_id}/payout", response_model=PayoutOut)
+def request_payout(
+    combine_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> PayoutOut:
+    """Request a payout on a FUNDED account: the trader's 50% split of
+    realized profit, net of prior requests. Simulated — records a payout
+    event but moves no money (Stripe/banking lands with real pricing)."""
+    combine = _owned_combine(session, user, combine_id)
+    snap = combine_snapshot(session, combine)
+    if not snap.funded:
+        raise HTTPException(409, "account is not funded")
+    available = max(0.0, snap.payout_eligible - _payouts_requested(session, combine.id))
+    if available <= 0:
+        raise HTTPException(409, "no payout currently available")
+    now = datetime.now(timezone.utc)
+    record_event(
+        session,
+        combine,
+        "payout",
+        f"Payout requested — ${available:,.2f}.",
+        amount=available,
+    )
+    session.commit()
+    return PayoutOut(combine_id=combine.id, amount=available, requested_at=now)
 
 
 @router.post("/{combine_id}/activate")

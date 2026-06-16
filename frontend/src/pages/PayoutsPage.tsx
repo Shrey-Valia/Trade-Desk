@@ -1,0 +1,137 @@
+import { PageHeader } from "@/components/layout/PageHeader";
+import { MetricPill } from "@/components/ui/MetricPill";
+import { useCombines, useRequestPayout } from "@/hooks/useCombines";
+import type { CombineOut } from "@/types/combine";
+
+/**
+ * /payouts — funded-account payouts (Topstep's Payouts tab). Lists every
+ * FUNDED combine with its available payout (the trader's 50% split of
+ * realized profit, net of prior requests) and a request button. Simulated:
+ * requesting logs an event and moves no money (real banking lands with
+ * pricing/Stripe).
+ */
+export function PayoutsPage() {
+  const { data, isPending } = useCombines();
+  const all = data?.combines ?? [];
+  const funded = all.filter((c) => c.funded && c.status !== "archived");
+  const totalAvailable = funded.reduce((s, c) => s + c.payout_eligible, 0);
+  const totalRequested = funded.reduce((s, c) => s + c.payout_requested, 0);
+
+  return (
+    <div className="flex flex-col h-full min-h-0 bg-tier-0">
+      <PageHeader
+        title="Payouts"
+        subtitle="Funded accounts · trader keeps 50% of profit (simulated)"
+      />
+      <main className="flex-1 min-h-0 overflow-y-auto border-t border-hairline">
+        <div className="p-3.5 flex flex-col gap-3.5">
+          <div className="flex items-center gap-3 flex-wrap">
+            <MetricPill label="FUNDED ACCOUNTS" value={String(funded.length)} />
+            <MetricPill label="AVAILABLE" value={formatDollar(totalAvailable)} />
+            <MetricPill label="REQUESTED (LIFETIME)" value={formatDollar(totalRequested)} />
+          </div>
+
+          {isPending ? (
+            <div className="px-1 py-6 text-tiny text-fg-tertiary-2">Loading…</div>
+          ) : funded.length === 0 ? (
+            <div className="px-1 py-10 text-center text-tiny text-fg-tertiary-2">
+              No funded accounts yet. Pass an evaluation (profit target + min
+              trading days + consistency) and the account auto-funds — then
+              payouts appear here.
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {funded.map((c) => (
+                <PayoutRow key={c.id} combine={c} />
+              ))}
+            </div>
+          )}
+
+          <span className="text-tiny text-fg-tertiary leading-relaxed">
+            Payouts are simulated — requesting records the event and reduces
+            the available figure, but moves no real money. Real banking and
+            the final split land with pricing/Stripe.
+          </span>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function PayoutRow({ combine }: { combine: CombineOut }) {
+  const payout = useRequestPayout();
+  const available = combine.payout_eligible;
+  return (
+    <div
+      className="border border-hairline-strong bg-tier-1 flex items-center gap-4 px-3 py-2.5"
+      style={{ borderRadius: 4 }}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-fg-primary font-medium truncate" style={{ fontSize: 13 }}>
+            {combine.name}
+          </span>
+          <span
+            className="border border-bullish text-bullish px-1 uppercase tracking-label-up shrink-0"
+            style={{ fontSize: 8, borderRadius: 2 }}
+          >
+            funded
+          </span>
+        </div>
+        <div className="text-fg-tertiary-2 tabular-nums mt-0.5" style={{ fontSize: 10 }}>
+          {combine.tier} · {combine.account_code}
+        </div>
+      </div>
+      <Figure label="Realized profit" value={formatDollar(Math.max(0, combine.realized_pnl))} />
+      <Figure label="Requested" value={formatDollar(combine.payout_requested)} />
+      <Figure
+        label="Available"
+        value={formatDollar(available)}
+        tone={available > 0 ? "bullish" : undefined}
+      />
+      <button
+        type="button"
+        disabled={available <= 0 || payout.isPending}
+        onClick={() => payout.mutate(combine.id)}
+        className="h-8 px-3 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+        style={{ borderRadius: 0 }}
+      >
+        {payout.isPending ? "…" : "Request payout"}
+      </button>
+    </div>
+  );
+}
+
+function Figure({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "bullish";
+}) {
+  return (
+    <div className="flex flex-col items-end shrink-0" style={{ minWidth: 92 }}>
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 9 }}
+      >
+        {label}
+      </span>
+      <span
+        className={`text-tiny tabular-nums ${tone === "bullish" ? "text-bullish" : "text-fg-secondary"}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function formatDollar(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  return `$${v.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}

@@ -1,3 +1,4 @@
+import type { CombineEvent } from "@/types/combine";
 import type { FeedEvent, FeedTone } from "@/types/feed";
 import type { Trade } from "@/types/journal";
 import { STRATEGY_LABELS } from "@/types/journal";
@@ -47,6 +48,12 @@ function closeTone(realizedPnl: number): FeedTone {
   return "neutral";
 }
 
+function eventTone(type: string): FeedTone {
+  if (type === "funded" || type === "payout") return "bullish";
+  if (type === "failed") return "bearish";
+  return "neutral"; // settled, reset
+}
+
 function strategyLabel(strategy: string): string {
   return STRATEGY_LABELS[strategy] ?? strategy;
 }
@@ -67,9 +74,24 @@ function strategyLabel(strategy: string): string {
 export function buildFeedEvents(
   watchlist: WatchlistResponse | undefined,
   trades: Trade[],
+  lifecycle: CombineEvent[] = [],
   cap = 50,
 ): FeedEvent[] {
   const events: FeedEvent[] = [];
+
+  for (const e of lifecycle) {
+    const ts = Date.parse(e.created_at);
+    events.push({
+      kind: "lifecycle",
+      key: `event:${e.id}`,
+      ts: Number.isFinite(ts) ? ts : 0,
+      symbol: e.combine_name ?? "Account",
+      tone: eventTone(e.type),
+      eventType: e.type,
+      label: e.type,
+      detail: e.message,
+    });
+  }
 
   if (watchlist) {
     const signalTs = Date.parse(watchlist.updated_at);

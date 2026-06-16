@@ -3,20 +3,35 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   activateCombine,
   archiveCombine,
+  fetchCombineEvents,
   fetchCombines,
   purchaseCombine,
   renameCombine,
+  requestPayout,
+  resetCombine,
 } from "@/lib/api";
 import { useActivePosition } from "@/stores/activePosition";
 import type { PurchaseInput } from "@/types/combine";
 
 export const COMBINES_KEY = ["combines"] as const;
+export const COMBINE_EVENTS_KEY = ["combines", "events"] as const;
 const ACCOUNT_STATE_KEY = ["account", "state"] as const;
 
 export function useCombines() {
   return useQuery({
     queryKey: COMBINES_KEY,
     queryFn: fetchCombines,
+    staleTime: 10_000,
+  });
+}
+
+/** Recent lifecycle events (funded/failed/settled/reset/payout). Polls so
+ *  the dashboard live-feed surfaces milestones as the engine writes them. */
+export function useCombineEvents() {
+  return useQuery({
+    queryKey: COMBINE_EVENTS_KEY,
+    queryFn: fetchCombineEvents,
+    refetchInterval: 15_000,
     staleTime: 10_000,
   });
 }
@@ -55,6 +70,33 @@ export function useArchiveCombine() {
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: ["journal", "trades"] });
       clearActive();
+    },
+  });
+}
+
+/** Restart a failed evaluation. Refreshes combines + the active-combine
+ *  state + the events feed (a reset writes a reset event). */
+export function useResetCombine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => resetCombine(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: COMBINES_KEY });
+      qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
+      qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
+    },
+  });
+}
+
+/** Request a payout on a funded account (simulated). */
+export function useRequestPayout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => requestPayout(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: COMBINES_KEY });
+      qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
+      qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
     },
   });
 }

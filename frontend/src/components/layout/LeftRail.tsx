@@ -8,6 +8,7 @@ import {
   ChartIcon,
   DashboardIcon,
   JournalIcon,
+  PayoutsIcon,
   SettingsIcon,
 } from "./RailIcons";
 
@@ -23,6 +24,7 @@ interface RailItem {
 const TOP_ITEMS: RailItem[] = [
   { to: "/dashboard", label: "Home", icon: DashboardIcon },
   { to: "/accounts", label: "Accounts", icon: AccountsIcon },
+  { to: "/payouts", label: "Payouts", icon: PayoutsIcon },
   { to: "/positions", label: "Chart", icon: ChartIcon },
   { to: "/journal", label: "Journal", icon: JournalIcon },
   { to: "/analytics", label: "Analytics", icon: AnalyticsIcon },

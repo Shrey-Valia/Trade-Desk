@@ -1,14 +1,22 @@
 """Per-combine account math — the multi-user successor to the
-single-AccountState read path, now with the settlement engine folded in.
+single-AccountState read path, now with the settlement engine AND the
+funded-account lifecycle folded in.
 
 Same computation pattern as before, keyed by combine_id: realized P&L
 from closed trades, balance via the frozen compute_balance, a RUNNING
 HWM advanced monotonically intraday, and DLL from realized losses. On
-top of that this module now drives the combine settlement engine
+top of that this module drives the combine engine
 (services/combine_settlement): a lazy 5pm-PT settlement re-baselines the
 SETTLED HWM up, the MLL floor is computed from that settled HWM (so it
 is fixed intraday), the DLL window is the current 5pm-PT trading day,
 and the realized-based PASS/FAIL outcome is persisted on the combine.
+
+Lifecycle: passing the eval AUTO-FUNDS the account (funded_at stamped); a
+funded account accrues a payout (the trader's split of realized profit).
+A reset (after a fail) stamps `eval_reset_at` and the eval math here only
+counts trades opened at/after that point — the trade history is kept.
+Each meaningful transition (funded / failed / settled) is written to the
+combine_events ledger so the dashboard live-feed can show it.
 
 Used by both routers/account.py (active-combine snapshot) and
 routers/combines.py (per-card snapshots) so the numbers can't drift.
@@ -23,9 +31,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models.combine import Combine
+from models.combine_event import CombineEvent
 from models.trade import Trade
 from services.account_tiers import TIERS, compute_balance, compute_mll, update_hwm
-from services.combine_objectives import objective_progress, profit_target
+from services.combine_objectives import (
+    objective_progress,
+    payout_eligible,
+    profit_target,
+)
 from services.combine_settlement import (
     MIN_TRADING_DAYS,
     consistency_ok,
@@ -56,27 +69,42 @@ class CombineSnapshot:
     min_trading_days: int
     largest_day_profit: float
     consistency_ok: bool
+    # --- funded-account lifecycle ---
+    funded: bool
+    funded_at: datetime | None
+    payout_eligible: float
 
 
-def realized_sum_for_combine(session: Session, combine_id: int) -> float:
-    rows = session.execute(
+def realized_sum_for_combine(
+    session: Session, combine_id: int, since: datetime | None = None
+) -> float:
+    stmt = (
         select(Trade.realized_pnl)
         .where(Trade.combine_id == combine_id)
         .where(Trade.status == "closed")
-    ).all()
+    )
+    if since is not None:
+        stmt = stmt.where(Trade.entry_date >= since)
+    rows = session.execute(stmt).all()
     return float(sum((r[0] or 0.0) for r in rows))
 
 
-def _closed_exits(session: Session, combine_id: int) -> list[tuple[datetime, float]]:
+def _closed_exits(
+    session: Session, combine_id: int, since: datetime | None = None
+) -> list[tuple[datetime, float]]:
     """(exit_date, realized_pnl) for this combine's closed trades, exit
-    coerced to UTC-aware. Shared by the DLL window and the per-day buckets
-    so both read the same source."""
-    rows = session.execute(
+    coerced to UTC-aware. `since` (the combine's eval_reset_at) excludes
+    trades opened before an eval restart. Shared by the DLL window and the
+    per-day buckets so both read the same source."""
+    stmt = (
         select(Trade.exit_date, Trade.realized_pnl)
         .where(Trade.combine_id == combine_id)
         .where(Trade.status == "closed")
         .where(Trade.exit_date.is_not(None))
-    ).all()
+    )
+    if since is not None:
+        stmt = stmt.where(Trade.entry_date >= since)
+    rows = session.execute(stmt).all()
     out: list[tuple[datetime, float]] = []
     for exit_dt, pnl in rows:
         if exit_dt is None:
@@ -88,42 +116,63 @@ def _closed_exits(session: Session, combine_id: int) -> list[tuple[datetime, flo
 
 
 def dll_used_today_for_combine(
-    session: Session, combine_id: int, now: datetime
+    session: Session, combine_id: int, now: datetime, since: datetime | None = None
 ) -> float:
     """Today's realized loss on this combine within the current 5pm-PT
     trading-day window [trading_day_start, now], clamped to ≥0. Frontend
     folds open-position URPL in at display time for the live DLL test."""
     day_start = trading_day_start(now)
     today_realized = 0.0
-    for exit_dt, pnl in _closed_exits(session, combine_id):
+    for exit_dt, pnl in _closed_exits(session, combine_id, since):
         if exit_dt >= day_start:
             today_realized += pnl
     return max(0.0, -today_realized)
 
 
 def realized_by_trading_day(
-    session: Session, combine_id: int
+    session: Session, combine_id: int, since: datetime | None = None
 ) -> dict[datetime, float]:
     """Realized P&L on this combine bucketed by 5pm-PT trading day (keyed
     by the day's start instant). Drives the min-trading-days count and the
     consistency rule — both realized-based, like fail/settlement."""
     by_day: dict[datetime, float] = {}
-    for exit_dt, pnl in _closed_exits(session, combine_id):
+    for exit_dt, pnl in _closed_exits(session, combine_id, since):
         day = trading_day_start(exit_dt)
         by_day[day] = by_day.get(day, 0.0) + pnl
     return by_day
 
 
+def record_event(
+    session: Session,
+    combine: Combine,
+    type_: str,
+    message: str,
+    amount: float | None = None,
+) -> None:
+    """Append a row to the combine_events ledger. Caller owns the commit."""
+    session.add(
+        CombineEvent(
+            user_id=combine.user_id,
+            combine_id=combine.id,
+            type=type_,
+            message=message,
+            amount=amount,
+        )
+    )
+
+
 def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     """Full computed state for one combine. Advances the persisted RUNNING
     HWM monotonically (realized-only), runs the lazy 5pm-PT settlement,
-    computes the fixed-intraday MLL floor, and persists a realized-based
-    PASS/FAIL outcome. All persisted decisions are realized-based; the
-    frontend folds live URPL in for display only."""
+    computes the fixed-intraday MLL floor, persists a realized-based
+    PASS/FAIL outcome, AUTO-FUNDS on a pass, and logs each transition. All
+    persisted decisions are realized-based; the frontend folds live URPL in
+    for display only."""
     tier = TIERS[combine.tier]
     now = datetime.now(timezone.utc)
+    since = combine.eval_reset_at
 
-    realized = realized_sum_for_combine(session, combine.id)
+    realized = realized_sum_for_combine(session, combine.id, since)
     balance = compute_balance(tier.starting_balance, realized, 0.0)
     dirty = False
 
@@ -140,6 +189,7 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     if needs_settlement(combine.last_settled_at, now):
         combine.settled_hwm = settle_hwm(combine.settled_hwm, new_hwm)
         combine.last_settled_at = now
+        record_event(session, combine, "settled", "Daily settlement — MLL re-baselined.")
         dirty = True
 
     # MLL floor — FIXED intraday, from the SETTLED HWM. Only settlement
@@ -147,12 +197,12 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     mll = compute_mll(combine.tier, combine.settled_hwm)  # type: ignore[arg-type]
 
     # DLL — today's realized loss within the current 5pm-PT trading day.
-    dll_used = dll_used_today_for_combine(session, combine.id, now)
+    dll_used = dll_used_today_for_combine(session, combine.id, now, since)
     dll_budget = tier.dll_amount
     day_locked = dll_used >= dll_budget
 
     # PASS progress (realized-based), bucketed per 5pm-PT trading day.
-    by_day = realized_by_trading_day(session, combine.id)
+    by_day = realized_by_trading_day(session, combine.id, since)
     days_traded = len(by_day)
     total_realized = sum(by_day.values()) if by_day else 0.0
     largest_day_profit = max(by_day.values()) if by_day else 0.0
@@ -162,17 +212,31 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     min_days_met = days_traded >= MIN_TRADING_DAYS
 
     # Outcome precedence: FAILED is terminal (MLL breach) and wins; PASSED
-    # is permanent. We only transition an ACTIVE, non-archived combine —
-    # an already-decided or archived combine keeps its recorded outcome.
+    # is permanent and AUTO-FUNDS. We only transition an ACTIVE, non-archived
+    # combine — an already-decided or archived one keeps its recorded outcome.
     outcome = combine.outcome
     if outcome == "active" and combine.status != "archived":
         if balance <= mll:
             outcome = "failed"
+            combine.outcome = outcome
+            record_event(
+                session, combine, "failed", "Evaluation failed — MLL floor breached."
+            )
+            dirty = True
         elif target_met and min_days_met and consistency:
             outcome = "passed"
-        if outcome != combine.outcome:
             combine.outcome = outcome
+            combine.funded_at = now  # auto-fund on pass
+            record_event(
+                session,
+                combine,
+                "funded",
+                "Evaluation passed — account funded.",
+            )
             dirty = True
+
+    funded = combine.funded_at is not None
+    eligible = payout_eligible(realized, funded)
 
     if dirty:
         session.add(combine)
@@ -197,4 +261,7 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         min_trading_days=MIN_TRADING_DAYS,
         largest_day_profit=largest_day_profit,
         consistency_ok=consistency,
+        funded=funded,
+        funded_at=combine.funded_at,
+        payout_eligible=eligible,
     )

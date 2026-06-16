@@ -56,6 +56,15 @@ class Combine(Base):
     # the profit target + min-days + consistency passes). Kept separate from
     # `status` so archiving never erases the outcome.
     outcome: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    # When the evaluation passed and the account auto-funded. None until the
+    # combine passes; once set, the account is FUNDED and accrues payout.
+    funded_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # Eval restart point. A reset (after a fail) stamps this; the engine then
+    # counts only trades opened at/after it toward the eval — so the eval
+    # starts fresh while the trade HISTORY is preserved (rows are never deleted).
+    eval_reset_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,

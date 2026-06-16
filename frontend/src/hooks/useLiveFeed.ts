@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 
+import { useCombineEvents } from "@/hooks/useCombines";
 import { useTrades } from "@/hooks/useTrades";
 import { useWatchlist } from "@/hooks/useWatchlist";
 import { buildFeedEvents } from "@/lib/feed";
@@ -28,10 +29,16 @@ export interface LiveFeed {
 export function useLiveFeed(): LiveFeed {
   const watchlistQuery = useWatchlist();
   const tradesQuery = useTrades({}, { refetchInterval: 15_000 });
+  const eventsQuery = useCombineEvents();
 
   const events = useMemo(
-    () => buildFeedEvents(watchlistQuery.data, tradesQuery.data?.trades ?? []),
-    [watchlistQuery.data, tradesQuery.data],
+    () =>
+      buildFeedEvents(
+        watchlistQuery.data,
+        tradesQuery.data?.trades ?? [],
+        eventsQuery.data ?? [],
+      ),
+    [watchlistQuery.data, tradesQuery.data, eventsQuery.data],
   );
 
   const isLoading =

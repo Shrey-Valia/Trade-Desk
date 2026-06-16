@@ -4,6 +4,7 @@ import {
   useActivateCombine,
   useArchiveCombine,
   useRenameCombine,
+  useResetCombine,
 } from "@/hooks/useCombines";
 import type { CombineOut } from "@/types/combine";
 
@@ -47,10 +48,12 @@ function CombineCard({
   const activate = useActivateCombine();
   const archive = useArchiveCombine();
   const rename = useRenameCombine();
+  const reset = useResetCombine();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(combine.name);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const archived = combine.status === "archived";
+  const failed = combine.outcome === "failed";
 
   const commitRename = () => {
     const trimmed = name.trim();
@@ -121,6 +124,22 @@ function CombineCard({
               archived
             </span>
           )}
+          {combine.funded && (
+            <span
+              className="border border-bullish text-bullish px-1 uppercase tracking-label-up shrink-0"
+              style={{ fontSize: 8, borderRadius: 2 }}
+            >
+              funded
+            </span>
+          )}
+          {!combine.funded && failed && (
+            <span
+              className="border border-bearish text-bearish px-1 uppercase tracking-label-up shrink-0"
+              style={{ fontSize: 8, borderRadius: 2 }}
+            >
+              failed
+            </span>
+          )}
         </div>
         <div
           className="text-fg-tertiary-2 tabular-nums mt-0.5"
@@ -143,6 +162,13 @@ function CombineCard({
           }
         />
         <CardRow label="MLL" value={formatDollar(combine.mll)} />
+        {combine.funded && (
+          <CardRow
+            label="Payout avail."
+            value={formatDollar(combine.payout_eligible)}
+            tone={combine.payout_eligible > 0 ? "bullish" : undefined}
+          />
+        )}
         <div className="mt-1">
           <ProgressBar
             fraction={combine.objective_progress}
@@ -165,6 +191,18 @@ function CombineCard({
               style={{ borderRadius: 0 }}
             >
               Activate
+            </button>
+          )}
+          {failed && (
+            <button
+              type="button"
+              disabled={reset.isPending}
+              onClick={() => reset.mutate(combine.id)}
+              title="Restart the evaluation. Trade history is kept; the eval P&L starts fresh."
+              className="h-6 px-2 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-50"
+              style={{ borderRadius: 0 }}
+            >
+              Reset
             </button>
           )}
           <div className="ml-auto">

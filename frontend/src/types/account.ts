@@ -71,6 +71,10 @@ export const AccountStateSchema = z.object({
   profit_target: z.number().optional(),
   /** realized/target clamped to [0,1]. */
   objective_progress: z.number().optional(),
+  /** True once the eval passed (auto-funded). */
+  funded: z.boolean().default(false),
+  /** Trader's 50% split of realized profit (gross; Payouts page nets requests). */
+  payout_eligible: z.number().default(0),
   combines: z.array(CombineSummarySchema).optional(),
 });
 export type AccountState = z.infer<typeof AccountStateSchema>;

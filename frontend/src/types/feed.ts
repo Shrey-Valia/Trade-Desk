@@ -42,4 +42,15 @@ export type FeedEvent =
       realizedPnl: number;
       label: string;
       detail: string;
+    }
+  | {
+      kind: "lifecycle";
+      key: string;
+      ts: number;
+      symbol: string;
+      tone: FeedTone;
+      /** funded | failed | settled | reset | payout */
+      eventType: string;
+      label: string;
+      detail: string;
     };

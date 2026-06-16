@@ -46,6 +46,16 @@ export function AccountsIcon(props: IconProps) {
   );
 }
 
+export function PayoutsIcon(props: IconProps) {
+  // A coin with a dollar stroke — the payouts cue.
+  return (
+    <svg {...BASE_PROPS} {...props}>
+      <circle cx="10" cy="10" r="7" />
+      <path d="M10 6v8M12 8c0-0.9-0.9-1.4-2-1.4S8 7.1 8 8s.9 1.3 2 1.5 2 .6 2 1.5-.9 1.4-2 1.4-2-.5-2-1.4" />
+    </svg>
+  );
+}
+
 export function ChartIcon(props: IconProps) {
   // Two candlesticks with wicks — the price-chart product cue.
   return (

@@ -21,9 +21,22 @@ PROFIT_TARGETS: dict[str, float] = {
     "150K": 9_000.0,
 }
 
+# Trader's share of a funded account's profit, paid out on request. Set to
+# a 50/50 split per the owner's instruction (not an invented number). When
+# real pricing lands this can move per-tier; keep it one constant for now.
+PAYOUT_SPLIT: float = 0.50
+
 
 def profit_target(tier: str) -> float:
     return PROFIT_TARGETS.get(tier, 0.0)
+
+
+def payout_eligible(realized_pnl: float, funded: bool) -> float:
+    """Dollars a FUNDED account can request as a payout: the trader's split
+    of realized profit. Zero for accounts still in evaluation or in the red."""
+    if not funded:
+        return 0.0
+    return max(0.0, realized_pnl) * PAYOUT_SPLIT
 
 
 def objective_progress(tier: str, realized_pnl: float) -> float:

@@ -60,6 +60,7 @@ def init_db() -> None:
         account_state,
         auth_session,
         combine,
+        combine_event,
         historical_earnings_event,
         options_snapshot,
         payment,
@@ -134,6 +135,10 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("settled_hwm", "FLOAT NOT NULL DEFAULT 0"),
     ("last_settled_at", "DATETIME"),
     ("outcome", "VARCHAR(16) NOT NULL DEFAULT 'active'"),
+    # Funded-account lifecycle: when the eval passed (NULL = not funded) and
+    # the eval-restart point set by a reset (NULL = original eval).
+    ("funded_at", "DATETIME"),
+    ("eval_reset_at", "DATETIME"),
 ]
 
 

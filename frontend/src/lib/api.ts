@@ -53,10 +53,14 @@ import {
   type UserOut,
 } from "@/types/auth";
 import {
+  CombineEventSchema,
   CombineOutSchema,
   CombinesOutSchema,
+  PayoutOutSchema,
+  type CombineEvent,
   type CombineOut,
   type CombinesOut,
+  type PayoutOut,
   type PurchaseInput,
 } from "@/types/combine";
 import {
@@ -286,6 +290,18 @@ export const archiveCombine = (id: number): Promise<CombineOut> =>
 /** Returns the full account-state payload for direct cache swap. */
 export const activateCombine = (id: number): Promise<AccountState> =>
   mutate(`/api/combines/${id}/activate`, AccountStateSchema, { method: "POST" });
+
+/** Restart a failed evaluation (keeps trade history). */
+export const resetCombine = (id: number): Promise<CombineOut> =>
+  mutate(`/api/combines/${id}/reset`, CombineOutSchema, { method: "POST" });
+
+/** Request a payout on a funded account (simulated). */
+export const requestPayout = (id: number): Promise<PayoutOut> =>
+  mutate(`/api/combines/${id}/payout`, PayoutOutSchema, { method: "POST" });
+
+/** Recent lifecycle events across the user's combines (newest first). */
+export const fetchCombineEvents = (): Promise<CombineEvent[]> =>
+  request("/api/combines/events", z.array(CombineEventSchema));
 
 // -- auth --------------------------------------------------------------------
 

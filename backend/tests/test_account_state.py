@@ -412,6 +412,109 @@ def test_day_locked_at_dll_without_failing(auth_client):
 
 
 # ---------------------------------------------------------------------------
+# Funded-account lifecycle — auto-fund, reset, payout, events
+# ---------------------------------------------------------------------------
+
+
+def test_pass_auto_funds_and_accrues_payout(auth_client):
+    c = make_combine(auth_client, "50K")
+    # Two distinct days, target met (3_200 ≥ 3_000), consistency ok → passes.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_600, exit_at=_yesterday_et_noon()
+    )
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_600, exit_at=_today_et_noon()
+    )
+    r = auth_client.get("/api/account/state").json()
+    assert r["status"] == "passed"
+    assert r["funded"] is True
+    # 50/50 split of 3_200 realized profit.
+    assert r["payout_eligible"] == 1_600
+
+
+def test_reset_failed_combine_restarts_eval_and_keeps_history(auth_client):
+    c = make_combine(auth_client, "50K")
+    # -2_500 → balance 47_500 ≤ 48_000 floor → FAILED.
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-2_500)
+    assert auth_client.get("/api/account/state").json()["status"] == "failed"
+
+    rr = auth_client.post(f"/api/combines/{c['id']}/reset")
+    assert rr.status_code == 200
+    body = rr.json()
+    assert body["outcome"] == "active"
+    assert body["funded"] is False
+
+    state = auth_client.get("/api/account/state").json()
+    assert state["status"] == "active"
+    # The pre-reset trade is excluded from the eval (entry before eval_reset_at).
+    assert state["realized_pnl"] == 0
+    assert state["balance"] == 50_000
+    # History is preserved — the trade row still exists in the journal.
+    trades = auth_client.get("/api/journal/trades").json()["trades"]
+    assert len(trades) == 1
+
+
+def test_reset_rejected_when_not_failed(auth_client):
+    c = make_combine(auth_client, "50K")
+    r = auth_client.post(f"/api/combines/{c['id']}/reset")
+    assert r.status_code == 409
+
+
+def test_payout_request_nets_and_blocks_when_empty(auth_client):
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_600, exit_at=_yesterday_et_noon()
+    )
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_600, exit_at=_today_et_noon()
+    )
+    auth_client.get("/api/account/state")  # funds the account
+
+    p = auth_client.post(f"/api/combines/{c['id']}/payout")
+    assert p.status_code == 200
+    assert p.json()["amount"] == 1_600
+
+    # Available is now zero → a second request is blocked.
+    assert auth_client.post(f"/api/combines/{c['id']}/payout").status_code == 409
+
+    card = next(
+        x
+        for x in auth_client.get("/api/combines").json()["combines"]
+        if x["id"] == c["id"]
+    )
+    assert card["payout_requested"] == 1_600
+    assert card["payout_eligible"] == 0
+
+
+def test_payout_rejected_when_not_funded(auth_client):
+    c = make_combine(auth_client, "50K")
+    assert auth_client.post(f"/api/combines/{c['id']}/payout").status_code == 409
+
+
+def test_events_ledger_records_funded(auth_client):
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_600, exit_at=_yesterday_et_noon()
+    )
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_600, exit_at=_today_et_noon()
+    )
+    auth_client.get("/api/account/state")  # logs the funded event
+    events = auth_client.get("/api/combines/events").json()
+    assert any(e["type"] == "funded" for e in events)
+
+
+def test_events_ledger_records_failed_and_reset(auth_client):
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=-2_500)
+    auth_client.get("/api/account/state")  # logs failed
+    auth_client.post(f"/api/combines/{c['id']}/reset")  # logs reset
+    types = {e["type"] for e in auth_client.get("/api/combines/events").json()}
+    assert "failed" in types
+    assert "reset" in types
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 

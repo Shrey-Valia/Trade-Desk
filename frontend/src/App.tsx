@@ -9,6 +9,7 @@ import { DashboardPage } from "@/pages/DashboardPage";
 import { JournalPage } from "@/pages/JournalPage";
 import { LandingPage } from "@/pages/LandingPage";
 import { NewCombinePage } from "@/pages/NewCombinePage";
+import { PayoutsPage } from "@/pages/PayoutsPage";
 import { PositionsPage } from "@/pages/PositionsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SignInPage } from "@/pages/SignInPage";
@@ -51,6 +52,7 @@ export default function App() {
           <Route element={<RailShell />}>
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
+            <Route path="/payouts" element={<PayoutsPage />} />
             <Route path="/positions" element={<PositionsPage />} />
             <Route path="/combines/new" element={<NewCombinePage />} />
             <Route path="/journal" element={<JournalPage />} />
