@@ -19,6 +19,10 @@ export async function openZeroDteLeg(input: {
   const res = await fetch(`${API_BASE}/api/zerodte/open-leg`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    // Session-cookie auth — open-leg is gated by get_active_combine, so
+    // without this the POST is anonymous and 401s "not authenticated"
+    // even when the user is signed in. Mirrors api.ts's mutate().
+    credentials: "include",
     body: JSON.stringify({
       symbol: input.symbol,
       side: input.side,

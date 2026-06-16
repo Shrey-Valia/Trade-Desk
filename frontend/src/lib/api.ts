@@ -400,6 +400,9 @@ export const fetchZeroDteMark = async (
   const res = await fetch(`${API_BASE}/api/zerodte/mark`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    // /mark is unauthenticated today, but send the cookie anyway for
+    // consistency with every other call (and in case it gets gated).
+    credentials: "include",
     body: JSON.stringify({
       position,
       elapsed_hours_override: elapsedHoursOverride ?? null,
