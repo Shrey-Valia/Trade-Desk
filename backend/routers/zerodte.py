@@ -36,6 +36,7 @@ from calculations.position_analytics import DEFAULT_IV
 from database import get_session
 from models.combine import Combine
 from services.auth import get_active_combine
+from services.combine_state import combine_snapshot
 from models.trade import Trade
 from schemas.journal import TradeOut, compute_net_debit_credit
 from services.alpaca_client import get_chain_snapshot, get_quotes
@@ -415,6 +416,26 @@ def _require_market_open() -> None:
         )
 
 
+def _require_tradeable(session: Session, combine: Combine) -> None:
+    """Enforce the combine's standing rules on the OPEN path — the rule
+    actually binds server-side, not just via the trade-ticket soft-gate.
+    Blocks a FAILED eval (MLL floor breached; must be reset) and a DAY
+    LOCK (today's DLL hit; lifts at the 5pm-PT settlement). A PASSED /
+    funded account is NOT blocked — it keeps trading to accrue payout.
+    Computing the snapshot here also persists any pending settlement."""
+    snap = combine_snapshot(session, combine)
+    if snap.outcome == "failed":
+        raise HTTPException(
+            status_code=403,
+            detail="Combine FAILED — the MLL floor was breached. Reset the evaluation to trade again.",
+        )
+    if snap.day_locked:
+        raise HTTPException(
+            status_code=403,
+            detail="Daily loss limit hit — no further trading today. The day-lock lifts at the 5pm-PT settlement.",
+        )
+
+
 def _require_today_expiry(target_expiry: date) -> None:
     """0DTE-only rule: the contract must expire TODAY. Earlier the chain
     fallback picked the nearest future expiry when 0DTE wasn't listed;
@@ -446,6 +467,7 @@ def open_zerodte_straddle(
     Strict 0DTE — refuses to open if today's expiry isn't listed.
     Refuses to open if the NYSE session is not OPEN."""
     _require_market_open()
+    _require_tradeable(session, combine)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
     _require_today_expiry(expiry)
 
@@ -522,6 +544,7 @@ def open_zerodte_leg(
     Strict 0DTE: today's expiry must be listed for `symbol`. Refuses to
     open if the NYSE session is not OPEN."""
     _require_market_open()
+    _require_tradeable(session, combine)
     sym = payload.symbol.upper().strip()
     chain = get_chain_snapshot(sym, with_volume=False)
     if not chain:

@@ -14,6 +14,7 @@ from jobs.collect_options_chain import collect_options_chain
 from jobs.prewarm_hot_tickers import prewarm_hot_tickers
 from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
+from jobs.settle_combines import settle_combines
 from routers import account as account_router
 from routers import analytics as analytics_router
 from routers import auth as auth_router
@@ -119,6 +120,17 @@ async def lifespan(app: FastAPI):
             timezone="America/New_York",
         ),
         id="symbol_catalog_refresh",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    # Combine settlement / auto-fail / auto-fund every 5 minutes so the
+    # rules fire on a clock, not only when account state is read. DB+CPU
+    # only (no network), so the short interval is cheap; idempotent.
+    scheduler.add_job(
+        settle_combines,
+        trigger=IntervalTrigger(minutes=5),
+        id="settle_combines",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,
