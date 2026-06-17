@@ -30,6 +30,17 @@ def _fast_bcrypt():
     settings.bcrypt_rounds = prior
 
 
+@pytest.fixture(autouse=True)
+def _reset_auth_rate_limiter():
+    """The auth limiter is process-global; clear it between tests so hits
+    from earlier cases (all sharing the TestClient host) don't bleed over."""
+    from services.rate_limit import auth_limiter
+
+    auth_limiter.reset()
+    yield
+    auth_limiter.reset()
+
+
 @pytest.fixture
 def db_engine():
     # Import models so they register on Base.metadata before create_all.

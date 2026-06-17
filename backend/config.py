@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     stripe_cancel_url: str = "http://localhost:5173/dashboard?purchase=cancelled"
 
     # ---------------------------------------------------------------------
+    # Auth brute-force throttle. Per-IP, per-endpoint fixed window: at most
+    # `attempts` signin/signup tries per `window_s` seconds before a 429.
+    # Set attempts <= 0 to disable (e.g. behind an upstream rate limiter).
+    auth_rate_limit_attempts: int = 10
+    auth_rate_limit_window_s: int = 60
+
+    # ---------------------------------------------------------------------
     # 0DTE-eligible universe — the ONLY symbols Trade Desk allows users
     # to open positions on. Same-day-expiry options are limited to a
     # narrow set in practice; this allowlist gates the symbol search and
