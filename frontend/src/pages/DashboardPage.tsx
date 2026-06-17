@@ -14,10 +14,6 @@ import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
 /**
  * /dashboard — the prop-firm management home (Topstep-style).
  *
- * (This file previously held the retired Analysis-mode dashboard — a
- * thin CalendarStrip/WatchlistColumn/StockDetailView composition; those
- * components remain on disk, and the old composition lives in git.)
- *
  * Top: active-combine summary pills + Start a Trading Combine CTA.
  * Middle: account balance over time (closed-trade equity offset to
  * absolute balance) + performance tracker, with the Path to Funding

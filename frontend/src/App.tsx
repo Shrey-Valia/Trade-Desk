@@ -14,7 +14,6 @@ import { PositionsPage } from "@/pages/PositionsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SignInPage } from "@/pages/SignInPage";
 import { SignUpPage } from "@/pages/SignUpPage";
-import { WatchlistPage } from "@/pages/WatchlistPage";
 import { useMe } from "@/hooks/useAuth";
 import { useUserSettings } from "@/stores/userSettings";
 
@@ -57,7 +56,6 @@ export default function App() {
             <Route path="/combines/new" element={<NewCombinePage />} />
             <Route path="/journal" element={<JournalPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
-            <Route path="/watchlist" element={<WatchlistPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Route>

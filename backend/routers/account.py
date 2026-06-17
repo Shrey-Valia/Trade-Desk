@@ -1,7 +1,6 @@
 """Account state — the active combine's snapshot for the terminal header.
 
 GET  /api/account/state          active combine's computed snapshot
-POST /api/account/state/switch   LEGACY tier-switch (see below)
 
 Multi-user world: state is computed per the signed-in user's active
 COMBINE (services/combine_state), not a global AccountState row. The
@@ -11,10 +10,7 @@ combine list for the header switcher.
 
 Zero combines (fresh signup, or everything archived) → 404
 "no active combine" — the frontend renders its purchase CTA off that.
-
-POST /state/switch is kept for back-compat with the old TierPill: it
-activates the user's newest non-archived combine of the requested tier.
-New code should use POST /api/combines/{id}/activate. Deprecated.
+Combine switching lives in POST /api/combines/{id}/activate.
 """
 
 from __future__ import annotations
@@ -122,10 +118,6 @@ class AccountStateOut(BaseModel):
     combines: list[CombineSummary]
 
 
-class SwitchTierRequest(BaseModel):
-    tier: Literal["50K", "100K", "150K"]
-
-
 @router.get("/state", response_model=AccountStateOut)
 def get_account_state(
     user: User = Depends(get_current_user),
@@ -176,33 +168,6 @@ def get_account_state(
             for c in all_combines
         ],
     )
-
-
-@router.post("/state/switch", response_model=AccountStateOut)
-def switch_tier(
-    payload: SwitchTierRequest,
-    user: User = Depends(get_current_user),
-    session: Session = Depends(get_session),
-) -> AccountStateOut:
-    """DEPRECATED back-compat shim for the pre-combine TierPill —
-    activates the newest non-archived combine of the requested tier.
-    Use POST /api/combines/{id}/activate instead."""
-    combine = session.execute(
-        select(Combine)
-        .where(
-            Combine.user_id == user.id,
-            Combine.tier == payload.tier,
-            Combine.status != "archived",
-        )
-        .order_by(Combine.created_at.desc(), Combine.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if combine is None:
-        raise HTTPException(404, f"no combine on tier {payload.tier}")
-    user.active_combine_id = combine.id
-    session.add(user)
-    session.commit()
-    return get_account_state(user=user, session=session)
 
 
 def _active_combine_or_404(session: Session, user: User) -> Combine:

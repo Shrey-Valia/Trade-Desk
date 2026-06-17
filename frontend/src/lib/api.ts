@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { BsResponseSchema, type BsResponse, type StrategyType } from "@/types/bs";
 import { CalendarResponseSchema, type CalendarResponse } from "@/types/calendar";
 import { ChartResponseSchema, type ChartResponse, type ChartTimeframe } from "@/types/chart";
 import {
@@ -10,9 +9,7 @@ import {
   type LiquidUniverse,
   type MarketStatus,
 } from "@/types/market";
-import { McResponseSchema, type McResponse } from "@/types/mc";
 import { MetricsResponseSchema, type MetricsResponse } from "@/types/metrics";
-import { ModelSignalsResponseSchema, type ModelSignalsResponse } from "@/types/models";
 import {
   AnalyticsResponseSchema,
   type AnalyticsResponse,
@@ -24,11 +21,8 @@ import {
 import {
   ChainTableSchema,
   ZeroDteChainSchema,
-  ZeroDteMarkSchema,
   type ChainTable,
   type ZeroDteChain,
-  type ZeroDteMark,
-  type ZeroDtePosition,
 } from "@/types/zerodte";
 import {
   TradeAnalyticsSchema,
@@ -42,7 +36,6 @@ import {
   type TradesResponse,
 } from "@/types/journal";
 import { NewsResponseSchema, type NewsResponse } from "@/types/news";
-import { SignalVerdictSchema, type SignalVerdict } from "@/types/signal";
 import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
 import { WatchlistResponseSchema, type WatchlistResponse } from "@/types/watchlist";
 import { AccountStateSchema, type AccountState } from "@/types/account";
@@ -142,29 +135,11 @@ export const fetchTickerMetrics = (symbol: string): Promise<MetricsResponse> =>
 export const fetchCalendar = (): Promise<CalendarResponse> =>
   request("/api/calendar", CalendarResponseSchema);
 
-export const fetchMonteCarlo = (symbol: string): Promise<McResponse> =>
-  request(`/api/mc/${encodeURIComponent(symbol)}`, McResponseSchema);
-
-export const fetchStrategyPayoff = (
-  symbol: string,
-  strategy: StrategyType,
-): Promise<BsResponse> =>
-  request(
-    `/api/bs/strategy/${encodeURIComponent(symbol)}/${strategy}`,
-    BsResponseSchema,
-  );
-
-export const fetchModelSignals = (symbol: string): Promise<ModelSignalsResponse> =>
-  request(`/api/models/${encodeURIComponent(symbol)}`, ModelSignalsResponseSchema);
-
 export const fetchMarketStatus = (): Promise<MarketStatus> =>
   request("/api/market/status", MarketStatusSchema);
 
 export const fetchMarketIndices = (): Promise<IndicesResponse> =>
   request("/api/market/indices", IndicesResponseSchema);
-
-export const fetchSignal = (symbol: string): Promise<SignalVerdict> =>
-  request(`/api/signal/${encodeURIComponent(symbol)}`, SignalVerdictSchema);
 
 export const fetchLiquidUniverse = (): Promise<LiquidUniverse> =>
   request("/api/market/liquid_universe", LiquidUniverseSchema);
@@ -406,27 +381,6 @@ export const openZeroDteStraddle = (
     method: "POST",
     body: JSON.stringify({ symbol, action, contracts }),
   });
-
-/** Legacy /mark endpoint — still used by the standalone ZeroDtePage
- * (now unlinked from the rail but kept on disk during the transition). */
-export const fetchZeroDteMark = async (
-  position: ZeroDtePosition,
-  elapsedHoursOverride?: number | null,
-): Promise<ZeroDteMark> => {
-  const res = await fetch(`${API_BASE}/api/zerodte/mark`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    // /mark is unauthenticated today, but send the cookie anyway for
-    // consistency with every other call (and in case it gets gated).
-    credentials: "include",
-    body: JSON.stringify({
-      position,
-      elapsed_hours_override: elapsedHoursOverride ?? null,
-    }),
-  });
-  if (!res.ok) throw new Error(`mark failed: ${res.status} ${res.statusText}`);
-  return ZeroDteMarkSchema.parse(await res.json());
-};
 
 export const fetchJournalCalendar = (
   month: string,

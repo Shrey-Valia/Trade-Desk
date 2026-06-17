@@ -1,16 +1,13 @@
-"""ZERO-DTE — chain lookup, paper-open, and (legacy) mark endpoint.
-
-Three endpoints:
+"""ZERO-DTE — chain lookup and paper-open.
 
   GET  /api/zerodte/chain?symbol=  ATM call+put for the symbol expiring today
   POST /api/zerodte/open            create a paper long_straddle Trade record
-  POST /api/zerodte/mark            (legacy) reprice + breakevens at scrubbed T
+  POST /api/zerodte/open-leg        create a single-leg paper Trade
 
-After the chart-integration step, the FRONT-END drives 0DTE through the
-existing position pipeline: /open creates a Trade, and the chart's
-existing analytics endpoint (/api/journal/trades/{id}/analytics) is what
-polls for the live mark and intraday breakevens. /mark is kept for the
-legacy ZeroDtePage (unlinked from the rail but still on disk).
+The FRONT-END drives 0DTE through the existing position pipeline: /open
+creates a Trade, and the chart's analytics endpoint
+(/api/journal/trades/{id}/analytics) polls for the live mark and intraday
+breakevens.
 
 Intraday BS math lives in calculations/intraday_analytics — shared with
 the journal router's 0DTE branch. The engine file (black_scholes.py)
@@ -24,7 +21,6 @@ from datetime import date, datetime, time, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -620,167 +616,3 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         created_at=trade.created_at,
         updated_at=trade.updated_at,
     )
-
-
-# ---------------------------------------------------------------------------
-# Mark endpoint — reprice + breakevens at a (possibly scrubbed) time
-# ---------------------------------------------------------------------------
-
-
-class StraddlePosition(BaseModel):
-    """Open paper straddle. Sent up by the frontend with every /mark
-    request; backend is stateless about the position itself."""
-
-    strike: float = Field(gt=0)
-    entry_spot: float = Field(gt=0)
-    entry_call_price: float = Field(ge=0)
-    entry_put_price: float = Field(ge=0)
-    entry_time_iso: str
-    expiry_iso: str               # ISO date — today (or fallback)
-    contracts: int = Field(gt=0, default=1)
-
-
-class MarkRequest(BaseModel):
-    position: StraddlePosition
-    # Override for the scrubber. Hours ELAPSED since entry. When omitted,
-    # backend uses wall-clock now.
-    elapsed_hours_override: float | None = None
-    # Optional spot override — lets the frontend pass the candle the
-    # crosshair is on if we ever want what-if; for now we always use
-    # the live SPY quote.
-    spot_override: float | None = None
-
-
-class MarkOut(BaseModel):
-    spot: float
-    iv_used: float
-    t_years_now: float            # remaining
-    elapsed_hours: float          # since entry
-    decay_pct: float              # 0..1 fraction of session burned
-    mark_call: float
-    mark_put: float
-    mark_total: float             # per-share value of the straddle now
-    cost_basis: float             # per-share entry premium total
-    upl_dollar: float             # contracts × 100 × (mark_total − cost_basis)
-    breakevens_today: list[float]
-    breakevens_expiration: list[float]
-    session_close_iso: str
-
-
-@router.post("/mark", response_model=MarkOut)
-def get_mark(req: MarkRequest) -> MarkOut:
-    pos = req.position
-
-    # Live spot — for the prototype we always fetch fresh. spot_override
-    # is reserved for a "what-if" UI we don't build yet.
-    if req.spot_override is not None:
-        spot = float(req.spot_override)
-    else:
-        quote = get_quotes(["SPY"]).get("SPY")
-        if quote is None:
-            raise HTTPException(503, "SPY quote unavailable")
-        spot = float(quote.price)
-
-    try:
-        rate = latest_dgs3mo_rate()
-    except Exception:  # noqa: BLE001
-        rate = 0.045
-
-    # Time math.
-    entry_dt = datetime.fromisoformat(pos.entry_time_iso)
-    if entry_dt.tzinfo is None:
-        entry_dt = entry_dt.replace(tzinfo=_ET)
-    else:
-        entry_dt = entry_dt.astimezone(_ET)
-    # The expiry date is "today" (or fallback). Convert to a 4pm ET dt.
-    try:
-        expiry_d = date.fromisoformat(pos.expiry_iso)
-    except ValueError:
-        expiry_d = datetime.now(_ET).date()
-    expiry_dt = datetime.combine(expiry_d, time(*_CLOSE_HHMM), tzinfo=_ET)
-
-    t_at_entry_years = max((expiry_dt - entry_dt).total_seconds(), 60.0) / SECONDS_PER_YEAR
-
-    if req.elapsed_hours_override is not None:
-        elapsed_hours = max(0.0, float(req.elapsed_hours_override))
-        elapsed_seconds = elapsed_hours * 3600
-    else:
-        now_et = datetime.now(_ET)
-        elapsed_seconds = max(0.0, (now_et - entry_dt).total_seconds())
-        elapsed_hours = elapsed_seconds / 3600
-
-    # Remaining T from entry-time perspective.
-    remaining_seconds = max(60.0, (expiry_dt - entry_dt).total_seconds() - elapsed_seconds)
-    t_years_now = remaining_seconds / SECONDS_PER_YEAR
-
-    # Session decay percentage — same denominator as the entry T so the
-    # bar fills 0 → 100% as the scrubber sweeps entry → close.
-    total_seconds_to_expiry_at_entry = max(60.0, (expiry_dt - entry_dt).total_seconds())
-    decay_pct = min(1.0, elapsed_seconds / total_seconds_to_expiry_at_entry)
-
-    # IV — back-solve from the entry call+put. Median of the two; if
-    # either fails (e.g. entry price exactly zero), fall back to the
-    # other or to DEFAULT_IV. Same defensive pattern as the rest of
-    # position_analytics.
-    iv_call = iv_intraday(
-        pos.entry_call_price, pos.entry_spot, pos.strike,
-        t_at_entry_years, rate, "call",
-    )
-    iv_put = iv_intraday(
-        pos.entry_put_price, pos.entry_spot, pos.strike,
-        t_at_entry_years, rate, "put",
-    )
-    candidates = [v for v in (iv_call, iv_put) if v is not None]
-    iv_used = (sum(candidates) / len(candidates)) if candidates else DEFAULT_IV
-
-    # Reprice both legs at the current (scrubbed) T.
-    mark_call = bs_intraday(spot, pos.strike, t_years_now, rate, iv_used, "call")
-    mark_put = bs_intraday(spot, pos.strike, t_years_now, rate, iv_used, "put")
-    mark_total = mark_call + mark_put
-    cost_basis = pos.entry_call_price + pos.entry_put_price
-    upl_dollar = (mark_total - cost_basis) * pos.contracts * 100
-
-    # Today's breakevens — where the straddle's CURRENT value across
-    # spot equals the cost basis. Grid scan ±10% around the strike.
-    grid_lo = pos.strike * 0.90
-    grid_hi = pos.strike * 1.10
-    prices = np.linspace(grid_lo, grid_hi, 101)
-    pnl_today = np.empty_like(prices)
-    for i, s in enumerate(prices):
-        c = bs_intraday(float(s), pos.strike, t_years_now, rate, iv_used, "call")
-        p = bs_intraday(float(s), pos.strike, t_years_now, rate, iv_used, "put")
-        pnl_today[i] = (c + p) - cost_basis
-    bes_today = _zero_crossings(prices, pnl_today)
-
-    # Expiration BEs — kink at strike ± total premium. Compute analytically
-    # so we don't depend on the grid resolution.
-    bes_expiration = sorted([pos.strike - cost_basis, pos.strike + cost_basis])
-
-    return MarkOut(
-        spot=spot,
-        iv_used=iv_used,
-        t_years_now=t_years_now,
-        elapsed_hours=elapsed_hours,
-        decay_pct=decay_pct,
-        mark_call=mark_call,
-        mark_put=mark_put,
-        mark_total=mark_total,
-        cost_basis=cost_basis,
-        upl_dollar=upl_dollar,
-        breakevens_today=bes_today,
-        breakevens_expiration=bes_expiration,
-        session_close_iso=expiry_dt.isoformat(),
-    )
-
-
-def _zero_crossings(prices: np.ndarray, pnl: np.ndarray) -> list[float]:
-    """Linear-interpolated zero crossings over a sampled curve."""
-    out: list[float] = []
-    for i in range(len(pnl) - 1):
-        a, b = float(pnl[i]), float(pnl[i + 1])
-        if a == 0:
-            out.append(float(prices[i]))
-        elif a * b < 0:
-            t = a / (a - b)
-            out.append(float(prices[i] + t * (prices[i + 1] - prices[i])))
-    return out

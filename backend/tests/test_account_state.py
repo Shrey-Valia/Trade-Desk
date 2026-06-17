@@ -134,29 +134,6 @@ def test_first_purchase_activates_and_state_reads_50k(auth_client):
     assert len(body["combines"]) == 1
 
 
-def test_legacy_switch_activates_combine_of_tier(auth_client):
-    make_combine(auth_client, "50K")
-    make_combine(auth_client, "100K")
-    r = auth_client.post("/api/account/state/switch", json={"tier": "100K"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["active_tier"] == "100K"
-    assert body["starting_balance"] == 100_000
-    assert body["mll"] == 96_000
-
-
-def test_legacy_switch_404_when_no_combine_on_tier(auth_client):
-    make_combine(auth_client, "50K")
-    r = auth_client.post("/api/account/state/switch", json={"tier": "150K"})
-    assert r.status_code == 404
-
-
-def test_switch_to_unknown_tier_fails(auth_client):
-    r = auth_client.post("/api/account/state/switch", json={"tier": "25K"})
-    # Pydantic Literal rejects with 422; that's the safer 4xx for us.
-    assert r.status_code in (400, 422)
-
-
 def test_balance_includes_realized_pnl_for_active_combine_only(auth_client):
     c50 = make_combine(auth_client, "50K")
     c100 = make_combine(auth_client, "100K")

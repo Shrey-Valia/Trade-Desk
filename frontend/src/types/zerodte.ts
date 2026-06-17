@@ -25,40 +25,6 @@ export const ZeroDteChainSchema = z.object({
 });
 export type ZeroDteChain = z.infer<typeof ZeroDteChainSchema>;
 
-export const ZeroDteMarkSchema = z.object({
-  spot: z.number(),
-  iv_used: z.number(),
-  t_years_now: z.number(),
-  elapsed_hours: z.number(),
-  decay_pct: z.number(),
-  mark_call: z.number(),
-  mark_put: z.number(),
-  mark_total: z.number(),
-  cost_basis: z.number(),
-  upl_dollar: z.number(),
-  breakevens_today: z.array(z.number()),
-  breakevens_expiration: z.array(z.number()),
-  session_close_iso: z.string(),
-});
-export type ZeroDteMark = z.infer<typeof ZeroDteMarkSchema>;
-
-/** What the frontend keeps in localStorage when a paper position is open. */
-export interface ZeroDtePosition {
-  strike: number;
-  entry_spot: number;
-  entry_call_price: number;
-  entry_put_price: number;
-  entry_time_iso: string;
-  expiry_iso: string;
-  contracts: number;
-}
-
-/** Session-level account state — paper only. */
-export interface ZeroDteAccount {
-  balance: number;
-  rpl: number;          // closed-position cumulative
-}
-
 export const STARTING_BALANCE = 10_000;
 
 // -- Chain table (trading-ticket grid) --------------------------------------

@@ -18,15 +18,10 @@ from routers import account as account_router
 from routers import analytics as analytics_router
 from routers import auth as auth_router
 from routers import combines as combines_router
-from routers import bs as bs_router
 from routers import calendar as calendar_router
 from routers import journal as journal_router
 from routers import market as market_router
-from routers import mc as mc_router
-from routers import models as models_router
 from routers import news as news_router
-from routers import regime as regime_router
-from routers import signal as signal_router
 from routers import ticker as ticker_router
 from routers import ticker_search as ticker_search_router
 from routers import user_browse as user_browse_router
@@ -182,13 +177,8 @@ app.add_middleware(
 app.include_router(watchlist_router.router)
 app.include_router(ticker_router.router)
 app.include_router(calendar_router.router)
-app.include_router(mc_router.router)
-app.include_router(bs_router.router)
-app.include_router(models_router.router)
 app.include_router(market_router.router)
 app.include_router(news_router.router)
-app.include_router(regime_router.router)
-app.include_router(signal_router.router)
 app.include_router(journal_router.router)
 app.include_router(analytics_router.router)
 app.include_router(zerodte_router.router)
