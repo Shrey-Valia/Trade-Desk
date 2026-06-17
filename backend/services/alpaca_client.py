@@ -28,6 +28,14 @@ from alpaca.trading.client import TradingClient
 from calculations.types import ContractRow
 from config import settings
 from services.cache import cache
+from services.resilience import resilient_call
+
+# All Alpaca SDK calls share ONE breaker: rate limits are account-wide, so a
+# 429 on the option feed means the stock feed is throttled too. One open
+# circuit short-circuits every Alpaca path for the cooldown, killing the
+# "too many requests" cascade. CircuitOpenError surfaces as the same graceful
+# "no data" the existing per-call try/except already returns.
+_ALPACA = "alpaca"
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +132,7 @@ def get_market_clock() -> MarketClock | None:
     if cached is not None:
         return cached
     try:
-        clock = _trading_client().get_clock()
+        clock = resilient_call(_ALPACA, lambda: _trading_client().get_clock())
         out = MarketClock(
             is_open=bool(clock.is_open),
             timestamp=_to_et(clock.timestamp),
@@ -166,7 +174,7 @@ def get_quotes(symbols: list[str]) -> dict[str, Quote]:
 
     client = _stock_client()
     req = StockSnapshotRequest(symbol_or_symbols=symbols)
-    raw = client.get_stock_snapshot(req)
+    raw = resilient_call(_ALPACA, lambda: client.get_stock_snapshot(req))
 
     out: dict[str, Quote] = {}
     for symbol, snap in raw.items():
@@ -211,12 +219,15 @@ def get_year_bars(symbol: str) -> list | None:
     start = datetime.combine(today_et - timedelta(days=365), time.min, tzinfo=_ET)
     client = _stock_client()
     try:
-        bars = client.get_stock_bars(
-            StockBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=TimeFrame.Day,
-                start=start,
-            )
+        bars = resilient_call(
+            _ALPACA,
+            lambda: client.get_stock_bars(
+                StockBarsRequest(
+                    symbol_or_symbols=symbol,
+                    timeframe=TimeFrame.Day,
+                    start=start,
+                )
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("year bars fetch failed for %s: %s", symbol, exc)
@@ -292,7 +303,7 @@ def _fetch_chain(symbol: str):
     client = _option_client()
     req = OptionChainRequest(underlying_symbol=symbol, feed=settings.alpaca_options_feed)
     try:
-        return client.get_option_chain(req)
+        return resilient_call(_ALPACA, lambda: client.get_option_chain(req))
     except Exception as exc:  # noqa: BLE001
         log.warning("alpaca chain fetch failed for %s: %s", symbol, exc)
         return None
@@ -322,7 +333,7 @@ def _sum_today_volume(occ_symbols: list[str], start: datetime) -> int:
             timeframe=TimeFrame.Day,
             start=start,
         )
-        bars = client.get_option_bars(req)
+        bars = resilient_call(_ALPACA, lambda: client.get_option_bars(req))
         # bars.data is dict[symbol, list[Bar]] in alpaca-py >= 0.30
         data = getattr(bars, "data", None) or {}
         for _, bar_list in data.items():
@@ -437,12 +448,15 @@ def _populate_per_contract_volume(
     for i in range(0, len(occ_symbols), _BAR_CHUNK):
         chunk = occ_symbols[i : i + _BAR_CHUNK]
         try:
-            bars = client.get_option_bars(
-                OptionBarsRequest(
-                    symbol_or_symbols=chunk,
-                    timeframe=TimeFrame.Day,
-                    start=today_start,
-                )
+            bars = resilient_call(
+                _ALPACA,
+                lambda: client.get_option_bars(
+                    OptionBarsRequest(
+                        symbol_or_symbols=chunk,
+                        timeframe=TimeFrame.Day,
+                        start=today_start,
+                    )
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("per-contract volume fetch chunk failed: %s", exc)
@@ -522,14 +536,17 @@ def get_bars(symbol: str, timeframe: str) -> list | None:
     start = datetime.combine(today_et - timedelta(days=lookback_days), time.min, tzinfo=_ET)
     client = _stock_client()
     try:
-        bars = client.get_stock_bars(
+        bars = resilient_call(
+            _ALPACA,
             # feed=IEX: free-tier real-time bars (was unspecified → SDK
             # default). Still ~15-min delayed on the free plan — this is a
             # feed choice, NOT a delay removal; "indicative pricing"
             # disclosures stay in place.
-            StockBarsRequest(
-                symbol_or_symbols=symbol, timeframe=tf, start=start, feed=DataFeed.IEX
-            )
+            lambda: client.get_stock_bars(
+                StockBarsRequest(
+                    symbol_or_symbols=symbol, timeframe=tf, start=start, feed=DataFeed.IEX
+                )
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("get_bars failed for %s @ %s: %s", symbol, timeframe, exc)
@@ -623,8 +640,11 @@ def get_news(symbol: str, limit: int = 20) -> list[dict]:
 
     try:
         # NewsRequest.symbols is a comma-separated STRING (not a list).
-        resp = _news_client().get_news(
-            NewsRequest(symbols=symbol, limit=limit, exclude_contentless=True)
+        resp = resilient_call(
+            _ALPACA,
+            lambda: _news_client().get_news(
+                NewsRequest(symbols=symbol, limit=limit, exclude_contentless=True)
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         # Negative-cache so repeated requests during an outage / 429 don't
