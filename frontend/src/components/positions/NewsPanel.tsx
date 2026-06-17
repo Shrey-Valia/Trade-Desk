@@ -65,7 +65,7 @@ export function NewsPanel({
   );
 }
 
-const CARD_WIDTH = 220;
+const CARD_WIDTH = 196;
 
 function NewsCard({ item }: { item: NewsItem }) {
   return (
@@ -73,28 +73,25 @@ function NewsCard({ item }: { item: NewsItem }) {
       href={item.url}
       target="_blank"
       rel="noopener noreferrer"
-      className="shrink-0 h-full flex flex-col gap-1.5 px-3 py-2 border-r border-hairline hover:bg-tier-2 transition-colors duration-100 tabular-nums"
+      className="shrink-0 h-full flex flex-col gap-1 px-3 py-1.5 border-r border-hairline hover:bg-tier-2 transition-colors duration-100 tabular-nums"
       style={{ width: CARD_WIDTH }}
       title={item.headline}
     >
       <Badge tone="cyan">{truncateSource(item.source) || "news"}</Badge>
+      {/* 2-line clamp + no summary: news reads as a quick-scan feature, not
+          a content wall. Full headline is in the title tooltip. */}
       <span
-        className="text-body text-fg-primary"
+        className="text-tiny text-fg-secondary"
         style={{
           display: "-webkit-box",
           WebkitBoxOrient: "vertical",
-          WebkitLineClamp: 3,
+          WebkitLineClamp: 2,
           overflow: "hidden",
         }}
       >
         {item.headline}
       </span>
-      {item.summary && (
-        <span className="text-tiny text-fg-tertiary-2 truncate">
-          {item.summary}
-        </span>
-      )}
-      <span className="text-tiny text-fg-tertiary mt-auto" style={{ fontSize: 11 }}>
+      <span className="text-tiny text-fg-tertiary mt-auto" style={{ fontSize: 10 }}>
         {relativeTime(item.created_at)}
       </span>
     </a>

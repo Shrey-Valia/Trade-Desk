@@ -64,10 +64,12 @@ export function BottomStrip() {
     return (
       <div
         className="border-t border-hairline bg-tier-0 shrink-0 flex flex-col"
-        style={{ height: 220 }}
+        style={{ height: 150 }}
       >
         <KeyLevelsInline symbol={symbol} />
         <TodayInline trades={trades} />
+        {/* News is a slim secondary feature here — capped height so it never
+            dominates the pre-trade view; the chart gets the freed space. */}
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-t border-hairline">
           <BottomNewsFeedTabs symbol={symbol} />
         </div>
