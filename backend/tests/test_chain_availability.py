@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from unittest.mock import patch
 
 import pytest
@@ -125,10 +124,11 @@ def test_bulk_returns_per_symbol_results():
 def test_bulk_uses_cache_for_known_symbols():
     """If a symbol is already cached, bulk shouldn't call
     has_zero_dte for it (cached fast-path)."""
-    today_iso = date.today().isoformat()
-    # Note: chain_availability uses NY date; for this test we accept
-    # one-day skew. The key shape matches what the production code
-    # writes.
+    # Use the SAME NY date the production code keys on (_today_et_iso) so
+    # the cache hit is deterministic regardless of the runner's local
+    # timezone — previously this used date.today() and flaked late-evening
+    # PT once the ET date had rolled over.
+    today_iso = chain_availability._today_et_iso()
     cache.set(f"has_0dte:SPY:{today_iso}", True, ttl_seconds=60)
     cache.set(f"has_0dte:QQQ:{today_iso}", False, ttl_seconds=60)
 
