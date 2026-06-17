@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { openZeroDteLeg } from "@/lib/zerodteOpen";
 import { useActivePosition } from "@/stores/activePosition";
+import { toast } from "@/stores/toast";
 
 /**
  * Click-a-strike-cell mutation. On success, invalidates trades and
@@ -18,6 +19,8 @@ export function useOpenZeroDteLeg() {
       // header BAL/MLL/RP&L update immediately instead of lagging.
       queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       setActiveTradeId(trade.id);
+      toast.success(`Position opened — ${trade.symbol}.`);
     },
+    onError: (e) => toast.error((e as Error)?.message || "Could not open position"),
   });
 }

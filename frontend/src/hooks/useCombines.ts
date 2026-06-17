@@ -11,7 +11,10 @@ import {
   resetCombine,
 } from "@/lib/api";
 import { useActivePosition } from "@/stores/activePosition";
+import { toast } from "@/stores/toast";
 import type { PurchaseInput } from "@/types/combine";
+
+const errMsg = (e: unknown) => (e as Error)?.message || "Something went wrong";
 
 export const COMBINES_KEY = ["combines"] as const;
 export const COMBINE_EVENTS_KEY = ["combines", "events"] as const;
@@ -40,11 +43,13 @@ export function usePurchaseCombine() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: PurchaseInput) => purchaseCombine(input),
-    onSuccess: () => {
+    onSuccess: (combine) => {
       qc.invalidateQueries({ queryKey: COMBINES_KEY });
       // First purchase auto-activates server-side → header state changes.
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
+      toast.success(`${combine.name} is ready to trade.`);
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 
@@ -70,7 +75,9 @@ export function useArchiveCombine() {
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: ["journal", "trades"] });
       clearActive();
+      toast.info("Combine archived.");
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 
@@ -84,7 +91,9 @@ export function useResetCombine() {
       qc.invalidateQueries({ queryKey: COMBINES_KEY });
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
+      toast.success("Evaluation reset — fresh start.");
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 
@@ -93,11 +102,13 @@ export function useRequestPayout() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => requestPayout(id),
-    onSuccess: () => {
+    onSuccess: (payout) => {
       qc.invalidateQueries({ queryKey: COMBINES_KEY });
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
+      toast.success(`Payout requested — $${payout.amount.toLocaleString()}.`);
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 

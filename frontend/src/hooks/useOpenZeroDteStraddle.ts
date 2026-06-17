@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { openZeroDteStraddle } from "@/lib/api";
 import { useActivePosition } from "@/stores/activePosition";
+import { toast } from "@/stores/toast";
 
 /**
  * Mutation hook for the "0DTE STRADDLE" quick-entry button.
@@ -35,6 +36,8 @@ export function useOpenZeroDteStraddle() {
       // BAL/MLL/RP&L update immediately.
       queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       setActiveTradeId(trade.id);
+      toast.success(`Straddle opened — ${trade.symbol}.`);
     },
+    onError: (e) => toast.error((e as Error)?.message || "Could not open straddle"),
   });
 }
