@@ -171,31 +171,6 @@ html:not([data-bg-gradient="off"]) body {
 .theta-scrubber:active::-moz-range-thumb { cursor: grabbing; }
 .theta-scrubber:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Thin hairline scrollbar for the bottom-row NEWS panel's horizontal
- * card scroller. Matches the dense terminal aesthetic: 8px track on the
- * body ground (#131722 = bg-tier-0) with a bg-tier-3 (#2A3142) thumb,
- * mirroring the design-system scrollbar convention. Firefox uses the
- * standardized scrollbar-* properties. */
-.news-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: #2A3142 #131722;
-}
-.news-scroll::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-.news-scroll::-webkit-scrollbar-track {
-  background: #131722;
-}
-.news-scroll::-webkit-scrollbar-thumb {
-  background: #2A3142;
-  border: 2px solid #131722;
-  border-radius: 0;
-}
-.news-scroll::-webkit-scrollbar-thumb:hover {
-  background: #3A4258;
-}
-
 /* Respect reduced-motion preference — opt-out users get instant state
  * changes rather than the 100ms opacity transitions used elsewhere. */
 @media (prefers-reduced-motion: reduce) {

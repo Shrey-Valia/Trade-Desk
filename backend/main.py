@@ -22,7 +22,6 @@ from routers import combines as combines_router
 from routers import calendar as calendar_router
 from routers import journal as journal_router
 from routers import market as market_router
-from routers import news as news_router
 from routers import payments as payments_router
 from routers import ticker as ticker_router
 from routers import ticker_search as ticker_search_router
@@ -191,7 +190,6 @@ app.include_router(watchlist_router.router)
 app.include_router(ticker_router.router)
 app.include_router(calendar_router.router)
 app.include_router(market_router.router)
-app.include_router(news_router.router)
 app.include_router(journal_router.router)
 app.include_router(analytics_router.router)
 app.include_router(zerodte_router.router)

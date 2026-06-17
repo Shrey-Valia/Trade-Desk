@@ -9,14 +9,12 @@ import { SIGNAL_BADGE } from "@/lib/feed";
 import type { FeedEvent, FeedTone } from "@/types/feed";
 
 /**
- * LIVE FEED — the bottom-strip tape that swaps in for NEWS. A unified,
- * newest-first list merging global watchlist signals with the user's own
- * trade opens/closes (see lib/feed.buildFeedEvents).
+ * LIVE FEED — the bottom-strip activity tape. A unified, newest-first list
+ * merging global watchlist signals, combine lifecycle events, and the
+ * user's own trade opens/closes (see lib/feed.buildFeedEvents).
  *
- * Renders the same fragment shape as NewsPanel (PanelHeader + body) so it
- * drops into both bottom-strip boxes. Unlike NewsPanel's horizontal cards
- * the body scrolls VERTICALLY, and each row is a two-line layout that
- * stays legible in the narrow ~90px col5 as well as the wide box.
+ * The body scrolls VERTICALLY, and each row is a two-line layout that stays
+ * legible in the narrow ~90px col5 as well as the wide pre-trade box.
  */
 export function LiveFeed({ headerControl }: { headerControl?: ReactNode }) {
   const { events, isLoading, isError, updatedAt, refetch } = useLiveFeed();

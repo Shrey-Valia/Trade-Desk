@@ -38,7 +38,6 @@ import {
   type TradeUpdateInput,
   type TradesResponse,
 } from "@/types/journal";
-import { NewsResponseSchema, type NewsResponse } from "@/types/news";
 import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
 import { WatchlistResponseSchema, type WatchlistResponse } from "@/types/watchlist";
 import { AccountStateSchema, type AccountState } from "@/types/account";
@@ -101,17 +100,6 @@ export const fetchWatchlist = (): Promise<WatchlistResponse> =>
 export const fetchTickerDetail = (symbol: string): Promise<TickerDetail> =>
   request(`/api/ticker/${encodeURIComponent(symbol)}/detail`, TickerDetailSchema);
 
-/** Ticker-scoped headlines. Server caches per symbol (5min); a 503 here
- *  means the upstream feed errored/rate-limited (distinct from an empty
- *  but successful `items: []`) and surfaces as react-query `isError`. */
-export const fetchTickerNews = (
-  symbol: string,
-  limit = 20,
-): Promise<NewsResponse> =>
-  request(
-    `/api/news?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
-    NewsResponseSchema,
-  );
 
 export const fetchTickerChart = (
   symbol: string,

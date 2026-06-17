@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { BottomNewsFeedTabs } from "@/components/positions/BottomNewsFeedTabs";
+import { LiveFeed } from "@/components/positions/LiveFeed";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
@@ -55,11 +55,9 @@ export function BottomStrip() {
   const liveAnalytics = liveAnalyticsQuery.data ?? null;
 
   // No active position → pre-execution strip: KEY LEVELS inline + a TODAY
-  // summary row, PLUS the NEWS panel so the user can read ticker news
-  // before deciding to open a trade. OPEN POSITION and THETA SCRUBBER stay
-  // hidden (empty placeholders without a trade). News reuses the same
-  // self-contained NewsPanel as the expanded grid — keyed on the active
-  // symbol (zero extra network); it just needs a flex-column height box.
+  // summary row, PLUS the live activity FEED (combine lifecycle events +
+  // the user's own opens/closes). OPEN POSITION and THETA SCRUBBER stay
+  // hidden (empty placeholders without a trade).
   if (!activeTrade) {
     return (
       <div
@@ -68,10 +66,8 @@ export function BottomStrip() {
       >
         <KeyLevelsInline symbol={symbol} />
         <TodayInline trades={trades} />
-        {/* News is a slim secondary feature here — capped height so it never
-            dominates the pre-trade view; the chart gets the freed space. */}
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-t border-hairline">
-          <BottomNewsFeedTabs symbol={symbol} />
+          <LiveFeed />
         </div>
       </div>
     );
@@ -83,7 +79,7 @@ export function BottomStrip() {
       style={{
         height: 280,
         // 5 equal columns — the original four shrink proportionally to
-        // make room for the NEWS panel; row height is unchanged.
+        // make room for the activity FEED; row height is unchanged.
         gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
       }}
     >
@@ -104,7 +100,7 @@ export function BottomStrip() {
         <TodayCol trades={trades} activeTradeId={activeTradeId} />
       </Column>
       <Column>
-        <BottomNewsFeedTabs symbol={symbol} />
+        <LiveFeed />
       </Column>
     </div>
   );

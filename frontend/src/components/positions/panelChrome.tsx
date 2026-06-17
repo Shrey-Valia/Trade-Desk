@@ -1,13 +1,12 @@
 import type { ReactNode } from "react";
 
 /**
- * Shared chrome for the bottom-strip NEWS / FEED panels so they stay
- * pixel-identical. Extracted from NewsPanel's former private `Header`.
+ * Shared chrome for the bottom-strip FEED panel.
  *
  * Exact replica of BottomStrip's ColHeader (1px hairline, bg-tier-1, the
  * 9–10px uppercase tracked label). The right slot carries the refreshed
- * relative-time label and, optionally, a `headerControl` (the NEWS/FEED
- * segmented toggle) rendered just to its left.
+ * relative-time label and, optionally, a `headerControl` rendered just to
+ * its left.
  */
 export function PanelHeader({
   left,
