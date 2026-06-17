@@ -23,6 +23,7 @@ from routers import calendar as calendar_router
 from routers import journal as journal_router
 from routers import market as market_router
 from routers import news as news_router
+from routers import payments as payments_router
 from routers import ticker as ticker_router
 from routers import ticker_search as ticker_search_router
 from routers import user_browse as user_browse_router
@@ -197,6 +198,7 @@ app.include_router(zerodte_router.router)
 app.include_router(account_router.router)
 app.include_router(auth_router.router)
 app.include_router(combines_router.router)
+app.include_router(payments_router.router)
 app.include_router(ticker_search_router.router)
 app.include_router(user_browse_router.router_user)
 app.include_router(user_browse_router.router_ticker)

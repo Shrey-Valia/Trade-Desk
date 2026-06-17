@@ -29,12 +29,10 @@ from models.payment import Payment
 from models.user import User
 from services.account_tiers import TIERS
 from services.auth import get_current_user
-from services.combine_objectives import generate_account_code
+from services.combine_provision import MAX_COMBINES, provision_combine
 from services.combine_state import combine_snapshot, record_event
 
 router = APIRouter(prefix="/api/combines", tags=["combines"])
-
-MAX_COMBINES = 5
 
 
 class CombineOut(BaseModel):
@@ -150,16 +148,6 @@ def _owned_combine(session: Session, user: User, combine_id: int) -> Combine:
     return combine
 
 
-def _slots_used(session: Session, user: User) -> int:
-    return len(
-        session.execute(
-            select(Combine.id).where(
-                Combine.user_id == user.id, Combine.status != "archived"
-            )
-        ).all()
-    )
-
-
 @router.get("", response_model=CombinesOut)
 def list_combines(
     user: User = Depends(get_current_user),
@@ -219,16 +207,10 @@ def purchase_combine(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
-    if _slots_used(session, user) >= MAX_COMBINES:
-        raise HTTPException(
-            409,
-            f"combine limit reached — you can hold at most {MAX_COMBINES} "
-            "combines; archive one to free a slot",
-        )
-    tier = TIERS[payload.tier]
-
-    # PLACEHOLDER — Stripe integration pending. Records the purchase
-    # event with no amount; the UI shows $XX until pricing is decided.
+    # PLACEHOLDER economics — used whenever Stripe is NOT configured (the
+    # free flow). Records a payment row with no amount; when Stripe is on,
+    # the frontend routes purchases through /api/payments/checkout instead
+    # and the combine is provisioned by the webhook with a real amount.
     payment = Payment(
         user_id=user.id,
         tier=payload.tier,
@@ -236,26 +218,9 @@ def purchase_combine(
         status="placeholder_paid",
     )
     session.add(payment)
-
-    combine = Combine(
-        user_id=user.id,
-        tier=payload.tier,
-        name=(payload.name or "").strip() or f"{payload.tier} Combine",
-        account_code=generate_account_code(session, payload.tier, user.id),
-        hwm=tier.starting_balance,
-        settled_hwm=tier.starting_balance,
-        status="active",
-        outcome="active",
+    combine = provision_combine(
+        session, user, tier_key=payload.tier, name=payload.name, payment=payment
     )
-    session.add(combine)
-    session.flush()
-    payment.combine_id = combine.id
-
-    # First combine auto-activates so the terminal works immediately.
-    if user.active_combine_id is None:
-        user.active_combine_id = combine.id
-        session.add(user)
-
     session.commit()
     session.refresh(combine)
     return _to_out(session, combine)

@@ -26,6 +26,7 @@ dependencies = [
     "scikit-learn>=1.5",
     "pyarrow>=17.0",  # parquet for OOS prediction stacking
     "bcrypt>=4.1",
+    "stripe>=11.0",  # payments (opt-in; imported lazily — see services/payments.py)
 ]
 
 [project.optional-dependencies]
@@ -47,7 +48,7 @@ build-backend = "setuptools.build_meta"
 # doesn't choke on the mixed layout.
 [tool.setuptools]
 py-modules = ["main", "config", "database"]
-packages = ["calculations", "jobs", "ml", "models", "routers", "schemas", "scripts", "services"]
+packages = ["calculations", "jobs", "models", "routers", "schemas", "scripts", "services"]
 
 [tool.black]
 line-length = 100
