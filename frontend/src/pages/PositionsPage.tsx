@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
 import { BottomStrip } from "@/components/positions/BottomStrip";
+import { ContractDetailPanel } from "@/components/positions/ContractDetailPanel";
 import { RightChain } from "@/components/positions/chain/RightChain";
 import { ChartToolbar } from "@/components/positions/ChartToolbar";
 import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
@@ -222,8 +223,9 @@ export function PositionsPage() {
           <div className="border-t border-hairline bg-tier-0 shrink-0">
             <TradeTicket />
           </div>
-          {/* Spacer absorbs any leftover vertical space below the ticket. */}
-          <div className="flex-1 bg-tier-0" />
+          {/* Below the ticket: the selected contract's detail (payoff +
+              greeks); falls back to an empty spacer when nothing's picked. */}
+          <ContractDetailPanel />
         </div>
       </div>
       <BottomStrip />

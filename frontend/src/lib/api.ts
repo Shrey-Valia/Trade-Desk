@@ -20,8 +20,11 @@ import {
 } from "@/types/calendar_journal";
 import {
   ChainTableSchema,
+  ContractPreviewSchema,
   ZeroDteChainSchema,
   type ChainTable,
+  type ContractPreview,
+  type ContractPreviewInput,
   type ZeroDteChain,
 } from "@/types/zerodte";
 import {
@@ -367,6 +370,15 @@ export const fetchChainTable = (
     `/api/zerodte/chain/table?symbol=${encodeURIComponent(symbol)}&strikes=${strikes}`,
     ChainTableSchema,
   );
+
+/** Pre-trade payoff + greeks for the selected contract (detail panel). */
+export const fetchContractPreview = (
+  input: ContractPreviewInput,
+): Promise<ContractPreview> =>
+  mutate("/api/zerodte/preview", ContractPreviewSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 
 /** Open an ATM straddle paper Trade on `symbol` expiring today.
  *  action="buy" = long straddle (debit); action="sell" = short straddle

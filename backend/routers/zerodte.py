@@ -29,6 +29,7 @@ from calculations.black_scholes import bs_greeks
 from calculations.intraday_analytics import (
     SECONDS_PER_YEAR,
     bs_intraday,
+    compute_contract_preview,
     iv_intraday,
 )
 from calculations.position_analytics import DEFAULT_IV
@@ -615,4 +616,120 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         r_multiple=trade.r_multiple,
         created_at=trade.created_at,
         updated_at=trade.updated_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pre-trade contract preview — payoff + greeks for the detail panel
+# ---------------------------------------------------------------------------
+
+
+class PreviewRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=16)
+    kind: Literal["leg", "straddle"] = "leg"
+    side: Literal["call", "put"] | None = None
+    strike: float = Field(gt=0)
+    contracts: int = Field(gt=0, le=100, default=1)
+
+
+class PreviewGreeks(BaseModel):
+    delta: float
+    gamma: float
+    theta: float
+    vega: float
+
+
+class ContractPreviewOut(BaseModel):
+    symbol: str
+    kind: str
+    side: str | None
+    strike: float
+    contracts: int
+    spot: float
+    iv: float
+    expiry: str
+    dte_label: str
+    entry_price: float                 # per-share net premium (debit)
+    cost: float                        # entry_price × 100 × contracts
+    open_interest: int | None
+    prices: list[float]
+    payoff_today: list[float]
+    payoff_expiration: list[float]
+    breakevens: list[float]
+    max_profit: float | None           # null = unbounded
+    max_loss: float
+    greeks: PreviewGreeks
+
+
+@router.post("/preview", response_model=ContractPreviewOut)
+def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
+    """The long (buy-side) payoff + greeks for a hypothetical contract,
+    feeding the trade-ticket's contract-detail panel. Resolves spot / ATM
+    IV / T-to-close / per-strike price via the chain table (so it matches
+    the chain UI and the indicative-price fallback), then computes the
+    payoff diagram from the intraday Black-Scholes engine."""
+    sym = payload.symbol.upper().strip()
+    # Reuse the chain-table resolver (cached) for spot, IV, T, prices, OI.
+    table = get_chain_table(symbol=sym, strikes=40)
+    spot = table.spot
+    iv = table.iv_used
+    t_close = table.t_years_to_close
+    try:
+        rate = latest_dgs3mo_rate()
+    except Exception:  # noqa: BLE001
+        rate = 0.045
+
+    row = next((r for r in table.rows if r.strike == payload.strike), None)
+
+    def _leg(side: str) -> dict:
+        if row is not None:
+            price = row.call_price if side == "call" else row.put_price
+            oi = row.call_open_interest if side == "call" else row.put_open_interest
+        else:
+            # Selected strike outside the window → price it off the engine.
+            price = bs_intraday(spot, payload.strike, t_close, rate, iv, side)
+            oi = None
+        return {
+            "side": side,
+            "action": "buy",
+            "strike": payload.strike,
+            "contracts": payload.contracts,
+            "entry_price": float(price),
+            "_oi": oi,
+        }
+
+    if payload.kind == "straddle":
+        legs = [_leg("call"), _leg("put")]
+        side_out: str | None = None
+        oi_out: int | None = None
+    else:
+        s = payload.side or "call"
+        legs = [_leg(s)]
+        side_out = s
+        oi_out = legs[0]["_oi"]
+
+    preview = compute_contract_preview(
+        spot=spot, rate=rate, iv=iv, t_now=t_close, legs=legs
+    )
+
+    return ContractPreviewOut(
+        symbol=sym,
+        kind=payload.kind,
+        side=side_out,
+        strike=payload.strike,
+        contracts=payload.contracts,
+        spot=spot,
+        iv=iv,
+        expiry=table.expiry,
+        dte_label="0DTE",
+        entry_price=preview.entry_price,
+        cost=preview.cost,
+        open_interest=oi_out,
+        prices=preview.prices,
+        payoff_today=preview.payoff_today,
+        payoff_expiration=preview.payoff_expiration,
+        breakevens=preview.breakevens,
+        max_profit=preview.max_profit,
+        max_loss=preview.max_loss,
+        greeks=PreviewGreeks(**preview.greeks),
     )

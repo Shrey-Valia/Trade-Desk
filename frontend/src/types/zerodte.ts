@@ -61,3 +61,48 @@ export const ChainTableSchema = z.object({
   notice: z.string(),
 });
 export type ChainTable = z.infer<typeof ChainTableSchema>;
+
+// -- Contract preview (the detail panel: payoff + greeks) -------------------
+
+export const ContractPreviewSchema = z.object({
+  symbol: z.string(),
+  kind: z.enum(["leg", "straddle"]),
+  side: z.enum(["call", "put"]).nullable(),
+  strike: z.number(),
+  contracts: z.number().int(),
+  spot: z.number(),
+  iv: z.number(),
+  expiry: z.string(),
+  dte_label: z.string(),
+  /** Per-share net premium (debit > 0). */
+  entry_price: z.number(),
+  /** entry_price × 100 × contracts. */
+  cost: z.number(),
+  open_interest: z.number().nullable(),
+  /** Underlying-price grid for the payoff curve (x-axis). */
+  prices: z.array(z.number()),
+  /** $ P&L at t_now across `prices`. */
+  payoff_today: z.array(z.number()),
+  /** $ P&L at expiration across `prices`. */
+  payoff_expiration: z.array(z.number()),
+  /** Expiration break-even price(s). */
+  breakevens: z.array(z.number()),
+  /** null = unbounded upside. */
+  max_profit: z.number().nullable(),
+  max_loss: z.number(),
+  greeks: z.object({
+    delta: z.number(),
+    gamma: z.number(),
+    theta: z.number(),
+    vega: z.number(),
+  }),
+});
+export type ContractPreview = z.infer<typeof ContractPreviewSchema>;
+
+export interface ContractPreviewInput {
+  symbol: string;
+  kind: "leg" | "straddle";
+  side?: "call" | "put";
+  strike: number;
+  contracts: number;
+}

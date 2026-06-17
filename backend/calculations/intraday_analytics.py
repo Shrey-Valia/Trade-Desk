@@ -19,6 +19,8 @@ Used by:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.optimize import brentq
 from scipy.stats import norm
@@ -109,3 +111,104 @@ def greeks_intraday(
         "theta": float(theta),
         "vega": float(vega),
     }
+
+
+CONTRACT_MULTIPLIER = 100
+PREVIEW_GRID_POINTS = 81
+
+
+def _zero_crossings(xs: np.ndarray, ys: np.ndarray) -> list[float]:
+    """Linear-interpolated zero crossings of ys over xs — the breakevens."""
+    out: list[float] = []
+    for i in range(len(ys) - 1):
+        a, b = float(ys[i]), float(ys[i + 1])
+        if a == 0:
+            out.append(float(xs[i]))
+        elif a * b < 0:
+            t = a / (a - b)
+            out.append(float(xs[i] + t * (xs[i + 1] - xs[i])))
+    return out
+
+
+@dataclass(frozen=True)
+class ContractPreview:
+    prices: list[float]
+    payoff_today: list[float]          # $ P&L at t_now across prices
+    payoff_expiration: list[float]     # $ P&L at expiry across prices
+    breakevens: list[float]            # expiration breakevens
+    max_profit: float | None           # None = unbounded (net long call)
+    max_loss: float                    # negative $ (the debit for long-only)
+    greeks: dict[str, float]           # aggregated delta/gamma/theta/vega
+    entry_price: float                 # per-share net premium (debit > 0)
+    cost: float                        # entry_price × 100 × contracts
+
+
+def compute_contract_preview(
+    *,
+    spot: float,
+    rate: float,
+    iv: float,
+    t_now: float,
+    legs: list[dict],
+) -> ContractPreview:
+    """Pre-trade payoff/greeks for a hypothetical position. `legs` are
+    dicts: {side: 'call'|'put', action: 'buy'|'sell', strike, contracts,
+    entry_price}. Mirrors the 0DTE math in routers/journal._intraday_analytics
+    but for a contract that hasn't been opened — drives the contract-detail
+    panel's payoff diagram. Per-share values × 100 = dollars."""
+    def _sign(leg: dict) -> int:
+        return 1 if str(leg.get("action", "buy")).lower() == "buy" else -1
+
+    def _value(s: float, t: float) -> float:
+        return sum(
+            _sign(l) * int(l["contracts"])
+            * bs_intraday(s, float(l["strike"]), t, rate, iv, str(l["side"]))
+            for l in legs
+        )
+
+    def _intrinsic(s: float) -> float:
+        total = 0.0
+        for l in legs:
+            k = float(l["strike"])
+            it = max(s - k, 0.0) if l["side"] == "call" else max(k - s, 0.0)
+            total += _sign(l) * int(l["contracts"]) * it
+        return total
+
+    prices = np.linspace(spot * 0.75, spot * 1.25, PREVIEW_GRID_POINTS)
+    cb_ps = sum(_sign(l) * int(l["contracts"]) * float(l["entry_price"]) for l in legs)
+
+    today_ps = np.array([_value(float(s), t_now) for s in prices]) - cb_ps
+    exp_ps = np.array([_intrinsic(float(s)) for s in prices]) - cb_ps
+    breakevens = _zero_crossings(prices, exp_ps)
+
+    greeks = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+    for l in legs:
+        g = greeks_intraday(spot, float(l["strike"]), t_now, rate, iv, str(l["side"]))
+        sign_qty = _sign(l) * int(l["contracts"])
+        for key in greeks:
+            greeks[key] += sign_qty * g[key]
+
+    # Long-only v1: max loss is the debit paid; gain is unbounded if any
+    # net-long call, otherwise the long put's intrinsic at S→0 minus cost.
+    cost = cb_ps * CONTRACT_MULTIPLIER
+    net_long_call = sum(
+        _sign(l) * int(l["contracts"]) for l in legs if l["side"] == "call"
+    )
+    if net_long_call > 0:
+        max_profit: float | None = None
+    else:
+        floor_at_zero = _intrinsic(0.0) - cb_ps
+        max_profit = float(floor_at_zero * CONTRACT_MULTIPLIER)
+    max_loss = float(min(0.0, -cost))
+
+    return ContractPreview(
+        prices=[float(p) for p in prices],
+        payoff_today=[float(v) for v in (today_ps * CONTRACT_MULTIPLIER)],
+        payoff_expiration=[float(v) for v in (exp_ps * CONTRACT_MULTIPLIER)],
+        breakevens=breakevens,
+        max_profit=max_profit,
+        max_loss=max_loss,
+        greeks={k: float(v) for k, v in greeks.items()},
+        entry_price=float(cb_ps),
+        cost=float(cost),
+    )

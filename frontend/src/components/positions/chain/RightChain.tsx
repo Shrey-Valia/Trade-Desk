@@ -63,10 +63,12 @@ export function RightChain({ symbol }: Props) {
 
   const chainErrMsg = isError ? (error as Error)?.message ?? "" : "";
   const noZeroDteToday = chainErrMsg.startsWith("No 0DTE for");
-  const readOnly = !marketOpen || noZeroDteToday;
+  // Cells are clickable to PREVIEW a contract (payoff/greeks in the detail
+  // panel) whenever a chain exists — even with the market closed. Trading
+  // (BUY/SELL) stays gated in the ticket; selecting is view-only.
 
   const onClickCall = (row: ChainStrikeRow) => {
-    if (readOnly || !data) return;
+    if (!data || noZeroDteToday) return;
     setSelection({
       kind: "leg",
       side: "call",
@@ -77,7 +79,7 @@ export function RightChain({ symbol }: Props) {
     });
   };
   const onClickPut = (row: ChainStrikeRow) => {
-    if (readOnly || !data) return;
+    if (!data || noZeroDteToday) return;
     setSelection({
       kind: "leg",
       side: "put",
@@ -88,7 +90,7 @@ export function RightChain({ symbol }: Props) {
     });
   };
   const onClickStrike = (row: ChainStrikeRow) => {
-    if (readOnly || !data) return;
+    if (!data || noZeroDteToday) return;
     if (row.is_atm) {
       setSelection({
         kind: "straddle",
@@ -126,7 +128,7 @@ export function RightChain({ symbol }: Props) {
           style={{ fontSize: 10 }}
           role="status"
         >
-          Market closed — chain is read-only until the next session
+          Market closed — indicative pricing; tap a contract to preview, trading resumes next session
         </div>
       )}
       <div
@@ -165,7 +167,7 @@ export function RightChain({ symbol }: Props) {
                 <Row
                   key={row.strike}
                   row={row}
-                  disabled={readOnly}
+                  disabled={noZeroDteToday}
                   selectedCall={selectedCall}
                   selectedPut={selectedPut}
                   showBottomRule={(idx + 1) % 5 === 0}
