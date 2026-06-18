@@ -102,6 +102,13 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # Multi-user shell — which combine instance owns this trade.
     # Backfilled from `tier` by _backfill_multiuser().
     ("combine_id", "INTEGER"),
+    # Limit/stop orders + SL/TP brackets. order_type defaults to 'market'
+    # so existing rows read as immediate fills; the rest are nullable.
+    ("order_type", "VARCHAR(8) NOT NULL DEFAULT 'market'"),
+    ("limit_price", "FLOAT"),
+    ("stop_loss", "FLOAT"),
+    ("take_profit", "FLOAT"),
+    ("close_reason", "VARCHAR(12)"),
 ]
 
 

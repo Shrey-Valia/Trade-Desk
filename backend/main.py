@@ -14,6 +14,7 @@ from jobs.collect_options_chain import collect_options_chain
 from jobs.prewarm_hot_tickers import prewarm_hot_tickers
 from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
+from jobs.monitor_orders import monitor_orders
 from jobs.settle_combines import settle_combines
 from routers import account as account_router
 from routers import analytics as analytics_router
@@ -131,6 +132,16 @@ async def lifespan(app: FastAPI):
         settle_combines,
         trigger=IntervalTrigger(minutes=5),
         id="settle_combines",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    # Order monitor — fill working limit/stop orders + auto-close SL/TP
+    # brackets every 20s during market hours. No-ops out of session.
+    scheduler.add_job(
+        monitor_orders,
+        trigger=IntervalTrigger(seconds=20),
+        id="monitor_orders",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,

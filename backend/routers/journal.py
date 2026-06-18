@@ -48,6 +48,7 @@ from schemas.calendar_journal import (
 )
 from schemas.journal import (
     AnalyticsGreeks,
+    BracketsUpdate,
     EXPECTED_LEG_COUNT,
     MISTAKE_TAG_VOCABULARY,
     TradeAnalyticsOut,
@@ -132,7 +133,7 @@ def create_trade(
 
 @router.get("/trades", response_model=TradesResponse)
 def list_trades(
-    status: Literal["open", "closed"] | None = None,
+    status: Literal["working", "open", "closed", "cancelled"] | None = None,
     is_paper: bool | None = None,
     symbol: str | None = None,
     combine_id: int | None = None,
@@ -191,6 +192,68 @@ def update_trade(
     if payload.review_note is not None:
         trade.review_note = payload.review_note
 
+    session.commit()
+    session.refresh(trade)
+    return _to_out(trade)
+
+
+# Min distance an SL/TP bracket must sit from the underlying — mirrors the
+# placement guard in routers/zerodte (0.1% of spot) so a bracket can't be
+# dragged on top of spot and insta-trigger.
+_MIN_BRACKET_FRAC = 0.001
+
+
+@router.put("/trades/{trade_id}/brackets", response_model=TradeOut)
+def set_brackets(
+    trade_id: int,
+    payload: BracketsUpdate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Set/clear the SL/TP underlying-price brackets on a working or open
+    trade (the draggable chart lines write here). PUT semantics: both sides
+    are replaced; a null side clears that bracket. The order monitor closes
+    the position when the underlying crosses a set level (OCO)."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status not in ("working", "open"):
+        raise HTTPException(409, "brackets can only be set on a working or open trade")
+
+    # Validate min distance from the live underlying (fall back to entry).
+    spot = trade.entry_underlying_price
+    try:
+        q = get_quotes([trade.symbol]).get(trade.symbol)
+        if q is not None:
+            spot = float(q.price)
+    except Exception:  # noqa: BLE001 — feed cold → use entry as reference
+        log.debug("brackets: quote fetch failed for %s", trade.symbol)
+    min_dist = max(spot * _MIN_BRACKET_FRAC, 0.01)
+    for label, level in (("stop_loss", payload.stop_loss), ("take_profit", payload.take_profit)):
+        if level is not None and abs(level - spot) < min_dist:
+            raise HTTPException(
+                422,
+                f"{label} {level:.2f} is too close to the underlying "
+                f"{spot:.2f} (min {min_dist:.2f} away).",
+            )
+
+    trade.stop_loss = payload.stop_loss
+    trade.take_profit = payload.take_profit
+    session.commit()
+    session.refresh(trade)
+    return _to_out(trade)
+
+
+@router.post("/trades/{trade_id}/cancel", response_model=TradeOut)
+def cancel_order(
+    trade_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Cancel a WORKING (unfilled limit/stop) order. No-op-safe: a trade
+    that isn't working returns 409 (only unfilled orders can be pulled)."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "working":
+        raise HTTPException(409, "only a working (unfilled) order can be cancelled")
+    trade.status = "cancelled"
     session.commit()
     session.refresh(trade)
     return _to_out(trade)
@@ -712,6 +775,11 @@ def _to_out(trade: Trade) -> TradeOut:
         is_paper=trade.is_paper,
         notes=trade.notes,
         tier=trade.tier,
+        order_type=trade.order_type,  # type: ignore[arg-type]
+        limit_price=trade.limit_price,
+        stop_loss=trade.stop_loss,
+        take_profit=trade.take_profit,
+        close_reason=trade.close_reason,  # type: ignore[arg-type]
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
         confidence=trade.confidence,

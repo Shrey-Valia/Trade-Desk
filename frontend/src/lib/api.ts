@@ -295,6 +295,21 @@ export const updateTrade = (id: number, patch: TradeUpdateInput): Promise<Trade>
     body: JSON.stringify(patch),
   });
 
+/** Set/clear SL/TP brackets (underlying price levels). PUT semantics: send
+ *  both each time — a null side clears that bracket. */
+export const setBrackets = (
+  id: number,
+  brackets: { stop_loss: number | null; take_profit: number | null },
+): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/brackets`, TradeOutSchema, {
+    method: "PUT",
+    body: JSON.stringify(brackets),
+  });
+
+/** Cancel a working (unfilled) limit/stop order. */
+export const cancelOrder = (id: number): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/cancel`, TradeOutSchema, { method: "POST" });
+
 export const deleteTrade = async (id: number): Promise<void> => {
   const res = await fetch(`${API_BASE}/api/journal/trades/${id}`, {
     method: "DELETE",

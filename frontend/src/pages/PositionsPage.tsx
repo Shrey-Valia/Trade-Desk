@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
+import type { BracketOverlay } from "@/components/stock/PositionBracketsLayer";
 import { BottomStrip } from "@/components/positions/BottomStrip";
 import { ContractDetailPanel } from "@/components/positions/ContractDetailPanel";
 import { RightChain } from "@/components/positions/chain/RightChain";
 import { ChartToolbar } from "@/components/positions/ChartToolbar";
 import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
 import { TradeTicket } from "@/components/positions/TradeTicket";
+import { WorkingOrders } from "@/components/positions/WorkingOrders";
 import { useTradeTicket } from "@/stores/tradeTicket";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
-import { useTrades } from "@/hooks/useTrades";
+import { useSetBrackets, useTrades } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
 import {
   useSelectedTicker,
@@ -79,6 +81,7 @@ export function PositionsPage() {
   const { data: account } = useAccountState();
   const activeTier = account?.active_tier ?? "50K";
   const { data: tradesData } = useTrades();
+  const setBracketsMutation = useSetBrackets();
   const trades = tradesData?.trades ?? [];
   // Filter active-trade resolution by the current tier — a trade
   // opened on tier A must not surface as the active position on
@@ -188,6 +191,25 @@ export function PositionsPage() {
     };
   }, [activeTrade, analyticsQuery.data, symbol, isIntraday, elapsedHours]);
 
+  // Draggable SL/TP brackets — only for an OPEN position on the charted
+  // symbol. Reads the committed levels off the trade row; drag-release /
+  // add / clear persists via the brackets endpoint.
+  const bracketsOverlay: BracketOverlay | null = useMemo(() => {
+    if (!activeTrade || activeTrade.status !== "open") return null;
+    if (activeTrade.symbol !== symbol || !analyticsQuery.data) return null;
+    const a = analyticsQuery.data;
+    return {
+      tradeId: activeTrade.id,
+      stopLoss: activeTrade.stop_loss ?? null,
+      takeProfit: activeTrade.take_profit ?? null,
+      entryUnderlying: activeTrade.entry_underlying_price,
+      spot: a.spot,
+      prices: a.prices,
+      payoffToday: a.payoff_today,
+      onChange: (b) => setBracketsMutation.mutate({ id: activeTrade.id, ...b }),
+    };
+  }, [activeTrade, analyticsQuery.data, symbol, setBracketsMutation]);
+
   return (
     <div className="flex flex-col h-full min-h-0">
       <TradeDeskHeader symbol={symbol} onSymbolChange={setSymbol} />
@@ -206,6 +228,7 @@ export function PositionsPage() {
               controlledTimeframe={{ value: timeframe, onChange: setTimeframe }}
               hideHeader
               position={chartOverlay}
+              brackets={bracketsOverlay}
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-fg-tertiary text-xs2">
@@ -223,6 +246,8 @@ export function PositionsPage() {
           <div className="border-t border-hairline bg-tier-0 shrink-0">
             <TradeTicket />
           </div>
+          {/* Resting limit/stop orders (hidden when none). */}
+          <WorkingOrders />
           {/* Below the ticket: the selected contract's detail (payoff +
               greeks); falls back to an empty spacer when nothing's picked. */}
           <ContractDetailPanel />

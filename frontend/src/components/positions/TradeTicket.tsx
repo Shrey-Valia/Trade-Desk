@@ -38,6 +38,10 @@ export function TradeTicket() {
   const selection = useTradeTicket((s) => s.selection);
   const contracts = useTradeTicket((s) => s.contracts);
   const setContracts = useTradeTicket((s) => s.setContracts);
+  const orderType = useTradeTicket((s) => s.orderType);
+  const setOrderType = useTradeTicket((s) => s.setOrderType);
+  const limitPrice = useTradeTicket((s) => s.limitPrice);
+  const setLimitPrice = useTradeTicket((s) => s.setLimitPrice);
   const clear = useTradeTicket((s) => s.clear);
 
   const legMutation = useOpenZeroDteLeg();
@@ -65,7 +69,13 @@ export function TradeTicket() {
   }, [legMutation.isError, legMutation.error, straddleMutation.isError, straddleMutation.error]);
 
   const hasSelection = !!selection;
-  const canFire = hasSelection && marketOpen && !pending && !locked;
+  // Order type only applies to single legs; the straddle quick-entry is
+  // always a market fill.
+  const isLeg = selection?.kind === "leg";
+  const effectiveOrderType = isLeg ? orderType : "market";
+  const needsLimit = effectiveOrderType !== "market";
+  const limitOk = !needsLimit || (limitPrice != null && limitPrice > 0);
+  const canFire = hasSelection && marketOpen && !pending && !locked && limitOk;
 
   // Synchronous double-click guard. The button's disabled prop tracks
   // mutation.isPending after react renders — but two synchronous clicks
@@ -103,6 +113,8 @@ export function TradeTicket() {
         strike: selection.strike,
         entry_price: selection.price,
         contracts,
+        order_type: effectiveOrderType,
+        limit_price: needsLimit ? limitPrice : null,
       },
       {
         onSuccess: () => clear(),
@@ -136,6 +148,14 @@ export function TradeTicket() {
       {passed && <PassedBanner />}
       {locked && <LockBanner reason={lockReason} />}
       <Summary selection={selection} contracts={contracts} />
+      {isLeg && (
+        <OrderTypeRow
+          orderType={orderType}
+          setOrderType={setOrderType}
+          limitPrice={limitPrice}
+          setLimitPrice={setLimitPrice}
+        />
+      )}
       <QuantityRow contracts={contracts} setContracts={setContracts} />
       <DllRiskHint selection={selection} contracts={contracts} />
       <Actions
@@ -340,6 +360,73 @@ function DllRiskHint({
       {pct > 100
         ? `exceeds remaining DLL ($${remaining.toFixed(0)})`
         : `${Math.round(pct)}% of remaining DLL`}
+    </div>
+  );
+}
+
+/**
+ * Order-type selector (Market | Limit | Stop) + a limit-price input that
+ * appears for limit/stop. The price is the OPTION premium the order fills
+ * against — a working order rests until the monitor sees the mark cross it.
+ */
+function OrderTypeRow({
+  orderType,
+  setOrderType,
+  limitPrice,
+  setLimitPrice,
+}: {
+  orderType: "market" | "limit" | "stop";
+  setOrderType: (t: "market" | "limit" | "stop") => void;
+  limitPrice: number | null;
+  setLimitPrice: (p: number | null) => void;
+}) {
+  const types: Array<"market" | "limit" | "stop"> = ["market", "limit", "stop"];
+  return (
+    <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0">
+      <div className="flex" style={{ gap: 4 }}>
+        {types.map((t) => {
+          const active = orderType === t;
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setOrderType(t)}
+              aria-pressed={active}
+              className={[
+                "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+                active
+                  ? "bg-tier-3 border border-amber text-amber"
+                  : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+              ].join(" ")}
+              style={{ height: 24, fontSize: 9 }}
+            >
+              {t}
+            </button>
+          );
+        })}
+      </div>
+      {orderType !== "market" && (
+        <label className="flex items-center gap-1 ml-auto" style={{ fontSize: 10 }}>
+          <span className="uppercase tracking-label-up text-fg-tertiary-2">
+            {orderType === "stop" ? "stop @" : "limit @"}
+          </span>
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            step={0.01}
+            value={limitPrice ?? ""}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setLimitPrice(Number.isFinite(v) ? v : null);
+            }}
+            placeholder="0.00"
+            aria-label="Limit price (option premium)"
+            className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+            style={{ width: 64, height: 24, fontSize: 12 }}
+          />
+        </label>
+      )}
     </div>
   );
 }

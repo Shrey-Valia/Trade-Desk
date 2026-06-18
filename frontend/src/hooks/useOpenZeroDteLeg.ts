@@ -18,8 +18,15 @@ export function useOpenZeroDteLeg() {
       // Account state polls every 5s; invalidating here makes the
       // header BAL/MLL/RP&L update immediately instead of lagging.
       queryClient.invalidateQueries({ queryKey: ["account", "state"] });
-      setActiveTradeId(trade.id);
-      toast.success(`Position opened — ${trade.symbol}.`);
+      if (trade.status === "working") {
+        // A resting limit/stop order — not yet a position, so don't make
+        // it the active chart position; it shows in the working-orders list.
+        const kind = trade.order_type === "stop" ? "Stop" : "Limit";
+        toast.success(`${kind} order placed — ${trade.symbol}.`);
+      } else {
+        setActiveTradeId(trade.id);
+        toast.success(`Position opened — ${trade.symbol}.`);
+      }
     },
     onError: (e) => toast.error((e as Error)?.message || "Could not open position"),
   });

@@ -31,6 +31,7 @@ import {
 } from "@/types/chart";
 
 import { ChartDrawingLayer } from "./ChartDrawingLayer";
+import { PositionBracketsLayer, type BracketOverlay } from "./PositionBracketsLayer";
 import { ChartLegend } from "./ChartLegend";
 
 const TIMEFRAMES: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
@@ -69,6 +70,8 @@ interface Props {
   /** Trade Desk Phase 2 — overlay the selected position's entry marker
    *  and theta-adjusted breakeven lines on the chart. */
   position?: PositionOverlay | null;
+  /** Draggable SL/TP brackets for the active OPEN position (null = none). */
+  brackets?: BracketOverlay | null;
 }
 
 /**
@@ -83,7 +86,7 @@ interface Props {
  * 1D timeframe renders as a line (intraday price path reads cleaner
  * than 1-min candles); multi-day timeframes render as candles.
  */
-export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, position }: Props) {
+export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, position, brackets }: Props) {
   const [internalTimeframe, setInternalTimeframe] = useState<ChartTimeframe>(
     DEFAULT_CHART_TIMEFRAME,
   );
@@ -160,6 +163,7 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
               annotations={annotationData ?? EMPTY_ANNOTATIONS}
               timeframe={timeframe}
               position={position ?? null}
+              brackets={brackets ?? null}
               quotePrice={quotePrice}
               marketOpen={marketOpen}
             />
@@ -196,6 +200,7 @@ interface ChartProps {
   annotations: ChartAnnotations;
   timeframe: ChartTimeframe;
   position: PositionOverlay | null;
+  brackets: BracketOverlay | null;
   /** Latest (delayed) quote from the shared header price query. */
   quotePrice?: number | null;
   /** Whether the market is open — gates the synthetic in-progress candle. */
@@ -208,6 +213,7 @@ function LightweightChart({
   annotations,
   timeframe,
   position,
+  brackets,
   quotePrice = null,
   marketOpen = false,
 }: ChartProps) {
@@ -587,6 +593,9 @@ function LightweightChart({
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
       <ChartDrawingLayer chartRef={chartRef} seriesRef={seriesRef} symbol={symbol} />
+      {brackets && (
+        <PositionBracketsLayer chartRef={chartRef} seriesRef={seriesRef} brackets={brackets} />
+      )}
     </div>
   );
 }
