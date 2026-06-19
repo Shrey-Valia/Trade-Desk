@@ -110,6 +110,8 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("stop_loss", "FLOAT"),
     ("take_profit", "FLOAT"),
     ("close_reason", "VARCHAR(12)"),
+    # Copy trading: the lead trade a mirrored row was copied from.
+    ("copied_from_trade_id", "INTEGER"),
 ]
 
 
@@ -155,8 +157,10 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("pricing_path", "VARCHAR(16) NOT NULL DEFAULT 'activation'"),
     ("profit_split", "FLOAT NOT NULL DEFAULT 0.8"),
     ("funded_activated_at", "DATETIME"),
-    # Copy trading: does this combine mirror the user's lead combine's trades.
+    # Copy trading: does this combine mirror the user's lead combine's trades,
+    # and the size multiplier applied before clamping to its cap.
     ("copy_follow", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("copy_multiplier", "FLOAT NOT NULL DEFAULT 1.0"),
 ]
 
 # Copy trading added a lead pointer to users. Same idempotent additive pattern.

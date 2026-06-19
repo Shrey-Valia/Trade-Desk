@@ -87,6 +87,9 @@ class CombineOut(BaseModel):
     copy_follow: bool = Field(
         ..., description="True if this combine mirrors the lead combine's trades."
     )
+    copy_multiplier: float = Field(
+        ..., description="Size multiplier applied to the lead's contracts before clamping."
+    )
     created_at: datetime
 
 
@@ -100,9 +103,14 @@ class CombinesOut(BaseModel):
     )
 
 
+class FollowerConfig(BaseModel):
+    combine_id: int
+    multiplier: float = Field(1.0, ge=0.1, le=10.0)
+
+
 class CopyConfigIn(BaseModel):
     lead_combine_id: int | None = None
-    follower_ids: list[int] = Field(default_factory=list)
+    followers: list[FollowerConfig] = Field(default_factory=list)
 
 
 class PurchaseIn(BaseModel):
@@ -182,6 +190,7 @@ def _to_out(session: Session, combine: Combine) -> CombineOut:
         activation_fee=snap.activation_fee,
         funded_activated=snap.funded_activated,
         copy_follow=combine.copy_follow,
+        copy_multiplier=combine.copy_multiplier,
         created_at=combine.created_at,
     )
 
@@ -269,14 +278,19 @@ def set_copy_config(
     lead = payload.lead_combine_id
     if lead is not None and lead not in owned:
         raise HTTPException(404, f"combine {lead} not found")
-    followers = {fid for fid in payload.follower_ids if fid != lead}
-    for fid in followers:
+    # combine_id → multiplier, excluding the lead (it can't follow itself).
+    fmap = {f.combine_id: f.multiplier for f in payload.followers if f.combine_id != lead}
+    for fid in fmap:
         if fid not in owned:
             raise HTTPException(404, f"combine {fid} not found")
 
     user.copy_lead_combine_id = lead
     for cid, combine in owned.items():
-        combine.copy_follow = cid in followers
+        if cid in fmap:
+            combine.copy_follow = True
+            combine.copy_multiplier = fmap[cid]
+        else:
+            combine.copy_follow = False
         session.add(combine)
     session.add(user)
     session.commit()

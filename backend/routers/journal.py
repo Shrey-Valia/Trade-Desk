@@ -61,6 +61,7 @@ from schemas.journal import (
 from services.alpaca_client import get_quotes
 from services.auth import get_active_combine, get_current_user
 from services.cache import cache
+from services.copy_trade import mirror_close
 from services.fred_client import latest_dgs3mo_rate
 
 router = APIRouter(prefix="/api/journal", tags=["journal"])
@@ -194,6 +195,9 @@ def update_trade(
 
     session.commit()
     session.refresh(trade)
+    # Copy trading: a lead close cascades to its follower copies (best-effort).
+    if trade.status == "closed":
+        mirror_close(session, trade)
     return _to_out(trade)
 
 

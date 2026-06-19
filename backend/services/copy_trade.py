@@ -90,9 +90,13 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             result.skipped.append((f.id, "daily loss limit hit"))
             continue
 
+        mult = f.copy_multiplier or 1.0
         legs = copy.deepcopy(lead_legs)
         for leg in legs:
-            leg["contracts"] = min(int(leg.get("contracts", 1)), cap)
+            # Apply the follower's multiplier, then clamp to its cap. Always
+            # at least 1 contract for an enabled follower.
+            scaled = max(1, round(int(leg.get("contracts", 1)) * mult))
+            leg["contracts"] = min(scaled, cap)
         net = compute_net_debit_credit([TradeLeg(**leg) for leg in legs])
 
         mirrored = Trade(
@@ -110,6 +114,7 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             notes=f"{lead_trade.notes or ''} · copied from {lead_combine.name}".strip(" ·"),
             tier=f.tier,
             combine_id=f.id,
+            copied_from_trade_id=lead_trade.id,
         )
         mirrored.legs = legs
         mirrored.tags = list(dict.fromkeys((lead_trade.tags or []) + ["copy"]))
@@ -127,3 +132,38 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             result.skipped,
         )
     return result
+
+
+def mirror_close(session: Session, lead_trade: Trade) -> int:
+    """Cascade a lead trade's close to its still-open follower copies.
+
+    Linked via Trade.copied_from_trade_id. Each follower's realized P&L is the
+    lead's scaled by the contract ratio (followers may hold fewer contracts
+    after the multiplier + cap clamp). Returns how many were closed."""
+    followers = session.execute(
+        select(Trade).where(
+            Trade.copied_from_trade_id == lead_trade.id,
+            Trade.status.in_(("open", "working")),
+        )
+    ).scalars().all()
+    if not followers:
+        return 0
+
+    lead_legs = lead_trade.legs or []
+    lead_contracts = int(lead_legs[0].get("contracts", 0)) if lead_legs else 0
+
+    for f in followers:
+        f_legs = f.legs or []
+        f_contracts = int(f_legs[0].get("contracts", 0)) if f_legs else 0
+        ratio = (f_contracts / lead_contracts) if lead_contracts else 1.0
+        f.status = "closed"
+        f.exit_date = lead_trade.exit_date
+        f.exit_underlying_price = lead_trade.exit_underlying_price
+        if lead_trade.realized_pnl is not None:
+            f.realized_pnl = round(lead_trade.realized_pnl * ratio, 2)
+        f.close_reason = "copy"
+        session.add(f)
+
+    session.commit()
+    log.info("copy-trade: lead trade %s closed %d follower copies", lead_trade.id, len(followers))
+    return len(followers)

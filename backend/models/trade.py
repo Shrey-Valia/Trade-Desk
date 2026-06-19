@@ -78,6 +78,12 @@ class Trade(Base):
     take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(12), nullable=True)
 
+    # Copy trading: the LEAD trade this row was mirrored from (None for an
+    # original trade). Lets a lead close cascade to its follower copies.
+    copied_from_trade_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         nullable=False,

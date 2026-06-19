@@ -161,19 +161,29 @@ function CopyTradingSection() {
   const update = useUpdateCopyConfig();
   const combines = (data?.combines ?? []).filter((c) => c.status !== "archived");
   const lead = data?.copy_lead_combine_id ?? null;
-  const followerIds = combines.filter((c) => c.copy_follow).map((c) => c.id);
+  const followers = combines
+    .filter((c) => c.copy_follow)
+    .map((c) => ({ combine_id: c.id, multiplier: c.copy_multiplier }));
+  const followerMap = new Map(followers.map((f) => [f.combine_id, f.multiplier]));
 
   const setLead = (id: number | null) =>
     update.mutate({
       lead_combine_id: id,
-      follower_ids: followerIds.filter((f) => f !== id),
+      followers: followers.filter((f) => f.combine_id !== id),
     });
   const toggleFollower = (id: number) =>
     update.mutate({
       lead_combine_id: lead,
-      follower_ids: followerIds.includes(id)
-        ? followerIds.filter((f) => f !== id)
-        : [...followerIds, id],
+      followers: followerMap.has(id)
+        ? followers.filter((f) => f.combine_id !== id)
+        : [...followers, { combine_id: id, multiplier: 1 }],
+    });
+  const setMultiplier = (id: number, multiplier: number) =>
+    update.mutate({
+      lead_combine_id: lead,
+      followers: followers.map((f) =>
+        f.combine_id === id ? { ...f, multiplier } : f,
+      ),
     });
 
   const followerOptions = combines.filter((c) => c.id !== lead);
@@ -234,22 +244,31 @@ function CopyTradingSection() {
                   No other accounts to follow.
                 </span>
               ) : (
-                followerOptions.map((c) => (
-                  <div
-                    key={c.id}
-                    className="flex items-center justify-between gap-3 border border-hairline bg-tier-1 px-2.5 py-1.5"
-                    style={{ borderRadius: 4 }}
-                  >
-                    <span className="text-tiny text-fg-primary truncate">
-                      {c.name}{" "}
-                      <span className="text-fg-tertiary-2">· {c.tier}</span>
-                    </span>
-                    <Toggle
-                      on={followerIds.includes(c.id)}
-                      onChange={() => toggleFollower(c.id)}
-                    />
-                  </div>
-                ))
+                followerOptions.map((c) => {
+                  const on = followerMap.has(c.id);
+                  const mult = followerMap.get(c.id) ?? 1;
+                  return (
+                    <div
+                      key={c.id}
+                      className="flex items-center justify-between gap-3 border border-hairline bg-tier-1 px-2.5 py-1.5"
+                      style={{ borderRadius: 4 }}
+                    >
+                      <span className="text-tiny text-fg-primary truncate">
+                        {c.name}{" "}
+                        <span className="text-fg-tertiary-2">· {c.tier}</span>
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {on && (
+                          <MultiplierPicker
+                            value={mult}
+                            onChange={(m) => setMultiplier(c.id, m)}
+                          />
+                        )}
+                        <Toggle on={on} onChange={() => toggleFollower(c.id)} />
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
           )}
@@ -633,6 +652,32 @@ function NumberStepper({
       >
         +
       </UIButton>
+    </div>
+  );
+}
+
+/** Per-follower size multiplier — 0.5× / 1× / 2× of the lead's contracts. */
+function MultiplierPicker({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (m: number) => void;
+}) {
+  return (
+    <div className="flex" style={{ gap: 4 }}>
+      {[0.5, 1, 2].map((m) => (
+        <UIButton
+          key={m}
+          size="sm"
+          active={value === m}
+          onClick={() => onChange(m)}
+          aria-pressed={value === m}
+          className="min-w-[40px] tabular-nums"
+        >
+          {m}×
+        </UIButton>
+      ))}
     </div>
   );
 }

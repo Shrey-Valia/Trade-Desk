@@ -77,6 +77,9 @@ class Combine(Base):
     # Copy trading: when True, this combine mirrors trades opened on the
     # user's lead combine (user.copy_lead_combine_id). See services/copy_trade.
     copy_follow: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Size multiplier applied to the lead's contract count before clamping to
+    # this follower's cap (e.g. 0.5×, 1×, 2×). Only meaningful when following.
+    copy_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     # Eval restart point. A reset (after a fail) stamps this; the engine then
     # counts only trades opened at/after it toward the eval — so the eval
     # starts fresh while the trade HISTORY is preserved (rows are never deleted).

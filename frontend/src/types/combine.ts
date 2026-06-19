@@ -49,6 +49,8 @@ export const CombineOutSchema = z.object({
   funded_activated: z.boolean().default(false),
   /** Copy trading: this combine mirrors the lead combine's trades. */
   copy_follow: z.boolean().default(false),
+  /** Size multiplier applied to the lead's contracts before clamping. */
+  copy_multiplier: z.number().default(1),
   created_at: z.string(),
 });
 export type CombineOut = z.infer<typeof CombineOutSchema>;
@@ -82,9 +84,14 @@ export const CombinesOutSchema = z.object({
 });
 export type CombinesOut = z.infer<typeof CombinesOutSchema>;
 
+export interface CopyFollowerInput {
+  combine_id: number;
+  multiplier: number;
+}
+
 export interface CopyConfigInput {
   lead_combine_id: number | null;
-  follower_ids: number[];
+  followers: CopyFollowerInput[];
 }
 
 export interface PurchaseInput {
