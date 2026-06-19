@@ -5,7 +5,11 @@ import { UIButton } from "@/components/ui/UIButton";
 import { Link, useNavigate } from "react-router-dom";
 
 import { useAccountState } from "@/hooks/useAccountState";
-import { useActivateCombine } from "@/hooks/useCombines";
+import {
+  useActivateCombine,
+  useCombines,
+  useUpdateCopyConfig,
+} from "@/hooks/useCombines";
 import { useMe, useSignout } from "@/hooks/useAuth";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
@@ -50,6 +54,7 @@ export function SettingsPage() {
         <section className="max-w-2xl">
           <AccountSection />
           <CombineTierSection />
+          <CopyTradingSection />
           <SettingRow
             label="Default ticker"
             help="The symbol the chart loads on cold open. Restricted to the 0DTE-eligible allowlist."
@@ -144,6 +149,115 @@ function AccountSection() {
 // Row scaffold + atomic controls — pure DESIGN.md: hairlines, IBM Plex Mono,
 // 0 border-radius, amber for active, no shadows.
 // ---------------------------------------------------------------------------
+
+/**
+ * Copy trading — pick one LEAD combine and toggle which other combines
+ * FOLLOW it. The lead's 0DTE opens mirror to enabled followers (clamped to
+ * each follower's contract cap; skipped if locked/failed). Applies
+ * immediately — no Save button, like the rest of the page.
+ */
+function CopyTradingSection() {
+  const { data } = useCombines();
+  const update = useUpdateCopyConfig();
+  const combines = (data?.combines ?? []).filter((c) => c.status !== "archived");
+  const lead = data?.copy_lead_combine_id ?? null;
+  const followerIds = combines.filter((c) => c.copy_follow).map((c) => c.id);
+
+  const setLead = (id: number | null) =>
+    update.mutate({
+      lead_combine_id: id,
+      follower_ids: followerIds.filter((f) => f !== id),
+    });
+  const toggleFollower = (id: number) =>
+    update.mutate({
+      lead_combine_id: lead,
+      follower_ids: followerIds.includes(id)
+        ? followerIds.filter((f) => f !== id)
+        : [...followerIds, id],
+    });
+
+  const followerOptions = combines.filter((c) => c.id !== lead);
+
+  return (
+    <div className="border-b border-hairline px-3 py-3 flex flex-col gap-3">
+      <div>
+        <div
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        >
+          Copy trading
+        </div>
+        <div className="text-fg-tertiary mt-0.5" style={{ fontSize: 11, lineHeight: 1.35 }}>
+          Mirror the lead account&rsquo;s 0DTE opens to the followers you enable
+          — each clamped to that account&rsquo;s contract cap, and skipped if
+          it&rsquo;s daily-loss-locked or has failed.
+        </div>
+      </div>
+
+      {combines.length < 2 ? (
+        <div className="text-tiny text-fg-tertiary-2">
+          Copy trading needs at least two combines. Start another from the
+          dashboard.
+        </div>
+      ) : (
+        <>
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-tiny text-fg-secondary">Lead account</span>
+            <select
+              value={lead ?? ""}
+              disabled={update.isPending}
+              onChange={(e) =>
+                setLead(e.target.value ? Number(e.target.value) : null)
+              }
+              className="h-8 px-2 bg-tier-1 border border-hairline text-fg-primary text-tiny rounded-btn focus:border-amber focus:outline-none disabled:opacity-50"
+              style={{ minWidth: 240 }}
+            >
+              <option value="">Off — no copying</option>
+              {combines.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} · {c.tier}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {lead != null && (
+            <div className="flex flex-col gap-1.5">
+              <span
+                className="uppercase tracking-label-up text-fg-tertiary-2"
+                style={{ fontSize: 9 }}
+              >
+                Follower accounts
+              </span>
+              {followerOptions.length === 0 ? (
+                <span className="text-tiny text-fg-tertiary-2">
+                  No other accounts to follow.
+                </span>
+              ) : (
+                followerOptions.map((c) => (
+                  <div
+                    key={c.id}
+                    className="flex items-center justify-between gap-3 border border-hairline bg-tier-1 px-2.5 py-1.5"
+                    style={{ borderRadius: 4 }}
+                  >
+                    <span className="text-tiny text-fg-primary truncate">
+                      {c.name}{" "}
+                      <span className="text-fg-tertiary-2">· {c.tier}</span>
+                    </span>
+                    <Toggle
+                      on={followerIds.includes(c.id)}
+                      onChange={() => toggleFollower(c.id)}
+                    />
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function SettingRow({
   label,

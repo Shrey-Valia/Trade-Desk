@@ -29,6 +29,10 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     active_combine_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Copy trading: the combine whose trades are mirrored to this user's
+    # follower combines (those with combine.copy_follow=True). None = copy
+    # trading off. Plain Integer for the same circular-FK reason as above.
+    copy_lead_combine_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,

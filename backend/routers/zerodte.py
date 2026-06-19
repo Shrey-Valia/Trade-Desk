@@ -37,6 +37,7 @@ from database import get_session
 from models.combine import Combine
 from services.auth import get_active_combine
 from services.combine_state import combine_snapshot
+from services.copy_trade import mirror_open
 from models.trade import Trade
 from schemas.journal import TradeOut, compute_net_debit_credit
 from services.alpaca_client import get_chain_snapshot, get_quotes
@@ -580,6 +581,9 @@ def open_zerodte_straddle(
     session.commit()
     session.refresh(trade)
 
+    # Copy trading: mirror to follower combines if this is the lead (best-effort).
+    mirror_open(session, combine, trade)
+
     return _trade_to_out(trade)
 
 
@@ -678,6 +682,10 @@ def open_zerodte_leg(
     session.add(trade)
     session.commit()
     session.refresh(trade)
+
+    # Copy trading: mirror to follower combines if this is the lead (best-effort).
+    mirror_open(session, combine, trade)
+
     return _trade_to_out(trade)
 
 

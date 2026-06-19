@@ -47,6 +47,8 @@ export const CombineOutSchema = z.object({
   activation_fee: z.number().default(0),
   /** True once the funded account is activated (payouts unlocked). */
   funded_activated: z.boolean().default(false),
+  /** Copy trading: this combine mirrors the lead combine's trades. */
+  copy_follow: z.boolean().default(false),
   created_at: z.string(),
 });
 export type CombineOut = z.infer<typeof CombineOutSchema>;
@@ -75,8 +77,15 @@ export const CombinesOutSchema = z.object({
   active_combine_id: z.number().int().nullable(),
   slots_used: z.number().int(),
   slots_total: z.number().int(),
+  /** Copy-trading lead combine (null = copy trading off). */
+  copy_lead_combine_id: z.number().int().nullable().default(null),
 });
 export type CombinesOut = z.infer<typeof CombinesOutSchema>;
+
+export interface CopyConfigInput {
+  lead_combine_id: number | null;
+  follower_ids: number[];
+}
 
 export interface PurchaseInput {
   tier: "50K" | "100K" | "150K";

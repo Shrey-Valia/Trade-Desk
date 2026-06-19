@@ -55,6 +55,7 @@ import {
   type CombineEvent,
   type CombineOut,
   type CombinesOut,
+  type CopyConfigInput,
   type PayoutOut,
   type PurchaseInput,
 } from "@/types/combine";
@@ -273,6 +274,14 @@ export const activateAccount = (id: number): Promise<CombineOut> =>
 /** Recent lifecycle events across the user's combines (newest first). */
 export const fetchCombineEvents = (): Promise<CombineEvent[]> =>
   request("/api/combines/events", z.array(CombineEventSchema));
+
+/** Set copy trading: the lead combine + which combines follow it. Returns
+ *  the refreshed combines payload. */
+export const updateCopyConfig = (input: CopyConfigInput): Promise<CombinesOut> =>
+  mutate("/api/combines/copy-config", CombinesOutSchema, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
 
 // -- auth --------------------------------------------------------------------
 

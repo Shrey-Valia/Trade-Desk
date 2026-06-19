@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, String
+from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
@@ -68,12 +68,15 @@ class Combine(Base):
     # Trader's share of funded-account profit, chosen at purchase: 0.80
     # (80/20, normal) or 0.50 (50/50, −$10/mo). Drives payout_eligible.
     profit_split: Mapped[float] = mapped_column(Float, nullable=False, default=0.80)
-    # When the funded account was ACTIVATED (the $149 fee paid). On the
-    # no_activation path this is stamped at funding (free); on the activation
-    # path it stays None until the trader pays — payouts are gated on it.
+    # When the funded account was ACTIVATED (the fee paid via /activate-account
+    # — $149 on the activation path, $0 on no-activation). None until activated;
+    # payouts are gated on it.
     funded_activated_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True
     )
+    # Copy trading: when True, this combine mirrors trades opened on the
+    # user's lead combine (user.copy_lead_combine_id). See services/copy_trade.
+    copy_follow: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Eval restart point. A reset (after a fail) stamps this; the engine then
     # counts only trades opened at/after it toward the eval — so the eval
     # starts fresh while the trade HISTORY is preserved (rows are never deleted).

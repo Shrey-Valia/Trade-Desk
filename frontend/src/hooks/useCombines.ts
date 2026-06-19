@@ -10,10 +10,11 @@ import {
   renameCombine,
   requestPayout,
   resetCombine,
+  updateCopyConfig,
 } from "@/lib/api";
 import { useActivePosition } from "@/stores/activePosition";
 import { toast } from "@/stores/toast";
-import type { PurchaseInput } from "@/types/combine";
+import type { CopyConfigInput, PurchaseInput } from "@/types/combine";
 
 const errMsg = (e: unknown) => (e as Error)?.message || "Something went wrong";
 
@@ -124,6 +125,23 @@ export function useActivateAccount() {
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
       toast.success(`${combine.name} activated — payouts unlocked.`);
+    },
+    onError: (e) => toast.error(errMsg(e)),
+  });
+}
+
+/** Set copy trading (lead + followers). Refreshes the combines list. */
+export function useUpdateCopyConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CopyConfigInput) => updateCopyConfig(input),
+    onSuccess: (data) => {
+      qc.setQueryData(COMBINES_KEY, data);
+      toast.success(
+        data.copy_lead_combine_id == null
+          ? "Copy trading off."
+          : "Copy trading updated.",
+      );
     },
     onError: (e) => toast.error(errMsg(e)),
   });

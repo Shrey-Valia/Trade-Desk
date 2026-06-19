@@ -83,6 +83,10 @@ class CombineOut(BaseModel):
     funded_activated: bool = Field(
         ..., description="True once the funded account is activated (payouts unlocked)."
     )
+    # --- copy trading ---
+    copy_follow: bool = Field(
+        ..., description="True if this combine mirrors the lead combine's trades."
+    )
     created_at: datetime
 
 
@@ -91,6 +95,14 @@ class CombinesOut(BaseModel):
     active_combine_id: int | None
     slots_used: int = Field(..., description="Non-archived combines (counts against the cap).")
     slots_total: int
+    copy_lead_combine_id: int | None = Field(
+        None, description="The combine whose trades mirror to followers (None = off)."
+    )
+
+
+class CopyConfigIn(BaseModel):
+    lead_combine_id: int | None = None
+    follower_ids: list[int] = Field(default_factory=list)
 
 
 class PurchaseIn(BaseModel):
@@ -169,6 +181,7 @@ def _to_out(session: Session, combine: Combine) -> CombineOut:
         activation_required=snap.activation_required,
         activation_fee=snap.activation_fee,
         funded_activated=snap.funded_activated,
+        copy_follow=combine.copy_follow,
         created_at=combine.created_at,
     )
 
@@ -197,6 +210,7 @@ def list_combines(
         active_combine_id=user.active_combine_id,
         slots_used=sum(1 for c in combines if c.status != "archived"),
         slots_total=MAX_COMBINES,
+        copy_lead_combine_id=user.copy_lead_combine_id,
     )
 
 
@@ -233,6 +247,40 @@ def list_events(
         )
         for e in rows
     ]
+
+
+@router.put("/copy-config", response_model=CombinesOut)
+def set_copy_config(
+    payload: CopyConfigIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> CombinesOut:
+    """Set copy trading: which combine is the lead and which follow it.
+
+    The lead's trades mirror to every follower (services/copy_trade). The lead
+    can't also be a follower (it's removed from the set). All ids must be the
+    user's own combines. Passing lead_combine_id=null turns copy trading off."""
+    owned = {
+        c.id: c
+        for c in session.execute(
+            select(Combine).where(Combine.user_id == user.id)
+        ).scalars().all()
+    }
+    lead = payload.lead_combine_id
+    if lead is not None and lead not in owned:
+        raise HTTPException(404, f"combine {lead} not found")
+    followers = {fid for fid in payload.follower_ids if fid != lead}
+    for fid in followers:
+        if fid not in owned:
+            raise HTTPException(404, f"combine {fid} not found")
+
+    user.copy_lead_combine_id = lead
+    for cid, combine in owned.items():
+        combine.copy_follow = cid in followers
+        session.add(combine)
+    session.add(user)
+    session.commit()
+    return list_combines(user=user, session=session)
 
 
 @router.post("/purchase", response_model=CombineOut, status_code=201)

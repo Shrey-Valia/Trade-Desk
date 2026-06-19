@@ -74,6 +74,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _additive_migrate_trades()
     _additive_migrate_combines()
+    _additive_migrate_users()
     _create_missing_indexes()
     # AccountState seeding retired with the multi-user shell — the table
     # stays on disk purely as the migration source for legacy HWMs.
@@ -154,7 +155,30 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("pricing_path", "VARCHAR(16) NOT NULL DEFAULT 'activation'"),
     ("profit_split", "FLOAT NOT NULL DEFAULT 0.8"),
     ("funded_activated_at", "DATETIME"),
+    # Copy trading: does this combine mirror the user's lead combine's trades.
+    ("copy_follow", "BOOLEAN NOT NULL DEFAULT 0"),
 ]
+
+# Copy trading added a lead pointer to users. Same idempotent additive pattern.
+_USER_COLUMN_ADDITIONS: list[tuple[str, str]] = [
+    ("copy_lead_combine_id", "INTEGER"),
+]
+
+
+def _additive_migrate_users() -> None:
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("users")}
+    pending = [
+        (name, ddl) for name, ddl in _USER_COLUMN_ADDITIONS if name not in existing
+    ]
+    if not pending:
+        return
+    with engine.connect() as conn:
+        for name, ddl in pending:
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
+        conn.commit()
 
 
 def _additive_migrate_combines() -> None:
