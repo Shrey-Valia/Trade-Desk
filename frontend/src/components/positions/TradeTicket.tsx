@@ -350,7 +350,7 @@ function DllRiskHint({
       <div
         className="px-3 pb-1 text-bearish tabular-nums"
         style={{ fontSize: 10 }}
-        title="Realized losses today already meet your daily loss limit. Display-only — opens are not blocked."
+        title="Realized losses today have hit your daily loss limit — new opens are blocked until the 5pm-PT settlement."
       >
         DLL exhausted — any further loss exceeds today&rsquo;s budget
       </div>
@@ -366,7 +366,7 @@ function DllRiskHint({
       style={{ fontSize: 10 }}
       title={
         "Worst case if bought: the full debit. Compared against what's left of today's " +
-        "daily loss budget (realized losses only). Display-only — opens are not blocked."
+        "daily loss budget (realized losses only). Opens are blocked once realized losses hit the limit."
       }
     >
       if bought, max loss ${cost.toFixed(2)} ·{" "}

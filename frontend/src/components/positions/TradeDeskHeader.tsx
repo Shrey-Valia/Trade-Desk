@@ -377,7 +377,8 @@ function MetricPills() {
 
   // DLL budget — user can override per-tier in Settings; default falls
   // back to the active tier's spec (Topstep-aligned 3% of starting
-  // balance, served by the backend). Display-only — no enforcement.
+  // balance, served by the backend). The backend enforces the tier-default
+  // DLL on opens; a tighter override here only adjusts this pill.
   const dllBudget =
     dllOverrides[activeTier] ??
     account?.tiers.find((t) => t.key === activeTier)?.dll_amount ??

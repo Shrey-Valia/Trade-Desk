@@ -458,7 +458,7 @@ function PathToFunding() {
               ? { text: "HIT TODAY", tone: "bearish" }
               : { text: "ok", tone: "ok" }
           }
-          hint="Resets at the 5pm-PT settlement. Display-only."
+          hint="Enforced — new opens are blocked once realized losses hit it; resets at the 5pm-PT settlement."
         />
         <RuleRow
           label="Consistency target"

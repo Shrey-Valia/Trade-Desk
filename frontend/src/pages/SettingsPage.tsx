@@ -431,9 +431,10 @@ function CombineTierSection() {
  *
  * Defaults come from the backend's TierSpec (Topstep-aligned 3% of
  * starting balance). User can override per tier within a 1-10% band of
- * the tier's starting balance. The DLL pill in the header reads the
- * override from userSettings; backend still emits dll_used/dll_budget
- * from its own defaults (display-only spec, no enforcement).
+ * the tier's starting balance. The backend ENFORCES its tier-default DLL
+ * on the open path (a realized day-loss breach blocks new opens); a tighter
+ * override here only adjusts the header warning pill — it isn't yet enforced
+ * server-side.
  */
 function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
   const overrides = useUserSettings((s) => s.dllOverrides);
@@ -452,8 +453,9 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
           style={{ fontSize: 11, lineHeight: 1.35 }}
         >
           How much you can lose in one trading day before the DLL pill warns,
-          then breaches. Resets at the next ET open. Display-only — trade
-          opens are not blocked. Range: 1-10% of the tier's starting balance.
+          then breaches. Once realized losses hit it, new opens are blocked
+          until the 5pm-PT settlement. Range: 1-10% of the tier&rsquo;s
+          starting balance.
         </div>
       </div>
       <div className="grid grid-cols-3 gap-2 px-3 pb-3 pt-1">
