@@ -39,6 +39,7 @@ from services.combine_objectives import (
     payout_eligible,
     profit_target,
 )
+from services.scaling_plan import max_contracts as scaling_max_contracts
 from services.combine_settlement import (
     MIN_TRADING_DAYS,
     consistency_ok,
@@ -63,6 +64,8 @@ class CombineSnapshot:
     day_locked: bool
     profit_target: float
     objective_progress: float
+    # --- scaling plan: max position size (contracts) by built equity ---
+    max_contracts: int
     # --- settlement engine: PASS / FAIL ---
     outcome: str  # "active" | "passed" | "failed"
     days_traded: int
@@ -196,6 +199,11 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     # moves it (always up).
     mll = compute_mll(combine.tier, combine.settled_hwm)  # type: ignore[arg-type]
 
+    # Scaling plan — max contracts by built equity (settled profit above
+    # start). Fixed intraday like the MLL; only settlement re-evaluates it.
+    settled_profit = max(0.0, combine.settled_hwm - tier.starting_balance)
+    max_contracts = scaling_max_contracts(combine.tier, settled_profit)
+
     # DLL — today's realized loss within the current 5pm-PT trading day.
     dll_used = dll_used_today_for_combine(session, combine.id, now, since)
     dll_budget = tier.dll_amount
@@ -256,6 +264,7 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         day_locked=day_locked,
         profit_target=target,
         objective_progress=objective_progress(combine.tier, realized),
+        max_contracts=max_contracts,
         outcome=outcome,
         days_traded=days_traded,
         min_trading_days=MIN_TRADING_DAYS,

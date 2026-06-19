@@ -110,6 +110,13 @@ class AccountStateOut(BaseModel):
     combine_status: str = Field(..., description="Lifecycle: active | archived.")
     profit_target: float = Field(..., description="Realized profit needed to PASS (6%).")
     objective_progress: float = Field(..., description="realized/target clamped to [0,1].")
+    max_contracts: int = Field(
+        ...,
+        description=(
+            "Scaling-plan cap: max contracts per position at the current built"
+            " equity. Fixed intraday; re-evaluates at the 5pm-PT settlement."
+        ),
+    )
     # -- funded-account lifecycle ---------------------------------------------
     funded: bool = Field(..., description="True once the eval passed (auto-funded).")
     payout_eligible: float = Field(
@@ -155,6 +162,7 @@ def get_account_state(
         combine_status=combine.status,
         profit_target=snap.profit_target,
         objective_progress=snap.objective_progress,
+        max_contracts=snap.max_contracts,
         funded=snap.funded,
         payout_eligible=snap.payout_eligible,
         combines=[

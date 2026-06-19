@@ -429,12 +429,17 @@ def _require_market_open() -> None:
         )
 
 
-def _require_tradeable(session: Session, combine: Combine) -> None:
+def _require_tradeable(
+    session: Session, combine: Combine, contracts: int | None = None
+) -> None:
     """Enforce the combine's standing rules on the OPEN path — the rule
     actually binds server-side, not just via the trade-ticket soft-gate.
     Blocks a FAILED eval (MLL floor breached; must be reset) and a DAY
     LOCK (today's DLL hit; lifts at the 5pm-PT settlement). A PASSED /
     funded account is NOT blocked — it keeps trading to accrue payout.
+    When `contracts` is given, also enforces the SCALING PLAN: the
+    requested size can't exceed the max allowed at the current built
+    equity (fixed intraday; re-evaluates at the 5pm-PT settlement).
     Computing the snapshot here also persists any pending settlement."""
     snap = combine_snapshot(session, combine)
     if snap.outcome == "failed":
@@ -446,6 +451,16 @@ def _require_tradeable(session: Session, combine: Combine) -> None:
         raise HTTPException(
             status_code=403,
             detail="Daily loss limit hit — no further trading today. The day-lock lifts at the 5pm-PT settlement.",
+        )
+    if contracts is not None and contracts > snap.max_contracts:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Scaling plan: max {snap.max_contracts} contract"
+                f"{'s' if snap.max_contracts != 1 else ''} at your current "
+                f"balance (requested {contracts}). Build equity to scale up — "
+                "the limit re-evaluates at the 5pm-PT settlement."
+            ),
         )
 
 
@@ -503,7 +518,7 @@ def open_zerodte_straddle(
     Strict 0DTE — refuses to open if today's expiry isn't listed.
     Refuses to open if the NYSE session is not OPEN."""
     _require_market_open()
-    _require_tradeable(session, combine)
+    _require_tradeable(session, combine, contracts=payload.contracts)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
     _require_today_expiry(expiry)
 
@@ -583,7 +598,7 @@ def open_zerodte_leg(
     Strict 0DTE: today's expiry must be listed for `symbol`. Refuses to
     open if the NYSE session is not OPEN."""
     _require_market_open()
-    _require_tradeable(session, combine)
+    _require_tradeable(session, combine, contracts=payload.contracts)
     sym = payload.symbol.upper().strip()
     chain = get_chain_snapshot(sym, with_volume=False)
     if not chain:

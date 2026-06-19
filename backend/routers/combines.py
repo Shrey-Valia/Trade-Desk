@@ -55,6 +55,9 @@ class CombineOut(BaseModel):
     day_locked: bool
     profit_target: float
     objective_progress: float
+    max_contracts: int = Field(
+        ..., description="Scaling-plan cap: max contracts per position at the current built equity."
+    )
     # --- funded-account lifecycle ---
     funded: bool = Field(..., description="True once the eval passed (auto-funded).")
     funded_at: datetime | None = None
@@ -131,6 +134,7 @@ def _to_out(session: Session, combine: Combine) -> CombineOut:
         day_locked=snap.day_locked,
         profit_target=snap.profit_target,
         objective_progress=snap.objective_progress,
+        max_contracts=snap.max_contracts,
         funded=snap.funded,
         funded_at=snap.funded_at,
         payout_eligible=available,

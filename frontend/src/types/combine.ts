@@ -24,6 +24,8 @@ export const CombineOutSchema = z.object({
   profit_target: z.number(),
   /** realized/target clamped to [0,1]. */
   objective_progress: z.number(),
+  /** Scaling-plan cap: max contracts per position at the current built equity. */
+  max_contracts: z.number().int().default(1),
   /** True once the eval passed (auto-funded). */
   funded: z.boolean().default(false),
   /** ISO timestamp the account was funded, or null. */

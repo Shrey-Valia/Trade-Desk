@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { useAccountState } from "@/hooks/useAccountState";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
@@ -48,6 +48,15 @@ export function TradeTicket() {
   const straddleMutation = useOpenZeroDteStraddle();
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
+
+  // Scaling-plan cap — max contracts per position at the current built
+  // equity (server-enforced too). Default high until account state loads so
+  // the UI never wrongly blocks; clamp the selection down if it exceeds.
+  const { data: accountState } = useAccountState();
+  const maxContracts = accountState?.max_contracts ?? 99;
+  useEffect(() => {
+    if (contracts > maxContracts) setContracts(maxContracts);
+  }, [contracts, maxContracts, setContracts]);
 
   // Combine engine soft-gate: a DAY LOCK (DLL hit today) or a FAILED
   // account blocks further opens — UX only; the backend open path is not
@@ -156,7 +165,11 @@ export function TradeTicket() {
           setLimitPrice={setLimitPrice}
         />
       )}
-      <QuantityRow contracts={contracts} setContracts={setContracts} />
+      <QuantityRow
+        contracts={contracts}
+        setContracts={setContracts}
+        maxContracts={maxContracts}
+      />
       <DllRiskHint selection={selection} contracts={contracts} />
       <Actions
         selection={selection}
@@ -434,64 +447,77 @@ function OrderTypeRow({
 function QuantityRow({
   contracts,
   setContracts,
+  maxContracts,
 }: {
   contracts: number;
   setContracts: (n: number) => void;
+  maxContracts: number;
 }) {
   // Topstep preset ladder: − [VALUE] +  |  [1] [3] [5] [10] [15]
   const presets = [1, 3, 5, 10, 15];
+  const atMax = contracts >= maxContracts;
   return (
-    <div className="flex items-center gap-3 px-3 pb-1 tabular-nums shrink-0">
-      <div className="flex items-center" style={{ gap: 4 }}>
-        <StepperButton
-          aria-label="Decrease quantity"
-          disabled={contracts <= 1}
-          onClick={() => setContracts(contracts - 1)}
-        >
-          −
-        </StepperButton>
-        <div
-          aria-live="polite"
-          className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums flex items-center justify-center"
-          style={{ width: 60, height: 32, fontSize: 16, fontWeight: 500 }}
-        >
-          {contracts}
+    <div className="flex flex-col gap-0.5 px-3 pb-1 shrink-0">
+      <div className="flex items-center gap-3 tabular-nums">
+        <div className="flex items-center" style={{ gap: 4 }}>
+          <StepperButton
+            aria-label="Decrease quantity"
+            disabled={contracts <= 1}
+            onClick={() => setContracts(contracts - 1)}
+          >
+            −
+          </StepperButton>
+          <div
+            aria-live="polite"
+            className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums flex items-center justify-center"
+            style={{ width: 60, height: 32, fontSize: 16, fontWeight: 500 }}
+          >
+            {contracts}
+          </div>
+          <StepperButton
+            aria-label="Increase quantity"
+            disabled={atMax}
+            onClick={() => setContracts(Math.min(maxContracts, contracts + 1))}
+          >
+            +
+          </StepperButton>
         </div>
-        <StepperButton
-          aria-label="Increase quantity"
-          onClick={() => setContracts(contracts + 1)}
-        >
-          +
-        </StepperButton>
+        <div className="flex" style={{ gap: 4 }}>
+          {presets.map((n) => {
+            const active = contracts === n;
+            const blocked = n > maxContracts;
+            return (
+              <button
+                key={n}
+                type="button"
+                disabled={blocked}
+                onClick={() => setContracts(n)}
+                aria-pressed={active}
+                title={blocked ? `Scaling plan: max ${maxContracts} contracts` : undefined}
+                className={[
+                  "tabular-nums transition-colors duration-100 font-medium",
+                  "flex items-center justify-center select-none",
+                  blocked
+                    ? "bg-tier-1 border border-tier-2 text-fg-disabled cursor-not-allowed"
+                    : active
+                      ? "bg-tier-3 border border-amber text-amber"
+                      : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                ].join(" ")}
+                style={{ width: 32, height: 32, borderRadius: "50%", fontSize: 12 }}
+              >
+                {n}
+              </button>
+            );
+          })}
+        </div>
       </div>
-      <div className="flex" style={{ gap: 4 }}>
-        {presets.map((n) => {
-          const active = contracts === n;
-          return (
-            <button
-              key={n}
-              type="button"
-              onClick={() => setContracts(n)}
-              aria-pressed={active}
-              className={[
-                "tabular-nums transition-colors duration-100 font-medium",
-                "flex items-center justify-center select-none",
-                active
-                  ? "bg-tier-3 border border-amber text-amber"
-                  : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
-              ].join(" ")}
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: "50%",
-                fontSize: 12,
-              }}
-            >
-              {n}
-            </button>
-          );
-        })}
-      </div>
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 9 }}
+        title="Scaling plan — max position size grows with built equity; re-evaluates at the 5pm-PT settlement."
+      >
+        scaling · max {maxContracts} {maxContracts === 1 ? "contract" : "contracts"}
+      </span>
     </div>
   );
 }
