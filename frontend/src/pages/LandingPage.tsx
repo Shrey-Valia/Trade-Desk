@@ -1,17 +1,17 @@
 import { Link } from "react-router-dom";
 
 import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
+import { monthlyPrice } from "@/lib/pricing";
 
 /**
  * "/" for guests — the marketing landing page.
  *
  * Same design system as the app (tier backgrounds, hairlines, amber
  * accents, mono type) so the funnel feels continuous: CTA →
- * /signup?next=/combines/new → placeholder payment → combine.
+ * /signup?next=/combines/new → simulated checkout → combine.
  *
- * PLACEHOLDERS by business decision (do not invent numbers):
- *   - tier pricing renders $XX
- *   - profit split renders XX%
+ * Prices come from lib/pricing.ts (the real matrix, mirrored from the
+ * backend). Trade Desk is a paper prop firm — the checkout is simulated.
  */
 export function LandingPage() {
   return (
@@ -85,7 +85,7 @@ function Hero() {
           real market data, hard risk rails, and a terminal built for the
           breakeven math — chain to ticket to live position overlay in two
           clicks. Hit the profit target without breaking the rules and keep
-          XX% of the upside on a funded account.
+          up to 80% of the upside on a funded account.
         </p>
         <div className="flex items-center gap-3">
           <Link
@@ -118,7 +118,7 @@ function RulesBand() {
     { label: "Account sizes", value: "$50K / $100K / $150K" },
     { label: "Max loss limit", value: "trails your high-water mark" },
     { label: "Daily loss limit", value: "resets every ET session" },
-    { label: "Profit split", value: "XX% once funded" },
+    { label: "Profit split", value: "up to 80% once funded" },
   ];
   return (
     <section className="border-b border-hairline bg-tier-1">
@@ -201,8 +201,10 @@ function TierPricing() {
               <div className="px-4 pt-4 pb-3 border-b border-hairline">
                 <div className="text-medium font-medium">{t.key} Combine</div>
                 <div className="flex items-baseline gap-1 mt-1">
-                  {/* PLACEHOLDER — pricing pending business decision. */}
-                  <span className="text-display font-medium text-amber">$XX</span>
+                  <span className="text-tiny text-fg-tertiary-2">from</span>
+                  <span className="text-display font-medium text-amber tabular-nums">
+                    ${monthlyPrice(t.key, "activation", "50_50")}
+                  </span>
                   <span className="text-tiny text-fg-tertiary-2">/ month</span>
                 </div>
               </div>
@@ -231,8 +233,10 @@ function TierPricing() {
           ))}
         </div>
         <p className="text-tiny text-fg-tertiary-2 mt-3">
-          Pricing shown as $XX while final numbers are decided — payments run
-          through a clearly-marked placeholder checkout today.
+          Choose the activation path (lower monthly + a one-time $149 fee when
+          you get funded) or no-activation (+$50/mo, $0 when funded), and an
+          80/20 or 50/50 profit split, at checkout. Simulated paper evaluation
+          — no card is charged.
         </p>
       </div>
     </section>
@@ -268,7 +272,7 @@ function HowItWorks() {
     {
       n: "03",
       title: "Get funded",
-      body: "Hit the profit target without breaching a limit and move to a funded account with an XX% profit split.",
+      body: "Hit the profit target without breaching a limit and move to a funded account keeping up to 80% of the profit.",
     },
   ];
   return (

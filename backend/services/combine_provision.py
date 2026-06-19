@@ -24,6 +24,7 @@ from models.payment import Payment
 from models.user import User
 from services.account_tiers import TIERS
 from services.combine_objectives import generate_account_code
+from services.pricing import DEFAULT_PATH, DEFAULT_SPLIT, monthly_price
 
 # Max non-archived combines a user may hold at once; archiving frees a slot.
 MAX_COMBINES = 5
@@ -57,13 +58,21 @@ def provision_combine(
     tier_key: str,
     name: str | None,
     payment: Payment,
+    pricing_path: str = DEFAULT_PATH,
+    profit_split: float = DEFAULT_SPLIT,
 ) -> Combine:
     """Create a combine for `user` on `tier_key`, linking `payment` to it.
 
     Enforces the slot cap (raises 409). Seeds the running + settled HWM to
-    the tier's starting balance and auto-activates the user's first combine
-    so the terminal works immediately. Flushes (not commits) — the caller
-    commits as part of its own transaction.
+    the tier's starting balance, records the chosen pricing path + split, and
+    auto-activates the user's first combine so the terminal works
+    immediately. Flushes (not commits) — the caller commits as part of its
+    own transaction.
+
+    The Stripe webhook path reads the charged amount back from the completed
+    Checkout Session (set on `payment` before calling), so this helper only
+    fills `payment.amount` when it's still unset — e.g. the simulated
+    purchase flow, where the amount is the matrix monthly price.
     """
     assert_slot_available(session, user)
     tier = TIERS[tier_key]
@@ -77,10 +86,14 @@ def provision_combine(
         settled_hwm=tier.starting_balance,
         status="active",
         outcome="active",
+        pricing_path=pricing_path,
+        profit_split=profit_split,
     )
     session.add(combine)
     session.flush()  # assign combine.id for the payment link
     payment.combine_id = combine.id
+    if payment.amount is None:
+        payment.amount = monthly_price(tier_key, pricing_path, profit_split)
 
     # First combine auto-activates so the terminal works immediately.
     if user.active_combine_id is None:

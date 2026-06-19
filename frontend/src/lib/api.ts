@@ -261,9 +261,14 @@ export const activateCombine = (id: number): Promise<AccountState> =>
 export const resetCombine = (id: number): Promise<CombineOut> =>
   mutate(`/api/combines/${id}/reset`, CombineOutSchema, { method: "POST" });
 
-/** Request a payout on a funded account (simulated). */
+/** Request a payout on a funded, activated account (simulated). */
 export const requestPayout = (id: number): Promise<PayoutOut> =>
   mutate(`/api/combines/${id}/payout`, PayoutOutSchema, { method: "POST" });
+
+/** Activate a funded combine (one unified flow — charges $149 on the
+ *  activation path, $0 on no-activation); unlocks payouts. */
+export const activateAccount = (id: number): Promise<CombineOut> =>
+  mutate(`/api/combines/${id}/activate-account`, CombineOutSchema, { method: "POST" });
 
 /** Recent lifecycle events across the user's combines (newest first). */
 export const fetchCombineEvents = (): Promise<CombineEvent[]> =>

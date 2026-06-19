@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  activateAccount,
   activateCombine,
   archiveCombine,
   fetchCombineEvents,
@@ -107,6 +108,22 @@ export function useRequestPayout() {
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
       toast.success(`Payout requested — $${payout.amount.toLocaleString()}.`);
+    },
+    onError: (e) => toast.error(errMsg(e)),
+  });
+}
+
+/** Activate a funded combine (simulated) — charges $149 on the activation
+ *  path, $0 on no-activation — and unlocks payouts. */
+export function useActivateAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => activateAccount(id),
+    onSuccess: (combine) => {
+      qc.invalidateQueries({ queryKey: COMBINES_KEY });
+      qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
+      qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
+      toast.success(`${combine.name} activated — payouts unlocked.`);
     },
     onError: (e) => toast.error(errMsg(e)),
   });

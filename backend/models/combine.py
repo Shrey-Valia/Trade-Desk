@@ -59,6 +59,21 @@ class Combine(Base):
     # When the evaluation passed and the account auto-funded. None until the
     # combine passes; once set, the account is FUNDED and accrues payout.
     funded_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # Pricing path chosen at purchase, fixed for the combine's life:
+    # "activation" (lower monthly + a one-time $149 fee on funding) or
+    # "no_activation" (higher monthly, $0 fee). See services/pricing.py.
+    pricing_path: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="activation"
+    )
+    # Trader's share of funded-account profit, chosen at purchase: 0.80
+    # (80/20, normal) or 0.50 (50/50, −$10/mo). Drives payout_eligible.
+    profit_split: Mapped[float] = mapped_column(Float, nullable=False, default=0.80)
+    # When the funded account was ACTIVATED (the $149 fee paid). On the
+    # no_activation path this is stamped at funding (free); on the activation
+    # path it stays None until the trader pays — payouts are gated on it.
+    funded_activated_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True
+    )
     # Eval restart point. A reset (after a fail) stamps this; the engine then
     # counts only trades opened at/after it toward the eval — so the eval
     # starts fresh while the trade HISTORY is preserved (rows are never deleted).

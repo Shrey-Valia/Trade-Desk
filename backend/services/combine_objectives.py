@@ -15,28 +15,28 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from services.pricing import DEFAULT_SPLIT
+
 PROFIT_TARGETS: dict[str, float] = {
     "50K": 3_000.0,
     "100K": 6_000.0,
     "150K": 9_000.0,
 }
 
-# Trader's share of a funded account's profit, paid out on request. Set to
-# a 50/50 split per the owner's instruction (not an invented number). When
-# real pricing lands this can move per-tier; keep it one constant for now.
-PAYOUT_SPLIT: float = 0.50
-
 
 def profit_target(tier: str) -> float:
     return PROFIT_TARGETS.get(tier, 0.0)
 
 
-def payout_eligible(realized_pnl: float, funded: bool) -> float:
+def payout_eligible(
+    realized_pnl: float, funded: bool, split: float = DEFAULT_SPLIT
+) -> float:
     """Dollars a FUNDED account can request as a payout: the trader's split
-    of realized profit. Zero for accounts still in evaluation or in the red."""
+    of realized profit (the combine's chosen 80/20 or 50/50). Zero for
+    accounts still in evaluation, not yet activated, or in the red."""
     if not funded:
         return 0.0
-    return max(0.0, realized_pnl) * PAYOUT_SPLIT
+    return max(0.0, realized_pnl) * split
 
 
 def objective_progress(tier: str, realized_pnl: float) -> float:

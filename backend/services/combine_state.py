@@ -39,6 +39,7 @@ from services.combine_objectives import (
     payout_eligible,
     profit_target,
 )
+from services.pricing import activation_fee as activation_fee_for
 from services.scaling_plan import max_contracts as scaling_max_contracts
 from services.combine_settlement import (
     MIN_TRADING_DAYS,
@@ -76,6 +77,15 @@ class CombineSnapshot:
     funded: bool
     funded_at: datetime | None
     payout_eligible: float
+    # --- pricing + activation ---
+    pricing_path: str
+    profit_split: float
+    # True once the funded account is activated (no_activation: at funding;
+    # activation: when the $149 fee is paid). Payouts are gated on this.
+    funded_activated: bool
+    # Activation fee still owed to unlock payouts ($149 if required, else 0).
+    activation_required: bool
+    activation_fee: float
 
 
 def realized_sum_for_combine(
@@ -235,6 +245,10 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
             outcome = "passed"
             combine.outcome = outcome
             combine.funded_at = now  # auto-fund on pass
+            # Activation is ALWAYS an explicit step (one unified flow): the
+            # account stays un-activated until the trader clicks Activate via
+            # /activate-account — which charges $149 on the activation path and
+            # $0 on the no-activation path.
             record_event(
                 session,
                 combine,
@@ -244,7 +258,12 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
             dirty = True
 
     funded = combine.funded_at is not None
-    eligible = payout_eligible(realized, funded)
+    funded_activated = combine.funded_activated_at is not None
+    # Payouts unlock only once the funded account is activated.
+    eligible = payout_eligible(realized, funded and funded_activated, combine.profit_split)
+    activation_required = funded and not funded_activated
+    # Fee owed to activate ($149 on the activation path, $0 on no-activation).
+    activation_fee = activation_fee_for(combine.pricing_path) if activation_required else 0.0
 
     if dirty:
         session.add(combine)
@@ -273,4 +292,9 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         funded=funded,
         funded_at=combine.funded_at,
         payout_eligible=eligible,
+        pricing_path=combine.pricing_path,
+        profit_split=combine.profit_split,
+        funded_activated=funded_activated,
+        activation_required=activation_required,
+        activation_fee=activation_fee,
     )

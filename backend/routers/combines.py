@@ -6,10 +6,12 @@ trades keep their combine_id, the card just leaves the active set).
 "Delete" is deliberately archive-only in v1 so no trade history is
 ever orphaned.
 
-Purchase is PLACEHOLDER ECONOMICS: a payments row with amount=NULL and
-status='placeholder_paid' is written in the same transaction as the
-combine. When Stripe lands, this endpoint becomes the post-checkout
-fulfillment hook and the row gains a real amount/status.
+Purchase uses SIMULATED economics: the product is a paper prop firm, so
+no real money moves, but the pricing is real (services/pricing.py). A
+purchase records a paid payments row at the matrix monthly price; once an
+account funds it is activated via /activate-account ($149 on the activation
+path, $0 on no-activation). When Stripe lands, /api/payments/checkout takes
+over the charge and this endpoint becomes a fallback.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from models.combine import Combine
 from models.combine_event import CombineEvent
 from models.payment import Payment
 from models.user import User
+from services import pricing
 from services.account_tiers import TIERS
 from services.auth import get_current_user
 from services.combine_provision import MAX_COMBINES, provision_combine
@@ -67,6 +70,19 @@ class CombineOut(BaseModel):
     payout_requested: float = Field(
         ..., description="Lifetime payout already requested on this account."
     )
+    # --- pricing + activation ---
+    pricing_path: str = Field(..., description="activation | no_activation.")
+    profit_split: float = Field(..., description="Trader's profit share (0.80 or 0.50).")
+    monthly_price: float = Field(..., description="Monthly subscription for this combine.")
+    activation_required: bool = Field(
+        ..., description="Funded but not yet activated — payouts locked until the fee is paid."
+    )
+    activation_fee: float = Field(
+        ..., description="Activation fee owed to unlock payouts ($149 on the activation path, else 0)."
+    )
+    funded_activated: bool = Field(
+        ..., description="True once the funded account is activated (payouts unlocked)."
+    )
     created_at: datetime
 
 
@@ -80,6 +96,10 @@ class CombinesOut(BaseModel):
 class PurchaseIn(BaseModel):
     tier: Literal["50K", "100K", "150K"]
     name: str | None = Field(default=None, min_length=1, max_length=64)
+    # Pricing path + profit split, chosen on the buy screen. Defaults match
+    # the headline plan (standard 80/20 split on the activation path).
+    pricing_path: Literal["activation", "no_activation"] = "activation"
+    split: Literal["80_20", "50_50"] = "80_20"
 
 
 class RenameIn(BaseModel):
@@ -96,7 +116,9 @@ class CombineEventOut(BaseModel):
     id: int
     combine_id: int
     combine_name: str | None
-    type: str = Field(..., description="funded | failed | settled | reset | payout")
+    type: str = Field(
+        ..., description="funded | failed | settled | reset | payout | activation"
+    )
     message: str
     amount: float | None
     created_at: datetime
@@ -139,6 +161,14 @@ def _to_out(session: Session, combine: Combine) -> CombineOut:
         funded_at=snap.funded_at,
         payout_eligible=available,
         payout_requested=requested,
+        pricing_path=snap.pricing_path,
+        profit_split=snap.profit_split,
+        monthly_price=pricing.monthly_price(
+            combine.tier, snap.pricing_path, snap.profit_split
+        ),
+        activation_required=snap.activation_required,
+        activation_fee=snap.activation_fee,
+        funded_activated=snap.funded_activated,
         created_at=combine.created_at,
     )
 
@@ -211,19 +241,27 @@ def purchase_combine(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
-    # PLACEHOLDER economics — used whenever Stripe is NOT configured (the
-    # free flow). Records a payment row with no amount; when Stripe is on,
-    # the frontend routes purchases through /api/payments/checkout instead
-    # and the combine is provisioned by the webhook with a real amount.
+    # Simulated paid purchase: no real money moves, but the recorded amount
+    # is the real matrix monthly price (provision_combine fills it from the
+    # chosen path + split). When Stripe is on the frontend routes through
+    # /api/payments/checkout instead and the webhook provisions with the
+    # Stripe-read amount.
+    split = pricing.split_value(payload.split)
     payment = Payment(
         user_id=user.id,
         tier=payload.tier,
-        amount=None,
-        status="placeholder_paid",
+        amount=None,  # set to the matrix monthly price in provision_combine
+        status="paid",
     )
     session.add(payment)
     combine = provision_combine(
-        session, user, tier_key=payload.tier, name=payload.name, payment=payment
+        session,
+        user,
+        tier_key=payload.tier,
+        name=payload.name,
+        payment=payment,
+        pricing_path=payload.pricing_path,
+        profit_split=split,
     )
     session.commit()
     session.refresh(combine)
@@ -308,13 +346,19 @@ def request_payout(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> PayoutOut:
-    """Request a payout on a FUNDED account: the trader's 50% split of
-    realized profit, net of prior requests. Simulated — records a payout
-    event but moves no money (Stripe/banking lands with real pricing)."""
+    """Request a payout on a FUNDED, ACTIVATED account: the trader's split
+    (80/20 or 50/50) of realized profit, net of prior requests. Simulated —
+    records a payout event but moves no money."""
     combine = _owned_combine(session, user, combine_id)
     snap = combine_snapshot(session, combine)
     if not snap.funded:
         raise HTTPException(409, "account is not funded")
+    if snap.activation_required:
+        raise HTTPException(
+            409,
+            f"funded account not activated — pay the ${snap.activation_fee:,.0f} "
+            "activation fee to unlock payouts",
+        )
     available = max(0.0, snap.payout_eligible - _payouts_requested(session, combine.id))
     if available <= 0:
         raise HTTPException(409, "no payout currently available")
@@ -328,6 +372,50 @@ def request_payout(
     )
     session.commit()
     return PayoutOut(combine_id=combine.id, amount=available, requested_at=now)
+
+
+@router.post("/{combine_id}/activate-account", response_model=CombineOut)
+def activate_account(
+    combine_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> CombineOut:
+    """Activate a funded account — one unified flow for both paths. Charges
+    the $149 fee on the activation path and $0 on the no-activation path
+    (simulated), records the activation event, and unlocks payouts. 409 if
+    the account isn't funded or is already activated."""
+    combine = _owned_combine(session, user, combine_id)
+    snap = combine_snapshot(session, combine)
+    if not snap.funded:
+        raise HTTPException(409, "account is not funded")
+    if not snap.activation_required:
+        raise HTTPException(409, "funded account is already activated")
+    fee = pricing.activation_fee(combine.pricing_path)
+    now = datetime.now(timezone.utc)
+    combine.funded_activated_at = now
+    # Only the activation path charges; no $0 payment rows for no-activation.
+    if fee > 0:
+        session.add(
+            Payment(
+                user_id=user.id,
+                combine_id=combine.id,
+                tier=combine.tier,
+                amount=fee,
+                status="activation_paid",
+            )
+        )
+    record_event(
+        session,
+        combine,
+        "activation",
+        f"Funded account activated — ${fee:,.0f} activation fee paid."
+        if fee > 0
+        else "Funded account activated (no activation fee).",
+        amount=fee,
+    )
+    session.commit()
+    session.refresh(combine)
+    return _to_out(session, combine)
 
 
 @router.post("/{combine_id}/activate")

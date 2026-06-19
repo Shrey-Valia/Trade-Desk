@@ -32,11 +32,16 @@ def test_purchase_creates_combine_and_payment(auth_client, session_factory):
     # Topstep-style account code.
     assert re.fullmatch(r"50KTC-\d+-\d{8}", body["account_code"])
 
+    # Default plan: 80/20 split on the activation path → $69/mo for 50K.
+    assert body["pricing_path"] == "activation"
+    assert body["profit_split"] == 0.80
+    assert body["monthly_price"] == 69.0
+
     with session_factory() as s:
         payments = s.execute(select(Payment)).scalars().all()
         assert len(payments) == 1
-        assert payments[0].status == "placeholder_paid"
-        assert payments[0].amount is None
+        assert payments[0].status == "paid"
+        assert payments[0].amount == 69.0
         assert payments[0].combine_id == body["id"]
         assert payments[0].tier == "50K"
 

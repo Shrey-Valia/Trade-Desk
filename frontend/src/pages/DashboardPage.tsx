@@ -8,8 +8,9 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { colors } from "@/lib/design";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useAccountState } from "@/hooks/useAccountState";
-import { useCombines } from "@/hooks/useCombines";
+import { useActivateAccount, useCombines } from "@/hooks/useCombines";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
+import type { CombineOut } from "@/types/combine";
 
 /**
  * /dashboard — the prop-firm management home (Topstep-style).
@@ -89,6 +90,7 @@ function DashboardBody() {
 
   return (
     <div className="p-3.5 flex flex-col gap-3.5">
+      <ActivationBanner />
       {/* Top strip: active combine identity + CTAs */}
       <div className="flex items-center gap-3 flex-wrap">
         {account && (
@@ -146,6 +148,68 @@ function DashboardBody() {
       </div>
 
       <CombineCards />
+    </div>
+  );
+}
+
+// -- funded → activate ---------------------------------------------------------
+
+/**
+ * Prominent prompt for the pass→funded phase: any funded combine that hasn't
+ * been activated yet shows an Activate button. One unified flow — the fee is
+ * $149 on the activation path and $0 ("free") on no-activation — that unlocks
+ * payouts. Hidden when there's nothing to activate.
+ */
+function ActivationBanner() {
+  const { data } = useCombines();
+  const pending = (data?.combines ?? []).filter(
+    (c) => c.funded && c.activation_required && c.status !== "archived",
+  );
+  if (pending.length === 0) return null;
+
+  return (
+    <div className="border border-amber bg-tier-1" style={{ borderRadius: 4 }}>
+      <div className="px-3.5 py-2.5 border-b border-hairline flex items-baseline gap-2">
+        <span className="text-amber font-medium" style={{ fontSize: 13 }}>
+          Evaluation passed — activate your funded account
+        </span>
+        <span className="text-tiny text-fg-tertiary-2">
+          Activation unlocks payouts.
+        </span>
+      </div>
+      <div className="flex flex-col">
+        {pending.map((c) => (
+          <ActivationRow key={c.id} combine={c} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ActivationRow({ combine }: { combine: CombineOut }) {
+  const activate = useActivateAccount();
+  const free = combine.activation_fee <= 0;
+  return (
+    <div className="px-3.5 py-2 flex items-center gap-3 border-t border-hairline first:border-t-0">
+      <div className="min-w-0 flex-1">
+        <span className="text-fg-primary font-medium truncate" style={{ fontSize: 13 }}>
+          {combine.name}
+        </span>
+        <span className="text-fg-tertiary-2 tabular-nums ml-2" style={{ fontSize: 10 }}>
+          {combine.tier} · {combine.account_code}
+        </span>
+      </div>
+      <span className="text-tiny text-fg-secondary tabular-nums shrink-0">
+        {free ? "No activation fee" : `Activation fee $${combine.activation_fee}`}
+      </span>
+      <button
+        type="button"
+        disabled={activate.isPending}
+        onClick={() => activate.mutate(combine.id)}
+        className="h-8 px-3 text-tiny uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 disabled:opacity-50 shrink-0 rounded-btn font-medium"
+      >
+        {activate.isPending ? "…" : free ? "Activate (free)" : `Activate — $${combine.activation_fee}`}
+      </button>
     </div>
   );
 }

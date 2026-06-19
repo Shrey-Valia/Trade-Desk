@@ -30,10 +30,23 @@ export const CombineOutSchema = z.object({
   funded: z.boolean().default(false),
   /** ISO timestamp the account was funded, or null. */
   funded_at: z.string().nullable().default(null),
-  /** Available payout: trader's 50% split of profit, net of prior requests. */
+  /** Available payout: trader's split of profit, net of prior requests
+   *  (0 until the funded account is activated). */
   payout_eligible: z.number().default(0),
   /** Lifetime payout already requested on this account. */
   payout_requested: z.number().default(0),
+  /** Pricing path: "activation" | "no_activation". */
+  pricing_path: z.string().default("activation"),
+  /** Trader's profit share once funded (0.80 or 0.50). */
+  profit_split: z.number().default(0.8),
+  /** Monthly subscription paid for this combine. */
+  monthly_price: z.number().default(0),
+  /** Funded but not yet activated — payouts locked until the fee is paid. */
+  activation_required: z.boolean().default(false),
+  /** Activation fee owed to unlock payouts ($149 on the activation path). */
+  activation_fee: z.number().default(0),
+  /** True once the funded account is activated (payouts unlocked). */
+  funded_activated: z.boolean().default(false),
   created_at: z.string(),
 });
 export type CombineOut = z.infer<typeof CombineOutSchema>;
@@ -68,4 +81,8 @@ export type CombinesOut = z.infer<typeof CombinesOutSchema>;
 export interface PurchaseInput {
   tier: "50K" | "100K" | "150K";
   name?: string;
+  /** Pricing path chosen on the buy screen (default activation). */
+  pricing_path?: "activation" | "no_activation";
+  /** Profit-split choice (default 80/20). */
+  split?: "80_20" | "50_50";
 }

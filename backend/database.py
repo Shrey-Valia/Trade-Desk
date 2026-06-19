@@ -146,6 +146,14 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # the eval-restart point set by a reset (NULL = original eval).
     ("funded_at", "DATETIME"),
     ("eval_reset_at", "DATETIME"),
+    # Real (simulated) pricing: the path + split chosen at purchase, and
+    # when the funded account was activated. Defaults match a legacy combine
+    # bought on the standard 80/20 activation path; funded_activated_at is
+    # backfilled from funded_at below so existing funded accounts stay
+    # unlocked rather than suddenly requiring an activation payment.
+    ("pricing_path", "VARCHAR(16) NOT NULL DEFAULT 'activation'"),
+    ("profit_split", "FLOAT NOT NULL DEFAULT 0.8"),
+    ("funded_activated_at", "DATETIME"),
 ]
 
 
@@ -166,6 +174,16 @@ def _additive_migrate_combines() -> None:
         # unchanged at migration time (DEFAULT 0 would crater it).
         if "settled_hwm" in {name for name, _ in pending}:
             conn.execute(text("UPDATE combines SET settled_hwm = hwm"))
+        # Treat already-funded legacy accounts as activated so they keep
+        # their payout access (the activation gate only applies to combines
+        # funded after this column exists).
+        if "funded_activated_at" in {name for name, _ in pending}:
+            conn.execute(
+                text(
+                    "UPDATE combines SET funded_activated_at = funded_at "
+                    "WHERE funded_at IS NOT NULL"
+                )
+            )
         conn.commit()
 
 

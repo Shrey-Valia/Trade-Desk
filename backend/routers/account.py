@@ -122,6 +122,14 @@ class AccountStateOut(BaseModel):
     payout_eligible: float = Field(
         ..., description="Trader's split of realized profit (gross; Payouts page nets prior requests)."
     )
+    # -- pricing + activation -------------------------------------------------
+    profit_split: float = Field(..., description="Trader's profit share (0.80 or 0.50).")
+    pricing_path: str = Field(..., description="activation | no_activation.")
+    activation_required: bool = Field(
+        ..., description="Funded but not yet activated — payouts locked until the fee is paid."
+    )
+    activation_fee: float = Field(..., description="Activation fee owed to unlock payouts.")
+    funded_activated: bool = Field(..., description="True once the funded account is activated.")
     combines: list[CombineSummary]
 
 
@@ -165,6 +173,11 @@ def get_account_state(
         max_contracts=snap.max_contracts,
         funded=snap.funded,
         payout_eligible=snap.payout_eligible,
+        profit_split=snap.profit_split,
+        pricing_path=snap.pricing_path,
+        activation_required=snap.activation_required,
+        activation_fee=snap.activation_fee,
+        funded_activated=snap.funded_activated,
         combines=[
             CombineSummary(
                 id=c.id,
