@@ -13,7 +13,7 @@ import { useActivateCombine, useCombines } from "@/hooks/useCombines";
  * Dashboard, Accounts, and Journal headers so switching is consistent and
  * the cards don't each need their own button.
  */
-export function CombineSwitcher() {
+export function CombineSwitcher({ size = "sm" }: { size?: "sm" | "md" }) {
   const { data } = useCombines();
   const activate = useActivateCombine();
   const navigate = useNavigate();
@@ -24,6 +24,10 @@ export function CombineSwitcher() {
   const activeId = data?.active_combine_id ?? null;
   const leadId = data?.copy_lead_combine_id ?? null;
   const active = combines.find((c) => c.id === activeId) ?? openCombines[0];
+  // Breached = balance has fallen below the MLL floor (the "blew up" signal).
+  // Mirrors the terminal header's red-border treatment.
+  const breached = active != null && active.balance < active.mll;
+  const h = size === "md" ? "h-10" : "h-8";
 
   if (!data) return null;
 
@@ -32,7 +36,7 @@ export function CombineSwitcher() {
       <button
         type="button"
         onClick={() => navigate("/combines/new")}
-        className="h-8 px-3 rounded-btn uppercase tracking-label-up flex items-center gap-2 border border-amber text-amber bg-tier-2 hover:bg-tier-3"
+        className={`${h} px-3 rounded-btn uppercase tracking-label-up flex items-center gap-2 border border-amber text-amber bg-tier-2 hover:bg-tier-3`}
         style={{ fontSize: 12, fontWeight: 500 }}
       >
         + Start a combine
@@ -48,7 +52,13 @@ export function CombineSwitcher() {
         aria-haspopup="listbox"
         aria-expanded={open}
         title="Switch the active combine"
-        className="h-8 px-3 rounded-btn flex items-center gap-2 bg-tier-2 border border-tier-3 text-fg-primary hover:bg-tier-3 transition-colors"
+        className={[
+          h,
+          "px-3 rounded-btn flex items-center gap-2 transition-colors",
+          breached
+            ? "bg-tier-2 border border-bearish text-bearish"
+            : "bg-tier-2 border border-tier-3 text-fg-primary hover:bg-tier-3",
+        ].join(" ")}
         style={{ fontSize: 12, fontWeight: 500 }}
       >
         <span className="uppercase tracking-label-up truncate" style={{ maxWidth: 160 }}>
