@@ -1,8 +1,8 @@
 import { useState } from "react";
 
+import { CopyRoleBadge } from "@/components/combines/CombineSwitcher";
 import {
   useActivateAccount,
-  useActivateCombine,
   useArchiveCombine,
   useRenameCombine,
   useResetCombine,
@@ -11,17 +11,19 @@ import type { CombineOut } from "@/types/combine";
 
 /**
  * Responsive grid of combine ("account") cards — balance, closed P&L, MLL,
- * profit-target progress, plus rename / activate / archive. Shared by the
- * dashboard's "Your combines" panel and the dedicated Accounts page so the
- * card behavior lives in one place. Renders just the grid (no panel
- * chrome) — callers wrap it however they like.
+ * profit-target progress, plus rename / archive and the funded-activation
+ * prompt. Switching the active combine happens via the header CombineSwitcher
+ * pill, so the cards carry no "switch" button — the ACTIVE badge marks the
+ * current one and L/F badges mark the copy-trade lead / followers.
  */
 export function CombineCardsGrid({
   combines,
   activeCombineId,
+  leadCombineId,
 }: {
   combines: CombineOut[];
   activeCombineId: number | null | undefined;
+  leadCombineId?: number | null;
 }) {
   return (
     <div
@@ -33,6 +35,7 @@ export function CombineCardsGrid({
           key={c.id}
           combine={c}
           isActive={c.id === activeCombineId}
+          isLead={c.id === leadCombineId}
         />
       ))}
     </div>
@@ -42,11 +45,12 @@ export function CombineCardsGrid({
 function CombineCard({
   combine,
   isActive,
+  isLead,
 }: {
   combine: CombineOut;
   isActive: boolean;
+  isLead: boolean;
 }) {
-  const activate = useActivateCombine();
   const archive = useArchiveCombine();
   const rename = useRenameCombine();
   const reset = useResetCombine();
@@ -142,6 +146,7 @@ function CombineCard({
               failed
             </span>
           )}
+          <CopyRoleBadge isLead={isLead} isFollower={combine.copy_follow} />
         </div>
         <div
           className="text-fg-tertiary-2 tabular-nums mt-0.5"
@@ -212,18 +217,6 @@ function CombineCard({
       </div>
       {!archived && (
         <div className="px-3 pb-2.5 flex items-center gap-2">
-          {!isActive && (
-            <button
-              type="button"
-              disabled={activate.isPending}
-              onClick={() => activate.mutate(combine.id)}
-              title="Make this the account the terminal trades on."
-              className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
-              style={{ borderRadius: 0 }}
-            >
-              Switch to
-            </button>
-          )}
           {failed && (
             <button
               type="button"

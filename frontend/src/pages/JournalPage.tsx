@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 
+import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { DayModal } from "@/components/journal/DayModal";
 import { JournalCalendar } from "@/components/journal/JournalCalendar";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -198,6 +199,7 @@ function Toolbar({
         ))}
       </div>
       <div className="ml-auto flex items-center gap-2">
+        <CombineSwitcher />
         <button
           type="button"
           onClick={onExport}

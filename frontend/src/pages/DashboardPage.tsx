@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
 import { GaugeDial } from "@/components/analytics/GaugeDial";
 import { CombineCardsGrid } from "@/components/combines/CombineCards";
+import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { colors } from "@/lib/design";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -96,8 +97,9 @@ function DashboardBody() {
   return (
     <div className="p-3.5 flex flex-col gap-3.5">
       <ActivationBanner />
-      {/* Top strip: active combine identity + CTAs */}
+      {/* Top strip: account switcher + active combine identity + CTAs */}
       <div className="flex items-center gap-3 flex-wrap">
+        <CombineSwitcher />
         {account && (
           <>
             <MetricPill label="BAL" value={formatDollar(account.balance)} />
@@ -624,6 +626,7 @@ function CombineCards() {
       <CombineCardsGrid
         combines={combines}
         activeCombineId={data?.active_combine_id}
+        leadCombineId={data?.copy_lead_combine_id}
       />
     </Panel>
   );

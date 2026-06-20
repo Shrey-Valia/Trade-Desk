@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 
 import { CombineCardsGrid } from "@/components/combines/CombineCards";
+import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { CopyTradingPanel } from "@/components/combines/CopyTradingPanel";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { MetricPill } from "@/components/ui/MetricPill";
@@ -34,6 +35,7 @@ export function AccountsPage() {
         <div className="p-3.5 flex flex-col gap-3.5">
           {/* Roll-up across active accounts + new-combine CTA. */}
           <div className="flex items-center gap-3 flex-wrap">
+            <CombineSwitcher />
             <MetricPill label="OPEN ACCOUNTS" value={String(active.length)} />
             <MetricPill label="TOTAL BALANCE" value={formatDollar(totalBalance)} />
             <MetricPill
@@ -65,6 +67,7 @@ export function AccountsPage() {
                   <CombineCardsGrid
                     combines={active}
                     activeCombineId={data?.active_combine_id}
+                    leadCombineId={data?.copy_lead_combine_id}
                   />
                 ) : (
                   <Empty text="No open accounts — start one." />
@@ -75,6 +78,7 @@ export function AccountsPage() {
                   <CombineCardsGrid
                     combines={archived}
                     activeCombineId={data?.active_combine_id}
+                    leadCombineId={data?.copy_lead_combine_id}
                   />
                 </Section>
               )}
