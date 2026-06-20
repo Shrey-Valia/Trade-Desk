@@ -6,10 +6,12 @@ trades keep their combine_id, the card just leaves the active set).
 "Delete" is deliberately archive-only in v1 so no trade history is
 ever orphaned.
 
-Purchase is PLACEHOLDER ECONOMICS: a payments row with amount=NULL and
-status='placeholder_paid' is written in the same transaction as the
-combine. When Stripe lands, this endpoint becomes the post-checkout
-fulfillment hook and the row gains a real amount/status.
+Purchase uses SIMULATED economics: the product is a paper prop firm, so
+no real money moves, but the pricing is real (services/pricing.py). A
+purchase records a paid payments row at the matrix monthly price; once an
+account funds it is activated via /activate-account ($149 on the activation
+path, $0 on no-activation). When Stripe lands, /api/payments/checkout takes
+over the charge and this endpoint becomes a fallback.
 """
 
 from __future__ import annotations
@@ -27,14 +29,13 @@ from models.combine import Combine
 from models.combine_event import CombineEvent
 from models.payment import Payment
 from models.user import User
+from services import pricing
 from services.account_tiers import TIERS
 from services.auth import get_current_user
-from services.combine_objectives import generate_account_code
+from services.combine_provision import MAX_COMBINES, provision_combine
 from services.combine_state import combine_snapshot, record_event
 
 router = APIRouter(prefix="/api/combines", tags=["combines"])
-
-MAX_COMBINES = 5
 
 
 class CombineOut(BaseModel):
@@ -57,6 +58,9 @@ class CombineOut(BaseModel):
     day_locked: bool
     profit_target: float
     objective_progress: float
+    max_contracts: int = Field(
+        ..., description="Scaling-plan cap: max contracts per position at the current built equity."
+    )
     # --- funded-account lifecycle ---
     funded: bool = Field(..., description="True once the eval passed (auto-funded).")
     funded_at: datetime | None = None
@@ -66,6 +70,26 @@ class CombineOut(BaseModel):
     payout_requested: float = Field(
         ..., description="Lifetime payout already requested on this account."
     )
+    # --- pricing + activation ---
+    pricing_path: str = Field(..., description="activation | no_activation.")
+    profit_split: float = Field(..., description="Trader's profit share (0.80 or 0.50).")
+    monthly_price: float = Field(..., description="Monthly subscription for this combine.")
+    activation_required: bool = Field(
+        ..., description="Funded but not yet activated — payouts locked until the fee is paid."
+    )
+    activation_fee: float = Field(
+        ..., description="Activation fee owed to unlock payouts ($149 on the activation path, else 0)."
+    )
+    funded_activated: bool = Field(
+        ..., description="True once the funded account is activated (payouts unlocked)."
+    )
+    # --- copy trading ---
+    copy_follow: bool = Field(
+        ..., description="True if this combine mirrors the lead combine's trades."
+    )
+    copy_multiplier: float = Field(
+        ..., description="Size multiplier applied to the lead's contracts before clamping."
+    )
     created_at: datetime
 
 
@@ -74,11 +98,28 @@ class CombinesOut(BaseModel):
     active_combine_id: int | None
     slots_used: int = Field(..., description="Non-archived combines (counts against the cap).")
     slots_total: int
+    copy_lead_combine_id: int | None = Field(
+        None, description="The combine whose trades mirror to followers (None = off)."
+    )
+
+
+class FollowerConfig(BaseModel):
+    combine_id: int
+    multiplier: float = Field(1.0, ge=0.1, le=10.0)
+
+
+class CopyConfigIn(BaseModel):
+    lead_combine_id: int | None = None
+    followers: list[FollowerConfig] = Field(default_factory=list)
 
 
 class PurchaseIn(BaseModel):
     tier: Literal["50K", "100K", "150K"]
     name: str | None = Field(default=None, min_length=1, max_length=64)
+    # Pricing path + profit split, chosen on the buy screen. Defaults match
+    # the headline plan (standard 80/20 split on the activation path).
+    pricing_path: Literal["activation", "no_activation"] = "activation"
+    split: Literal["80_20", "50_50"] = "80_20"
 
 
 class RenameIn(BaseModel):
@@ -95,7 +136,9 @@ class CombineEventOut(BaseModel):
     id: int
     combine_id: int
     combine_name: str | None
-    type: str = Field(..., description="funded | failed | settled | reset | payout")
+    type: str = Field(
+        ..., description="funded | failed | settled | reset | payout | activation"
+    )
     message: str
     amount: float | None
     created_at: datetime
@@ -133,10 +176,21 @@ def _to_out(session: Session, combine: Combine) -> CombineOut:
         day_locked=snap.day_locked,
         profit_target=snap.profit_target,
         objective_progress=snap.objective_progress,
+        max_contracts=snap.max_contracts,
         funded=snap.funded,
         funded_at=snap.funded_at,
         payout_eligible=available,
         payout_requested=requested,
+        pricing_path=snap.pricing_path,
+        profit_split=snap.profit_split,
+        monthly_price=pricing.monthly_price(
+            combine.tier, snap.pricing_path, snap.profit_split
+        ),
+        activation_required=snap.activation_required,
+        activation_fee=snap.activation_fee,
+        funded_activated=snap.funded_activated,
+        copy_follow=combine.copy_follow,
+        copy_multiplier=combine.copy_multiplier,
         created_at=combine.created_at,
     )
 
@@ -148,16 +202,6 @@ def _owned_combine(session: Session, user: User, combine_id: int) -> Combine:
     if combine is None:
         raise HTTPException(404, f"combine {combine_id} not found")
     return combine
-
-
-def _slots_used(session: Session, user: User) -> int:
-    return len(
-        session.execute(
-            select(Combine.id).where(
-                Combine.user_id == user.id, Combine.status != "archived"
-            )
-        ).all()
-    )
 
 
 @router.get("", response_model=CombinesOut)
@@ -175,6 +219,7 @@ def list_combines(
         active_combine_id=user.active_combine_id,
         slots_used=sum(1 for c in combines if c.status != "archived"),
         slots_total=MAX_COMBINES,
+        copy_lead_combine_id=user.copy_lead_combine_id,
     )
 
 
@@ -213,49 +258,73 @@ def list_events(
     ]
 
 
+@router.put("/copy-config", response_model=CombinesOut)
+def set_copy_config(
+    payload: CopyConfigIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> CombinesOut:
+    """Set copy trading: which combine is the lead and which follow it.
+
+    The lead's trades mirror to every follower (services/copy_trade). The lead
+    can't also be a follower (it's removed from the set). All ids must be the
+    user's own combines. Passing lead_combine_id=null turns copy trading off."""
+    owned = {
+        c.id: c
+        for c in session.execute(
+            select(Combine).where(Combine.user_id == user.id)
+        ).scalars().all()
+    }
+    lead = payload.lead_combine_id
+    if lead is not None and lead not in owned:
+        raise HTTPException(404, f"combine {lead} not found")
+    # combine_id → multiplier, excluding the lead (it can't follow itself).
+    fmap = {f.combine_id: f.multiplier for f in payload.followers if f.combine_id != lead}
+    for fid in fmap:
+        if fid not in owned:
+            raise HTTPException(404, f"combine {fid} not found")
+
+    user.copy_lead_combine_id = lead
+    for cid, combine in owned.items():
+        if cid in fmap:
+            combine.copy_follow = True
+            combine.copy_multiplier = fmap[cid]
+        else:
+            combine.copy_follow = False
+        session.add(combine)
+    session.add(user)
+    session.commit()
+    return list_combines(user=user, session=session)
+
+
 @router.post("/purchase", response_model=CombineOut, status_code=201)
 def purchase_combine(
     payload: PurchaseIn,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
-    if _slots_used(session, user) >= MAX_COMBINES:
-        raise HTTPException(
-            409,
-            f"combine limit reached — you can hold at most {MAX_COMBINES} "
-            "combines; archive one to free a slot",
-        )
-    tier = TIERS[payload.tier]
-
-    # PLACEHOLDER — Stripe integration pending. Records the purchase
-    # event with no amount; the UI shows $XX until pricing is decided.
+    # Simulated paid purchase: no real money moves, but the recorded amount
+    # is the real matrix monthly price (provision_combine fills it from the
+    # chosen path + split). When Stripe is on the frontend routes through
+    # /api/payments/checkout instead and the webhook provisions with the
+    # Stripe-read amount.
+    split = pricing.split_value(payload.split)
     payment = Payment(
         user_id=user.id,
         tier=payload.tier,
-        amount=None,
-        status="placeholder_paid",
+        amount=None,  # set to the matrix monthly price in provision_combine
+        status="paid",
     )
     session.add(payment)
-
-    combine = Combine(
-        user_id=user.id,
-        tier=payload.tier,
-        name=(payload.name or "").strip() or f"{payload.tier} Combine",
-        account_code=generate_account_code(session, payload.tier, user.id),
-        hwm=tier.starting_balance,
-        settled_hwm=tier.starting_balance,
-        status="active",
-        outcome="active",
+    combine = provision_combine(
+        session,
+        user,
+        tier_key=payload.tier,
+        name=payload.name,
+        payment=payment,
+        pricing_path=payload.pricing_path,
+        profit_split=split,
     )
-    session.add(combine)
-    session.flush()
-    payment.combine_id = combine.id
-
-    # First combine auto-activates so the terminal works immediately.
-    if user.active_combine_id is None:
-        user.active_combine_id = combine.id
-        session.add(user)
-
     session.commit()
     session.refresh(combine)
     return _to_out(session, combine)
@@ -339,13 +408,19 @@ def request_payout(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> PayoutOut:
-    """Request a payout on a FUNDED account: the trader's 50% split of
-    realized profit, net of prior requests. Simulated — records a payout
-    event but moves no money (Stripe/banking lands with real pricing)."""
+    """Request a payout on a FUNDED, ACTIVATED account: the trader's split
+    (80/20 or 50/50) of realized profit, net of prior requests. Simulated —
+    records a payout event but moves no money."""
     combine = _owned_combine(session, user, combine_id)
     snap = combine_snapshot(session, combine)
     if not snap.funded:
         raise HTTPException(409, "account is not funded")
+    if snap.activation_required:
+        raise HTTPException(
+            409,
+            f"funded account not activated — pay the ${snap.activation_fee:,.0f} "
+            "activation fee to unlock payouts",
+        )
     available = max(0.0, snap.payout_eligible - _payouts_requested(session, combine.id))
     if available <= 0:
         raise HTTPException(409, "no payout currently available")
@@ -359,6 +434,50 @@ def request_payout(
     )
     session.commit()
     return PayoutOut(combine_id=combine.id, amount=available, requested_at=now)
+
+
+@router.post("/{combine_id}/activate-account", response_model=CombineOut)
+def activate_account(
+    combine_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> CombineOut:
+    """Activate a funded account — one unified flow for both paths. Charges
+    the $149 fee on the activation path and $0 on the no-activation path
+    (simulated), records the activation event, and unlocks payouts. 409 if
+    the account isn't funded or is already activated."""
+    combine = _owned_combine(session, user, combine_id)
+    snap = combine_snapshot(session, combine)
+    if not snap.funded:
+        raise HTTPException(409, "account is not funded")
+    if not snap.activation_required:
+        raise HTTPException(409, "funded account is already activated")
+    fee = pricing.activation_fee(combine.pricing_path)
+    now = datetime.now(timezone.utc)
+    combine.funded_activated_at = now
+    # Only the activation path charges; no $0 payment rows for no-activation.
+    if fee > 0:
+        session.add(
+            Payment(
+                user_id=user.id,
+                combine_id=combine.id,
+                tier=combine.tier,
+                amount=fee,
+                status="activation_paid",
+            )
+        )
+    record_event(
+        session,
+        combine,
+        "activation",
+        f"Funded account activated — ${fee:,.0f} activation fee paid."
+        if fee > 0
+        else "Funded account activated (no activation fee).",
+        amount=fee,
+    )
+    session.commit()
+    session.refresh(combine)
+    return _to_out(session, combine)
 
 
 @router.post("/{combine_id}/activate")

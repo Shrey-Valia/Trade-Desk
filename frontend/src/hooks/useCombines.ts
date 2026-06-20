@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  activateAccount,
   activateCombine,
   archiveCombine,
   fetchCombineEvents,
@@ -9,9 +10,13 @@ import {
   renameCombine,
   requestPayout,
   resetCombine,
+  updateCopyConfig,
 } from "@/lib/api";
 import { useActivePosition } from "@/stores/activePosition";
-import type { PurchaseInput } from "@/types/combine";
+import { toast } from "@/stores/toast";
+import type { CopyConfigInput, PurchaseInput } from "@/types/combine";
+
+const errMsg = (e: unknown) => (e as Error)?.message || "Something went wrong";
 
 export const COMBINES_KEY = ["combines"] as const;
 export const COMBINE_EVENTS_KEY = ["combines", "events"] as const;
@@ -40,11 +45,13 @@ export function usePurchaseCombine() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: PurchaseInput) => purchaseCombine(input),
-    onSuccess: () => {
+    onSuccess: (combine) => {
       qc.invalidateQueries({ queryKey: COMBINES_KEY });
       // First purchase auto-activates server-side → header state changes.
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
+      toast.success(`${combine.name} is ready to trade.`);
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 
@@ -70,7 +77,9 @@ export function useArchiveCombine() {
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: ["journal", "trades"] });
       clearActive();
+      toast.info("Combine archived.");
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 
@@ -84,7 +93,9 @@ export function useResetCombine() {
       qc.invalidateQueries({ queryKey: COMBINES_KEY });
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
+      toast.success("Evaluation reset — fresh start.");
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 
@@ -93,11 +104,46 @@ export function useRequestPayout() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => requestPayout(id),
-    onSuccess: () => {
+    onSuccess: (payout) => {
       qc.invalidateQueries({ queryKey: COMBINES_KEY });
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
+      toast.success(`Payout requested — $${payout.amount.toLocaleString()}.`);
     },
+    onError: (e) => toast.error(errMsg(e)),
+  });
+}
+
+/** Activate a funded combine (simulated) — charges $149 on the activation
+ *  path, $0 on no-activation — and unlocks payouts. */
+export function useActivateAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => activateAccount(id),
+    onSuccess: (combine) => {
+      qc.invalidateQueries({ queryKey: COMBINES_KEY });
+      qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
+      qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
+      toast.success(`${combine.name} activated — payouts unlocked.`);
+    },
+    onError: (e) => toast.error(errMsg(e)),
+  });
+}
+
+/** Set copy trading (lead + followers). Refreshes the combines list. */
+export function useUpdateCopyConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CopyConfigInput) => updateCopyConfig(input),
+    onSuccess: (data) => {
+      qc.setQueryData(COMBINES_KEY, data);
+      toast.success(
+        data.copy_lead_combine_id == null
+          ? "Copy trading off."
+          : "Copy trading updated.",
+      );
+    },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 

@@ -11,7 +11,6 @@ import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { useTrades } from "@/hooks/useTrades";
 import { fetchTradeAnalytics } from "@/lib/api";
 import { formatPercent, formatPrice } from "@/lib/formatters";
-import { useUserSettings } from "@/stores/userSettings";
 import { isZeroDteTrade } from "@/types/journal";
 import type { TierKey } from "@/types/account";
 
@@ -61,7 +60,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
 
   return (
     <header
-      className="flex items-center gap-3 border-b border-hairline bg-tier-1 px-3 shrink-0 relative"
+      className="flex items-center gap-2 border-b border-hairline bg-tier-1 px-3 shrink-0 relative"
       style={{ height: 64 }}
     >
       <CombineSelector />
@@ -70,7 +69,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
         onClick={() => setSearchOpen(true)}
       />
       <PriceReadout symbol={symbol} />
-      <div className="ml-auto flex items-center" style={{ gap: 8 }}>
+      <div className="ml-auto flex items-center" style={{ gap: 6 }}>
         <MetricPills />
       </div>
       <SymbolSearchModal
@@ -104,7 +103,7 @@ function SearchTrigger({
         "border-tier-3 hover:border-tier-4 hover:bg-tier-3",
         "flex items-center gap-2 text-left transition-colors duration-75",
       ].join(" ")}
-      style={{ width: 220, fontSize: 13 }}
+      style={{ width: 184, fontSize: 13 }}
       aria-label="Open symbol search"
       title="Open symbol search (/ or ⌘K)"
     >
@@ -178,7 +177,7 @@ function CombineSelector() {
         aria-expanded={open}
         title={`${data?.account_code ?? ""} — click to switch combines`}
       >
-        <span className="uppercase tracking-label-up truncate" style={{ maxWidth: 160 }}>
+        <span className="uppercase tracking-label-up truncate" style={{ maxWidth: 132 }}>
           {data?.combine_name ?? "Combine"}
         </span>
         <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
@@ -289,7 +288,6 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
 function MetricPills() {
   const { data: account } = useAccountState();
   const { data: tradesData } = useTrades();
-  const dllOverrides = useUserSettings((s) => s.dllOverrides);
   const activeTier = (account?.active_tier ?? "50K") as TierKey;
 
   // Header UP&L is an account-level number: the live unrealized P&L
@@ -375,14 +373,10 @@ function MetricPills() {
           ? "TARGET"
           : null;
 
-  // DLL budget — user can override per-tier in Settings; default falls
-  // back to the active tier's spec (Topstep-aligned 3% of starting
-  // balance, served by the backend). Display-only — no enforcement.
-  const dllBudget =
-    dllOverrides[activeTier] ??
-    account?.tiers.find((t) => t.key === activeTier)?.dll_amount ??
-    account?.dll_budget ??
-    0;
+  // DLL budget — the backend resolves the active combine's budget (the
+  // user's per-tier Settings override clamped to the band, else the tier
+  // default) and enforces it on opens, so we read it straight off the snapshot.
+  const dllBudget = account?.dll_budget ?? 0;
   // dll_used from backend is realized-only. Fold in any negative UPL
   // from the active position on this tier (positive UPL doesn't reduce
   // DLL_used — see services/account_tiers, the spec). Mirrors how BAL
@@ -429,6 +423,7 @@ function MetricPills() {
         label="TGT"
         value={formatDollar(combine.realizedProfit)}
         valueClass={tgtTone}
+        className="hidden min-[1280px]:flex"
         title={`Profit target ${formatDollar(combine.profitTarget)} (6%). Realized ${formatDollar(
           combine.realizedProfit,
         )}${combine.targetMet ? " — target MET" : ""}. Min ${combine.minTradingDays} trading days (traded ${combine.daysTraded}). Consistency: largest day ${Math.round(
@@ -480,20 +475,21 @@ function MetricPills() {
           </span>
         )}
       </MetricPill>
-      {/* RP&L/UP&L are derivable (bottom strip TODAY column + position
-          panel show the same numbers) — hide them first when the header
-          runs out of room so BAL/MLL/DLL/MKT never wrap or clip. */}
+      {/* Progressive disclosure so the header never clips: BAL/MLL/DLL/MKT
+          are always shown; TGT joins at ≥1280px; RP&L/UP&L (fully derivable
+          from the bottom strip's TODAY column + the position panel) only
+          appear at ≥1560px, where there's real room for all seven. */}
       <MetricPill
         label="RP&L"
         value={formatSigned(todayRpl)}
         signed={todayRpl}
-        className="hidden min-[1440px]:flex"
+        className="hidden min-[1560px]:flex"
       />
       <MetricPill
         label="UP&L"
         value={formatSigned(upl)}
         signed={upl}
-        className="hidden min-[1440px]:flex"
+        className="hidden min-[1560px]:flex"
       />
       <MarketPill />
     </>
@@ -552,8 +548,8 @@ function MetricPill({
       : "text-fg-primary");
   return (
     <div
-      className={`bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex-col leading-tight shrink-0 ${className ?? "flex"}`}
-      style={{ height: 44, minWidth: 110 }}
+      className={`bg-tier-2 border border-tier-3 rounded-btn px-2 py-1 flex-col leading-tight shrink-0 ${className ?? "flex"}`}
+      style={{ height: 44, minWidth: 72 }}
       title={title}
     >
       <span
@@ -564,7 +560,7 @@ function MetricPill({
       </span>
       <span
         className={`tabular-nums font-medium whitespace-nowrap ${valueClass}`}
-        style={{ fontSize: 15, marginTop: 2 }}
+        style={{ fontSize: 13, marginTop: 2 }}
       >
         {value}
         {children}
@@ -592,8 +588,8 @@ function MarketPill() {
   const tone = isOpen ? "text-bullish" : "text-bearish";
   return (
     <div
-      className="bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1 flex flex-col leading-tight shrink-0"
-      style={{ height: 44, minWidth: 150 }}
+      className="bg-tier-2 border border-tier-3 rounded-btn px-2 py-1 flex flex-col leading-tight shrink-0"
+      style={{ height: 44 }}
       title={status?.label}
     >
       <span

@@ -37,10 +37,11 @@ from database import get_session
 from models.combine import Combine
 from services.auth import get_active_combine
 from services.combine_state import combine_snapshot
+from services.copy_trade import mirror_open
 from models.trade import Trade
 from schemas.journal import TradeOut, compute_net_debit_credit
 from services.alpaca_client import get_chain_snapshot, get_quotes
-from services.fred_client import latest_dgs3mo_rate
+from services.fred_client import DEFAULT_RATE_FALLBACK, latest_dgs3mo_rate
 from services.market_calendar import is_market_open
 
 router = APIRouter(prefix="/api/zerodte", tags=["zerodte"])
@@ -263,7 +264,7 @@ def get_chain_table(
     try:
         rate = latest_dgs3mo_rate()
     except Exception:  # noqa: BLE001
-        rate = 0.045
+        rate = DEFAULT_RATE_FALLBACK
     t_close = _t_years_to_close()
 
     all_strikes = sorted({c.strike for c in same_day})
@@ -366,13 +367,22 @@ class OpenRequest(BaseModel):
     # buy = long straddle (debit); sell = short straddle (credit). Same
     # strike/expiry on both legs either way.
     action: Literal["buy", "sell"] = "buy"
+    # Optional SL/TP brackets pre-attached at entry (underlying price levels).
+    # The straddle quick-entry is always a MARKET fill; only the brackets are
+    # optional here.
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
 
 
 class OpenLegRequest(BaseModel):
     """Click-to-open from the chain table: a single call/put leg at the
     given strike, expiring today. `action` is buy (long) or sell (short).
-    `entry_price` is whatever the UI displayed at click time so what the
-    user clicked is what they get filled at."""
+
+    order_type="market" (default) fills immediately at `entry_price` (what
+    the UI showed at click time). order_type="limit"/"stop" places a WORKING
+    order — `limit_price` is the OPTION-premium trigger the monitor fills
+    against; `entry_price` is ignored. Optional stop_loss/take_profit are
+    UNDERLYING price levels (the draggable chart brackets)."""
 
     symbol: str = Field(min_length=1, max_length=16)
     side: Literal["call", "put"]
@@ -380,6 +390,10 @@ class OpenLegRequest(BaseModel):
     strike: float = Field(gt=0)
     entry_price: float = Field(ge=0)
     contracts: int = Field(gt=0, le=100, default=1)
+    order_type: Literal["market", "limit", "stop"] = "market"
+    limit_price: float | None = Field(default=None, gt=0)
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
 
 
 def _pick_fill_price(q: _LegQuote, action: str = "buy") -> float:
@@ -416,12 +430,17 @@ def _require_market_open() -> None:
         )
 
 
-def _require_tradeable(session: Session, combine: Combine) -> None:
+def _require_tradeable(
+    session: Session, combine: Combine, contracts: int | None = None
+) -> None:
     """Enforce the combine's standing rules on the OPEN path — the rule
     actually binds server-side, not just via the trade-ticket soft-gate.
     Blocks a FAILED eval (MLL floor breached; must be reset) and a DAY
     LOCK (today's DLL hit; lifts at the 5pm-PT settlement). A PASSED /
     funded account is NOT blocked — it keeps trading to accrue payout.
+    When `contracts` is given, also enforces the SCALING PLAN: the
+    requested size can't exceed the max allowed at the current built
+    equity (fixed intraday; re-evaluates at the 5pm-PT settlement).
     Computing the snapshot here also persists any pending settlement."""
     snap = combine_snapshot(session, combine)
     if snap.outcome == "failed":
@@ -434,6 +453,39 @@ def _require_tradeable(session: Session, combine: Combine) -> None:
             status_code=403,
             detail="Daily loss limit hit — no further trading today. The day-lock lifts at the 5pm-PT settlement.",
         )
+    if contracts is not None and contracts > snap.max_contracts:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Scaling plan: max {snap.max_contracts} contract"
+                f"{'s' if snap.max_contracts != 1 else ''} at your current "
+                f"balance (requested {contracts}). Build equity to scale up — "
+                "the limit re-evaluates at the 5pm-PT settlement."
+            ),
+        )
+
+
+# SL/TP brackets must sit at least this far from the current underlying —
+# the simulated analog of Topstep's "min 4 ticks from entry" guard, so a
+# bracket can't be placed effectively on top of spot and insta-trigger.
+MIN_BRACKET_FRAC = 0.001  # 0.1% of spot
+
+
+def _validate_brackets(
+    spot: float, stop_loss: float | None, take_profit: float | None
+) -> None:
+    """Reject SL/TP levels placed within MIN_BRACKET_FRAC of the underlying.
+    Side (above/below) is intentionally NOT constrained — the monitor derives
+    trigger direction from the fill price — but a level on top of spot would
+    fire instantly, so guard the minimum distance."""
+    min_dist = max(spot * MIN_BRACKET_FRAC, 0.01)
+    for label, level in (("stop_loss", stop_loss), ("take_profit", take_profit)):
+        if level is not None and abs(level - spot) < min_dist:
+            raise HTTPException(
+                422,
+                f"{label} {level:.2f} is too close to the underlying "
+                f"{spot:.2f} (min {min_dist:.2f} away).",
+            )
 
 
 def _require_today_expiry(target_expiry: date) -> None:
@@ -467,7 +519,7 @@ def open_zerodte_straddle(
     Strict 0DTE — refuses to open if today's expiry isn't listed.
     Refuses to open if the NYSE session is not OPEN."""
     _require_market_open()
-    _require_tradeable(session, combine)
+    _require_tradeable(session, combine, contracts=payload.contracts)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
     _require_today_expiry(expiry)
 
@@ -476,6 +528,7 @@ def open_zerodte_straddle(
     put_price = _pick_fill_price(put_q, action)
     if call_price == 0 or put_price == 0:
         raise HTTPException(503, f"{sym} indicative quotes unavailable at ATM {atm}")
+    _validate_brackets(spot, payload.stop_loss, payload.take_profit)
 
     contracts = payload.contracts
     legs_json: list[dict] = [
@@ -514,6 +567,8 @@ def open_zerodte_straddle(
         entry_underlying_price=spot,
         net_debit_credit=net,
         status="open",
+        stop_loss=payload.stop_loss,
+        take_profit=payload.take_profit,
         is_paper=True,
         notes=notes,
         tier=combine.tier,
@@ -525,6 +580,9 @@ def open_zerodte_straddle(
     session.add(trade)
     session.commit()
     session.refresh(trade)
+
+    # Copy trading: mirror to follower combines if this is the lead (best-effort).
+    mirror_open(session, combine, trade)
 
     return _trade_to_out(trade)
 
@@ -544,7 +602,7 @@ def open_zerodte_leg(
     Strict 0DTE: today's expiry must be listed for `symbol`. Refuses to
     open if the NYSE session is not OPEN."""
     _require_market_open()
-    _require_tradeable(session, combine)
+    _require_tradeable(session, combine, contracts=payload.contracts)
     sym = payload.symbol.upper().strip()
     chain = get_chain_snapshot(sym, with_volume=False)
     if not chain:
@@ -566,8 +624,19 @@ def open_zerodte_leg(
         raise HTTPException(503, f"{sym} quote unavailable")
     spot = float(quote.price)
 
-    if payload.entry_price <= 0:
-        raise HTTPException(400, "entry_price must be > 0")
+    is_working = payload.order_type in ("limit", "stop")
+    if is_working:
+        if payload.limit_price is None or payload.limit_price <= 0:
+            raise HTTPException(400, "limit_price must be > 0 for a limit/stop order")
+        # Expected fill (placeholder); the monitor overwrites with the real
+        # fill premium when the option mark crosses the trigger.
+        fill_ref = round(float(payload.limit_price), 4)
+    else:
+        if payload.entry_price <= 0:
+            raise HTTPException(400, "entry_price must be > 0")
+        fill_ref = round(float(payload.entry_price), 4)
+
+    _validate_brackets(spot, payload.stop_loss, payload.take_profit)
 
     action = payload.action
     side = payload.side
@@ -577,6 +646,8 @@ def open_zerodte_leg(
     else:
         strategy = "short_call" if side == "call" else "short_put"
         notes = f"0DTE short {side} · indicative credit"
+    if is_working:
+        notes = f"0DTE {payload.order_type} {side} · working @ {payload.limit_price}"
 
     leg_json = {
         "side": side,
@@ -584,7 +655,7 @@ def open_zerodte_leg(
         "strike": float(payload.strike),
         "expiry": target_expiry.isoformat(),
         "contracts": payload.contracts,
-        "entry_price": round(float(payload.entry_price), 4),
+        "entry_price": fill_ref,
     }
     from schemas.journal import TradeLeg
     net = compute_net_debit_credit([TradeLeg(**leg_json)])
@@ -595,7 +666,11 @@ def open_zerodte_leg(
         entry_date=datetime.now(timezone.utc),
         entry_underlying_price=spot,
         net_debit_credit=net,
-        status="open",
+        status="working" if is_working else "open",
+        order_type=payload.order_type,
+        limit_price=float(payload.limit_price) if is_working else None,
+        stop_loss=payload.stop_loss,
+        take_profit=payload.take_profit,
         is_paper=True,
         notes=notes,
         tier=combine.tier,
@@ -607,6 +682,10 @@ def open_zerodte_leg(
     session.add(trade)
     session.commit()
     session.refresh(trade)
+
+    # Copy trading: mirror to follower combines if this is the lead (best-effort).
+    mirror_open(session, combine, trade)
+
     return _trade_to_out(trade)
 
 
@@ -628,6 +707,11 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         is_paper=trade.is_paper,
         notes=trade.notes,
         tier=trade.tier,
+        order_type=trade.order_type,  # type: ignore[arg-type]
+        limit_price=trade.limit_price,
+        stop_loss=trade.stop_loss,
+        take_profit=trade.take_profit,
+        close_reason=trade.close_reason,  # type: ignore[arg-type]
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
         confidence=trade.confidence,
@@ -700,7 +784,7 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
     try:
         rate = latest_dgs3mo_rate()
     except Exception:  # noqa: BLE001
-        rate = 0.045
+        rate = DEFAULT_RATE_FALLBACK
 
     row = next((r for r in table.rows if r.strike == payload.strike), None)
 

@@ -74,6 +74,19 @@ export default {
         // Uppercase labels per DESIGN.md type spec.
         "label-up": "0.08em",
       },
+      keyframes: {
+        // Toast entrance: slide down + fade. Exit is handled by unmount
+        // (the store removes the node); a fade-in alone reads cleanly.
+        "toast-enter": {
+          from: { opacity: "0", transform: "translateY(-8px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
+      },
+      animation: {
+        // The global reduced-motion rule in index.css clamps duration, so
+        // this respects prefers-reduced-motion automatically.
+        "toast-enter": "toast-enter 180ms ease-out",
+      },
     },
   },
   plugins: [],

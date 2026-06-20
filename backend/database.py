@@ -74,6 +74,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _additive_migrate_trades()
     _additive_migrate_combines()
+    _additive_migrate_users()
     _create_missing_indexes()
     # AccountState seeding retired with the multi-user shell — the table
     # stays on disk purely as the migration source for legacy HWMs.
@@ -102,6 +103,15 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # Multi-user shell — which combine instance owns this trade.
     # Backfilled from `tier` by _backfill_multiuser().
     ("combine_id", "INTEGER"),
+    # Limit/stop orders + SL/TP brackets. order_type defaults to 'market'
+    # so existing rows read as immediate fills; the rest are nullable.
+    ("order_type", "VARCHAR(8) NOT NULL DEFAULT 'market'"),
+    ("limit_price", "FLOAT"),
+    ("stop_loss", "FLOAT"),
+    ("take_profit", "FLOAT"),
+    ("close_reason", "VARCHAR(12)"),
+    # Copy trading: the lead trade a mirrored row was copied from.
+    ("copied_from_trade_id", "INTEGER"),
 ]
 
 
@@ -139,7 +149,42 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # the eval-restart point set by a reset (NULL = original eval).
     ("funded_at", "DATETIME"),
     ("eval_reset_at", "DATETIME"),
+    # Real (simulated) pricing: the path + split chosen at purchase, and
+    # when the funded account was activated. Defaults match a legacy combine
+    # bought on the standard 80/20 activation path; funded_activated_at is
+    # backfilled from funded_at below so existing funded accounts stay
+    # unlocked rather than suddenly requiring an activation payment.
+    ("pricing_path", "VARCHAR(16) NOT NULL DEFAULT 'activation'"),
+    ("profit_split", "FLOAT NOT NULL DEFAULT 0.8"),
+    ("funded_activated_at", "DATETIME"),
+    # Copy trading: does this combine mirror the user's lead combine's trades,
+    # and the size multiplier applied before clamping to its cap.
+    ("copy_follow", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("copy_multiplier", "FLOAT NOT NULL DEFAULT 1.0"),
 ]
+
+# Copy trading added a lead pointer to users; per-tier DLL overrides added the
+# JSON column. Same idempotent additive pattern.
+_USER_COLUMN_ADDITIONS: list[tuple[str, str]] = [
+    ("copy_lead_combine_id", "INTEGER"),
+    ("dll_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
+]
+
+
+def _additive_migrate_users() -> None:
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("users")}
+    pending = [
+        (name, ddl) for name, ddl in _USER_COLUMN_ADDITIONS if name not in existing
+    ]
+    if not pending:
+        return
+    with engine.connect() as conn:
+        for name, ddl in pending:
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
+        conn.commit()
 
 
 def _additive_migrate_combines() -> None:
@@ -159,6 +204,16 @@ def _additive_migrate_combines() -> None:
         # unchanged at migration time (DEFAULT 0 would crater it).
         if "settled_hwm" in {name for name, _ in pending}:
             conn.execute(text("UPDATE combines SET settled_hwm = hwm"))
+        # Treat already-funded legacy accounts as activated so they keep
+        # their payout access (the activation gate only applies to combines
+        # funded after this column exists).
+        if "funded_activated_at" in {name for name, _ in pending}:
+            conn.execute(
+                text(
+                    "UPDATE combines SET funded_activated_at = funded_at "
+                    "WHERE funded_at IS NOT NULL"
+                )
+            )
         conn.commit()
 
 
@@ -213,9 +268,15 @@ def _backfill_multiuser(session_factory: sessionmaker) -> None:
             select(User).where(User.email == settings.dev_user_email)
         ).scalar_one_or_none()
         if dev_user is None:
+            # Never derive a login from a committed default — mint a random
+            # password when none is configured (the dev user is a migration
+            # artifact; set DEV_USER_PASSWORD to log in as it).
+            import secrets
+
+            password = settings.dev_user_password or secrets.token_urlsafe(24)
             dev_user = User(
                 email=settings.dev_user_email,
-                password_hash=hash_password(settings.dev_user_password),
+                password_hash=hash_password(password),
                 display_name="Dev",
             )
             session.add(dev_user)

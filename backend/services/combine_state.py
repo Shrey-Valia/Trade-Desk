@@ -33,12 +33,21 @@ from sqlalchemy.orm import Session
 from models.combine import Combine
 from models.combine_event import CombineEvent
 from models.trade import Trade
-from services.account_tiers import TIERS, compute_balance, compute_mll, update_hwm
+from models.user import User
+from services.account_tiers import (
+    TIERS,
+    compute_balance,
+    compute_mll,
+    resolve_dll_budget,
+    update_hwm,
+)
 from services.combine_objectives import (
     objective_progress,
     payout_eligible,
     profit_target,
 )
+from services.pricing import activation_fee as activation_fee_for
+from services.scaling_plan import max_contracts as scaling_max_contracts
 from services.combine_settlement import (
     MIN_TRADING_DAYS,
     consistency_ok,
@@ -63,6 +72,8 @@ class CombineSnapshot:
     day_locked: bool
     profit_target: float
     objective_progress: float
+    # --- scaling plan: max position size (contracts) by built equity ---
+    max_contracts: int
     # --- settlement engine: PASS / FAIL ---
     outcome: str  # "active" | "passed" | "failed"
     days_traded: int
@@ -73,6 +84,15 @@ class CombineSnapshot:
     funded: bool
     funded_at: datetime | None
     payout_eligible: float
+    # --- pricing + activation ---
+    pricing_path: str
+    profit_split: float
+    # True once the funded account is activated (no_activation: at funding;
+    # activation: when the $149 fee is paid). Payouts are gated on this.
+    funded_activated: bool
+    # Activation fee still owed to unlock payouts ($149 if required, else 0).
+    activation_required: bool
+    activation_fee: float
 
 
 def realized_sum_for_combine(
@@ -196,9 +216,17 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     # moves it (always up).
     mll = compute_mll(combine.tier, combine.settled_hwm)  # type: ignore[arg-type]
 
-    # DLL — today's realized loss within the current 5pm-PT trading day.
+    # Scaling plan — max contracts by built equity (settled profit above
+    # start). Fixed intraday like the MLL; only settlement re-evaluates it.
+    settled_profit = max(0.0, combine.settled_hwm - tier.starting_balance)
+    max_contracts = scaling_max_contracts(combine.tier, settled_profit)
+
+    # DLL — today's realized loss within the current 5pm-PT trading day,
+    # tested against the user's per-tier override (clamped) or the tier default.
     dll_used = dll_used_today_for_combine(session, combine.id, now, since)
-    dll_budget = tier.dll_amount
+    owner = session.get(User, combine.user_id)
+    dll_override = owner.dll_overrides.get(combine.tier) if owner else None
+    dll_budget = resolve_dll_budget(combine.tier, dll_override)  # type: ignore[arg-type]
     day_locked = dll_used >= dll_budget
 
     # PASS progress (realized-based), bucketed per 5pm-PT trading day.
@@ -227,6 +255,10 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
             outcome = "passed"
             combine.outcome = outcome
             combine.funded_at = now  # auto-fund on pass
+            # Activation is ALWAYS an explicit step (one unified flow): the
+            # account stays un-activated until the trader clicks Activate via
+            # /activate-account — which charges $149 on the activation path and
+            # $0 on the no-activation path.
             record_event(
                 session,
                 combine,
@@ -236,7 +268,12 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
             dirty = True
 
     funded = combine.funded_at is not None
-    eligible = payout_eligible(realized, funded)
+    funded_activated = combine.funded_activated_at is not None
+    # Payouts unlock only once the funded account is activated.
+    eligible = payout_eligible(realized, funded and funded_activated, combine.profit_split)
+    activation_required = funded and not funded_activated
+    # Fee owed to activate ($149 on the activation path, $0 on no-activation).
+    activation_fee = activation_fee_for(combine.pricing_path) if activation_required else 0.0
 
     if dirty:
         session.add(combine)
@@ -256,6 +293,7 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         day_locked=day_locked,
         profit_target=target,
         objective_progress=objective_progress(combine.tier, realized),
+        max_contracts=max_contracts,
         outcome=outcome,
         days_traded=days_traded,
         min_trading_days=MIN_TRADING_DAYS,
@@ -264,4 +302,9 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         funded=funded,
         funded_at=combine.funded_at,
         payout_eligible=eligible,
+        pricing_path=combine.pricing_path,
+        profit_split=combine.profit_split,
+        funded_activated=funded_activated,
+        activation_required=activation_required,
+        activation_fee=activation_fee,
     )

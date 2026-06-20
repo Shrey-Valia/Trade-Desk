@@ -71,10 +71,22 @@ export const AccountStateSchema = z.object({
   profit_target: z.number().optional(),
   /** realized/target clamped to [0,1]. */
   objective_progress: z.number().optional(),
+  /** Scaling-plan cap: max contracts per position at the current built equity. */
+  max_contracts: z.number().int().default(1),
   /** True once the eval passed (auto-funded). */
   funded: z.boolean().default(false),
-  /** Trader's 50% split of realized profit (gross; Payouts page nets requests). */
+  /** Trader's split of realized profit (0 until activated; Payouts page nets requests). */
   payout_eligible: z.number().default(0),
+  /** Trader's profit share once funded (0.80 or 0.50). */
+  profit_split: z.number().default(0.8),
+  /** Pricing path: "activation" | "no_activation". */
+  pricing_path: z.string().default("activation"),
+  /** Funded but not yet activated — payouts locked until the fee is paid. */
+  activation_required: z.boolean().default(false),
+  /** Activation fee owed to unlock payouts. */
+  activation_fee: z.number().default(0),
+  /** True once the funded account is activated. */
+  funded_activated: z.boolean().default(false),
   combines: z.array(CombineSummarySchema).optional(),
 });
 export type AccountState = z.infer<typeof AccountStateSchema>;

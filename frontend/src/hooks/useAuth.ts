@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { fetchMe, signin, signout, signup } from "@/lib/api";
+import { toast } from "@/stores/toast";
 import type { SigninInput, SignupInput } from "@/types/auth";
 
 export const ME_KEY = ["auth", "me"] as const;
@@ -26,6 +27,7 @@ export function useSignup() {
     mutationFn: (input: SignupInput) => signup(input),
     onSuccess: (user) => {
       qc.setQueryData(ME_KEY, user);
+      toast.success("Account created — welcome.");
     },
   });
 }
@@ -39,6 +41,7 @@ export function useSignin() {
       // A different user may have signed in — every cached per-user
       // payload (trades, account state, stars) is suspect.
       qc.invalidateQueries();
+      toast.success(`Signed in as ${user.email}.`);
     },
   });
 }

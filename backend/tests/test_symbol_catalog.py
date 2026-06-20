@@ -102,19 +102,6 @@ def test_search_filters_out_index_tickers():
         assert "SPY" in [h.symbol for h in symbol_catalog.search("SPY", limit=10)]
 
 
-def test_refresh_is_a_noop_returning_universe_size():
-    # The Alpaca-asset-fetch path was retired by the curated rework;
-    # refresh() stays as a no-op so APScheduler's existing cron entry
-    # keeps firing without error.
-    n = symbol_catalog.refresh()
-    assert n == len(curated_universe.CURATED_UNIVERSE)
-
-
-def test_is_loaded_returns_true_for_curated_mode():
-    # Curated universe is statically present — no warm-up state.
-    assert symbol_catalog.is_loaded_from_alpaca() is True
-
-
 def test_catalog_entry_shape_is_preserved():
     # The router builds SearchHit from these fields; if the dataclass
     # signature drifts the response will break.

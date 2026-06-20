@@ -15,6 +15,13 @@ export async function openZeroDteLeg(input: {
   strike: number;
   entry_price: number;
   contracts?: number;
+  /** market (default) fills now; limit/stop place a working order. */
+  order_type?: "market" | "limit" | "stop";
+  /** Option-premium trigger for a limit/stop order. */
+  limit_price?: number | null;
+  /** Optional SL/TP brackets (underlying price levels). */
+  stop_loss?: number | null;
+  take_profit?: number | null;
 }): Promise<Trade> {
   const res = await fetch(`${API_BASE}/api/zerodte/open-leg`, {
     method: "POST",
@@ -30,6 +37,10 @@ export async function openZeroDteLeg(input: {
       strike: input.strike,
       entry_price: input.entry_price,
       contracts: input.contracts ?? 1,
+      order_type: input.order_type ?? "market",
+      limit_price: input.limit_price ?? null,
+      stop_loss: input.stop_loss ?? null,
+      take_profit: input.take_profit ?? null,
     }),
   });
   if (!res.ok) {

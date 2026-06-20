@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from calculations.strategies import STRATEGY_TYPES
 
-TradeStatus = Literal["open", "closed"]
+TradeStatus = Literal["working", "open", "closed", "cancelled"]
+OrderType = Literal["market", "limit", "stop"]
+CloseReason = Literal["manual", "stop_loss", "take_profit", "expiry"]
 LegSide = Literal["call", "put"]
 LegAction = Literal["buy", "sell"]
 
@@ -116,6 +118,14 @@ class TradeUpdate(BaseModel):
     review_note: str | None = None
 
 
+class BracketsUpdate(BaseModel):
+    """PUT payload for SL/TP brackets — underlying price levels. Send BOTH
+    each time (PUT semantics): a null/omitted side CLEARS that bracket."""
+
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
+
+
 class TradeOut(BaseModel):
     id: int
     symbol: str
@@ -130,6 +140,14 @@ class TradeOut(BaseModel):
     realized_pnl: float | None = None
     is_paper: bool
     notes: str | None = None
+    # Limit/stop orders + SL/TP brackets. order_type defaults to market so
+    # legacy rows read as immediate fills. limit_price = option-premium entry
+    # trigger; stop_loss/take_profit = underlying price levels (chart brackets).
+    order_type: OrderType = "market"
+    limit_price: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    close_reason: CloseReason | None = None
     # Combine-tier introduction. Trades tagged with the tier they were
     # opened on; older rows (none exist post-wipe) default to "50K".
     tier: str = "50K"

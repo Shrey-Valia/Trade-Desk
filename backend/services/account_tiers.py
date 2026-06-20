@@ -67,6 +67,23 @@ def is_valid_tier(s: str) -> bool:
     return s in TIERS
 
 
+# A user's custom DLL may sit anywhere in this band of the tier's starting
+# balance (mirrors the frontend's 1-10% slider). Values outside are clamped.
+DLL_OVERRIDE_MIN_FRAC = 0.01
+DLL_OVERRIDE_MAX_FRAC = 0.10
+
+
+def resolve_dll_budget(tier_key: TierKey, override: float | None) -> float:
+    """The effective Daily Loss Limit for a tier: the user's override clamped
+    to the 1-10%-of-starting-balance band, or the tier default when unset."""
+    tier = TIERS[tier_key]
+    if override is None:
+        return tier.dll_amount
+    lo = DLL_OVERRIDE_MIN_FRAC * tier.starting_balance
+    hi = DLL_OVERRIDE_MAX_FRAC * tier.starting_balance
+    return min(max(float(override), lo), hi)
+
+
 def compute_mll(
     tier_key: TierKey,
     high_water_mark: float,

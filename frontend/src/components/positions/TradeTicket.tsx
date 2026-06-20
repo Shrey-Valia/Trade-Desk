@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { useAccountState } from "@/hooks/useAccountState";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
@@ -6,8 +6,6 @@ import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
 import { useTradeTicket, type TicketSelection } from "@/stores/tradeTicket";
-import { useUserSettings } from "@/stores/userSettings";
-import type { TierKey } from "@/types/account";
 
 /**
  * Lower-right TRADE TICKET (184px tall).
@@ -38,12 +36,25 @@ export function TradeTicket() {
   const selection = useTradeTicket((s) => s.selection);
   const contracts = useTradeTicket((s) => s.contracts);
   const setContracts = useTradeTicket((s) => s.setContracts);
+  const orderType = useTradeTicket((s) => s.orderType);
+  const setOrderType = useTradeTicket((s) => s.setOrderType);
+  const limitPrice = useTradeTicket((s) => s.limitPrice);
+  const setLimitPrice = useTradeTicket((s) => s.setLimitPrice);
   const clear = useTradeTicket((s) => s.clear);
 
   const legMutation = useOpenZeroDteLeg();
   const straddleMutation = useOpenZeroDteStraddle();
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
+
+  // Scaling-plan cap — max contracts per position at the current built
+  // equity (server-enforced too). Default high until account state loads so
+  // the UI never wrongly blocks; clamp the selection down if it exceeds.
+  const { data: accountState } = useAccountState();
+  const maxContracts = accountState?.max_contracts ?? 99;
+  useEffect(() => {
+    if (contracts > maxContracts) setContracts(maxContracts);
+  }, [contracts, maxContracts, setContracts]);
 
   // Combine engine soft-gate: a DAY LOCK (DLL hit today) or a FAILED
   // account blocks further opens — UX only; the backend open path is not
@@ -65,7 +76,13 @@ export function TradeTicket() {
   }, [legMutation.isError, legMutation.error, straddleMutation.isError, straddleMutation.error]);
 
   const hasSelection = !!selection;
-  const canFire = hasSelection && marketOpen && !pending && !locked;
+  // Order type only applies to single legs; the straddle quick-entry is
+  // always a market fill.
+  const isLeg = selection?.kind === "leg";
+  const effectiveOrderType = isLeg ? orderType : "market";
+  const needsLimit = effectiveOrderType !== "market";
+  const limitOk = !needsLimit || (limitPrice != null && limitPrice > 0);
+  const canFire = hasSelection && marketOpen && !pending && !locked && limitOk;
 
   // Synchronous double-click guard. The button's disabled prop tracks
   // mutation.isPending after react renders — but two synchronous clicks
@@ -103,6 +120,8 @@ export function TradeTicket() {
         strike: selection.strike,
         entry_price: selection.price,
         contracts,
+        order_type: effectiveOrderType,
+        limit_price: needsLimit ? limitPrice : null,
       },
       {
         onSuccess: () => clear(),
@@ -136,7 +155,19 @@ export function TradeTicket() {
       {passed && <PassedBanner />}
       {locked && <LockBanner reason={lockReason} />}
       <Summary selection={selection} contracts={contracts} />
-      <QuantityRow contracts={contracts} setContracts={setContracts} />
+      {isLeg && (
+        <OrderTypeRow
+          orderType={orderType}
+          setOrderType={setOrderType}
+          limitPrice={limitPrice}
+          setLimitPrice={setLimitPrice}
+        />
+      )}
+      <QuantityRow
+        contracts={contracts}
+        setContracts={setContracts}
+        maxContracts={maxContracts}
+      />
       <DllRiskHint selection={selection} contracts={contracts} />
       <Actions
         selection={selection}
@@ -299,14 +330,9 @@ function DllRiskHint({
   contracts: number;
 }) {
   const { data: account } = useAccountState();
-  const dllOverrides = useUserSettings((s) => s.dllOverrides);
   if (!account) return null;
-  const activeTier = (account.active_tier ?? "50K") as TierKey;
-  const dllBudget =
-    dllOverrides[activeTier] ??
-    account.tiers.find((t) => t.key === activeTier)?.dll_amount ??
-    account.dll_budget ??
-    0;
+  // Backend resolves + enforces the active combine's DLL (override or default).
+  const dllBudget = account.dll_budget ?? 0;
   if (dllBudget <= 0) return null;
   const remaining = Math.max(0, dllBudget - (account.dll_used ?? 0));
   const cost = selection.price * 100 * contracts;
@@ -317,7 +343,7 @@ function DllRiskHint({
       <div
         className="px-3 pb-1 text-bearish tabular-nums"
         style={{ fontSize: 10 }}
-        title="Realized losses today already meet your daily loss limit. Display-only — opens are not blocked."
+        title="Realized losses today have hit your daily loss limit — new opens are blocked until the 5pm-PT settlement."
       >
         DLL exhausted — any further loss exceeds today&rsquo;s budget
       </div>
@@ -333,7 +359,7 @@ function DllRiskHint({
       style={{ fontSize: 10 }}
       title={
         "Worst case if bought: the full debit. Compared against what's left of today's " +
-        "daily loss budget (realized losses only). Display-only — opens are not blocked."
+        "daily loss budget (realized losses only). Opens are blocked once realized losses hit the limit."
       }
     >
       if bought, max loss ${cost.toFixed(2)} ·{" "}
@@ -344,67 +370,147 @@ function DllRiskHint({
   );
 }
 
-function QuantityRow({
-  contracts,
-  setContracts,
+/**
+ * Order-type selector (Market | Limit | Stop) + a limit-price input that
+ * appears for limit/stop. The price is the OPTION premium the order fills
+ * against — a working order rests until the monitor sees the mark cross it.
+ */
+function OrderTypeRow({
+  orderType,
+  setOrderType,
+  limitPrice,
+  setLimitPrice,
 }: {
-  contracts: number;
-  setContracts: (n: number) => void;
+  orderType: "market" | "limit" | "stop";
+  setOrderType: (t: "market" | "limit" | "stop") => void;
+  limitPrice: number | null;
+  setLimitPrice: (p: number | null) => void;
 }) {
-  // Topstep preset ladder: − [VALUE] +  |  [1] [3] [5] [10] [15]
-  const presets = [1, 3, 5, 10, 15];
+  const types: Array<"market" | "limit" | "stop"> = ["market", "limit", "stop"];
   return (
-    <div className="flex items-center gap-3 px-3 pb-1 tabular-nums shrink-0">
-      <div className="flex items-center" style={{ gap: 4 }}>
-        <StepperButton
-          aria-label="Decrease quantity"
-          disabled={contracts <= 1}
-          onClick={() => setContracts(contracts - 1)}
-        >
-          −
-        </StepperButton>
-        <div
-          aria-live="polite"
-          className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums flex items-center justify-center"
-          style={{ width: 60, height: 32, fontSize: 16, fontWeight: 500 }}
-        >
-          {contracts}
-        </div>
-        <StepperButton
-          aria-label="Increase quantity"
-          onClick={() => setContracts(contracts + 1)}
-        >
-          +
-        </StepperButton>
-      </div>
+    <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0">
       <div className="flex" style={{ gap: 4 }}>
-        {presets.map((n) => {
-          const active = contracts === n;
+        {types.map((t) => {
+          const active = orderType === t;
           return (
             <button
-              key={n}
+              key={t}
               type="button"
-              onClick={() => setContracts(n)}
+              onClick={() => setOrderType(t)}
               aria-pressed={active}
               className={[
-                "tabular-nums transition-colors duration-100 font-medium",
-                "flex items-center justify-center select-none",
+                "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
                 active
                   ? "bg-tier-3 border border-amber text-amber"
                   : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
               ].join(" ")}
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: "50%",
-                fontSize: 12,
-              }}
+              style={{ height: 24, fontSize: 9 }}
             >
-              {n}
+              {t}
             </button>
           );
         })}
       </div>
+      {orderType !== "market" && (
+        <label className="flex items-center gap-1 ml-auto" style={{ fontSize: 10 }}>
+          <span className="uppercase tracking-label-up text-fg-tertiary-2">
+            {orderType === "stop" ? "stop @" : "limit @"}
+          </span>
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            step={0.01}
+            value={limitPrice ?? ""}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setLimitPrice(Number.isFinite(v) ? v : null);
+            }}
+            placeholder="0.00"
+            aria-label="Limit price (option premium)"
+            className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+            style={{ width: 64, height: 24, fontSize: 12 }}
+          />
+        </label>
+      )}
+    </div>
+  );
+}
+
+function QuantityRow({
+  contracts,
+  setContracts,
+  maxContracts,
+}: {
+  contracts: number;
+  setContracts: (n: number) => void;
+  maxContracts: number;
+}) {
+  // Topstep preset ladder: − [VALUE] +  |  [1] [3] [5] [10] [15]
+  const presets = [1, 3, 5, 10, 15];
+  const atMax = contracts >= maxContracts;
+  return (
+    <div className="flex flex-col gap-0.5 px-3 pb-1 shrink-0">
+      <div className="flex items-center gap-3 tabular-nums">
+        <div className="flex items-center" style={{ gap: 4 }}>
+          <StepperButton
+            aria-label="Decrease quantity"
+            disabled={contracts <= 1}
+            onClick={() => setContracts(contracts - 1)}
+          >
+            −
+          </StepperButton>
+          <div
+            aria-live="polite"
+            className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums flex items-center justify-center"
+            style={{ width: 60, height: 32, fontSize: 16, fontWeight: 500 }}
+          >
+            {contracts}
+          </div>
+          <StepperButton
+            aria-label="Increase quantity"
+            disabled={atMax}
+            onClick={() => setContracts(Math.min(maxContracts, contracts + 1))}
+          >
+            +
+          </StepperButton>
+        </div>
+        <div className="flex" style={{ gap: 4 }}>
+          {presets.map((n) => {
+            const active = contracts === n;
+            const blocked = n > maxContracts;
+            return (
+              <button
+                key={n}
+                type="button"
+                disabled={blocked}
+                onClick={() => setContracts(n)}
+                aria-pressed={active}
+                title={blocked ? `Scaling plan: max ${maxContracts} contracts` : undefined}
+                className={[
+                  "tabular-nums transition-colors duration-100 font-medium",
+                  "flex items-center justify-center select-none",
+                  blocked
+                    ? "bg-tier-1 border border-tier-2 text-fg-disabled cursor-not-allowed"
+                    : active
+                      ? "bg-tier-3 border border-amber text-amber"
+                      : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                ].join(" ")}
+                style={{ width: 32, height: 32, borderRadius: "50%", fontSize: 12 }}
+              >
+                {n}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 9 }}
+        title="Scaling plan — max position size grows with built equity; re-evaluates at the 5pm-PT settlement."
+      >
+        scaling · max {maxContracts} {maxContracts === 1 ? "contract" : "contracts"}
+      </span>
     </div>
   );
 }

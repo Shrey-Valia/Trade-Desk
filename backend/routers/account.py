@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from database import get_session
 from models.combine import Combine
 from models.user import User
-from services.account_tiers import ALL_TIERS, TIERS
+from services.account_tiers import ALL_TIERS, TIERS, resolve_dll_budget
 from services.auth import get_current_user
 from services.combine_state import combine_snapshot
 
@@ -110,11 +110,26 @@ class AccountStateOut(BaseModel):
     combine_status: str = Field(..., description="Lifecycle: active | archived.")
     profit_target: float = Field(..., description="Realized profit needed to PASS (6%).")
     objective_progress: float = Field(..., description="realized/target clamped to [0,1].")
+    max_contracts: int = Field(
+        ...,
+        description=(
+            "Scaling-plan cap: max contracts per position at the current built"
+            " equity. Fixed intraday; re-evaluates at the 5pm-PT settlement."
+        ),
+    )
     # -- funded-account lifecycle ---------------------------------------------
     funded: bool = Field(..., description="True once the eval passed (auto-funded).")
     payout_eligible: float = Field(
         ..., description="Trader's split of realized profit (gross; Payouts page nets prior requests)."
     )
+    # -- pricing + activation -------------------------------------------------
+    profit_split: float = Field(..., description="Trader's profit share (0.80 or 0.50).")
+    pricing_path: str = Field(..., description="activation | no_activation.")
+    activation_required: bool = Field(
+        ..., description="Funded but not yet activated — payouts locked until the fee is paid."
+    )
+    activation_fee: float = Field(..., description="Activation fee owed to unlock payouts.")
+    funded_activated: bool = Field(..., description="True once the funded account is activated.")
     combines: list[CombineSummary]
 
 
@@ -155,8 +170,14 @@ def get_account_state(
         combine_status=combine.status,
         profit_target=snap.profit_target,
         objective_progress=snap.objective_progress,
+        max_contracts=snap.max_contracts,
         funded=snap.funded,
         payout_eligible=snap.payout_eligible,
+        profit_split=snap.profit_split,
+        pricing_path=snap.pricing_path,
+        activation_required=snap.activation_required,
+        activation_fee=snap.activation_fee,
+        funded_activated=snap.funded_activated,
         combines=[
             CombineSummary(
                 id=c.id,
@@ -168,6 +189,45 @@ def get_account_state(
             for c in all_combines
         ],
     )
+
+
+class DllOverridesOut(BaseModel):
+    overrides: dict[str, float] = Field(
+        default_factory=dict, description="User's per-tier DLL overrides (dollars)."
+    )
+
+
+class DllOverridesIn(BaseModel):
+    overrides: dict[str, float]
+
+
+@router.get("/dll-overrides", response_model=DllOverridesOut)
+def get_dll_overrides(
+    user: User = Depends(get_current_user),
+) -> DllOverridesOut:
+    """The user's per-tier DLL overrides (available with zero combines, so the
+    Settings editor works before any account is purchased)."""
+    return DllOverridesOut(overrides=user.dll_overrides)
+
+
+@router.put("/dll-overrides", response_model=DllOverridesOut)
+def set_dll_overrides(
+    payload: DllOverridesIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> DllOverridesOut:
+    """Set per-tier DLL overrides. Each value is clamped to the
+    1-10%-of-starting-balance band; unknown tiers are rejected. These are
+    ENFORCED on the open path (combine_state resolves the budget from them)."""
+    cleaned: dict[str, float] = {}
+    for tier_key, amount in payload.overrides.items():
+        if tier_key not in TIERS:
+            raise HTTPException(422, f"unknown tier {tier_key}")
+        cleaned[tier_key] = resolve_dll_budget(tier_key, amount)  # type: ignore[arg-type]
+    user.dll_overrides = cleaned
+    session.add(user)
+    session.commit()
+    return DllOverridesOut(overrides=cleaned)
 
 
 def _active_combine_or_404(session: Session, user: User) -> Combine:

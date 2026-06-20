@@ -65,6 +65,25 @@ class Trade(Base):
     screenshot_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # --- Limit/stop orders + SL/TP brackets (order monitor) ---------------
+    # `status` carries the order lifecycle: working (limit/stop placed, not
+    # yet filled) → open → closed; or cancelled (working order pulled).
+    # order_type describes the ENTRY. limit_price is the OPTION-premium
+    # trigger for a limit/stop entry. stop_loss / take_profit are UNDERLYING
+    # price levels (the draggable chart brackets) checked by the monitor;
+    # close_reason records what closed the position (manual/stop/target/expiry).
+    order_type: Mapped[str] = mapped_column(String(8), nullable=False, default="market")
+    limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(12), nullable=True)
+
+    # Copy trading: the LEAD trade this row was mirrored from (None for an
+    # original trade). Lets a lead close cascade to its follower copies.
+    copied_from_trade_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         nullable=False,

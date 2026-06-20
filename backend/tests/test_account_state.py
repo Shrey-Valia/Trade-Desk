@@ -8,6 +8,8 @@ activates the newest combine of the requested tier.
 
 from __future__ import annotations
 
+import pytest
+
 from database import get_session
 from models.combine import Combine
 from models.trade import Trade
@@ -405,8 +407,14 @@ def test_pass_auto_funds_and_accrues_payout(auth_client):
     r = auth_client.get("/api/account/state").json()
     assert r["status"] == "passed"
     assert r["funded"] is True
-    # 50/50 split of 3_200 realized profit.
-    assert r["payout_eligible"] == 1_600
+    # Default activation path → payouts locked until the $149 fee is paid.
+    assert r["activation_required"] is True
+    assert r["payout_eligible"] == 0
+    # Activate, then the 80/20 split of 3_200 realized profit accrues.
+    assert auth_client.post(f"/api/combines/{c['id']}/activate-account").status_code == 200
+    r2 = auth_client.get("/api/account/state").json()
+    assert r2["activation_required"] is False
+    assert r2["payout_eligible"] == pytest.approx(2_560)  # 0.80 × 3_200
 
 
 def test_reset_failed_combine_restarts_eval_and_keeps_history(auth_client):
@@ -446,10 +454,12 @@ def test_payout_request_nets_and_blocks_when_empty(auth_client):
         auth_client, combine_id=c["id"], realized=1_600, exit_at=_today_et_noon()
     )
     auth_client.get("/api/account/state")  # funds the account
+    # Activate the funded account (activation path) to unlock payouts.
+    assert auth_client.post(f"/api/combines/{c['id']}/activate-account").status_code == 200
 
     p = auth_client.post(f"/api/combines/{c['id']}/payout")
     assert p.status_code == 200
-    assert p.json()["amount"] == 1_600
+    assert p.json()["amount"] == pytest.approx(2_560)  # 0.80 × 3_200
 
     # Available is now zero → a second request is blocked.
     assert auth_client.post(f"/api/combines/{c['id']}/payout").status_code == 409
@@ -459,7 +469,7 @@ def test_payout_request_nets_and_blocks_when_empty(auth_client):
         for x in auth_client.get("/api/combines").json()["combines"]
         if x["id"] == c["id"]
     )
-    assert card["payout_requested"] == 1_600
+    assert card["payout_requested"] == pytest.approx(2_560)
     assert card["payout_eligible"] == 0
 
 

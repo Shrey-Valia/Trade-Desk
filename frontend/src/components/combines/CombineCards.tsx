@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import {
+  useActivateAccount,
   useActivateCombine,
   useArchiveCombine,
   useRenameCombine,
@@ -49,6 +50,7 @@ function CombineCard({
   const archive = useArchiveCombine();
   const rename = useRenameCombine();
   const reset = useResetCombine();
+  const activateAccount = useActivateAccount();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(combine.name);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -162,7 +164,35 @@ function CombineCard({
           }
         />
         <CardRow label="MLL" value={formatDollar(combine.mll)} />
-        {combine.funded && (
+        {combine.funded && combine.activation_required && (
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className="uppercase tracking-label-up text-fg-tertiary-2"
+              style={{ fontSize: 9 }}
+            >
+              Payouts
+            </span>
+            <button
+              type="button"
+              disabled={activateAccount.isPending}
+              onClick={() => activateAccount.mutate(combine.id)}
+              title={
+                combine.activation_fee > 0
+                  ? `Activate this funded account — a one-time $${combine.activation_fee} fee unlocks payouts (simulated).`
+                  : "Activate this funded account — free on the no-activation plan — to unlock payouts."
+              }
+              className="h-5 px-1.5 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
+              style={{ borderRadius: 0, fontSize: 9 }}
+            >
+              {activateAccount.isPending
+                ? "…"
+                : combine.activation_fee > 0
+                  ? `Activate $${combine.activation_fee}`
+                  : "Activate (free)"}
+            </button>
+          </div>
+        )}
+        {combine.funded && !combine.activation_required && (
           <CardRow
             label="Payout avail."
             value={formatDollar(combine.payout_eligible)}

@@ -40,7 +40,36 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
     cookie_secure: bool = False
     dev_user_email: str = "dev@local"
-    dev_user_password: str = "devpassword"
+    # No password is committed to source. If left blank, the one-time
+    # legacy-DB backfill mints a random one (the dev user is a migration
+    # artifact, not a login). Set DEV_USER_PASSWORD in .env only if you need
+    # to sign in as it after adopting a pre-multi-user database.
+    dev_user_password: str = ""
+
+    # ---------------------------------------------------------------------
+    # Stripe (OPT-IN). Payments go live ONLY when stripe_secret_key is set;
+    # otherwise the app keeps the free placeholder purchase flow untouched.
+    # Per-tier prices are Stripe Price IDs (price_…) — NO dollar amounts are
+    # hardcoded anywhere; pricing is owned by the Stripe dashboard, and the
+    # paid amount is read back from the completed Checkout Session. A tier
+    # whose price ID is blank can't be checked out (503 "pricing not
+    # configured") even when Stripe is otherwise enabled.
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_50k: str = ""
+    stripe_price_100k: str = ""
+    stripe_price_150k: str = ""
+    # Where Stripe redirects after Checkout. Frontend reads ?purchase=… to
+    # toast the result. Override per-deployment.
+    stripe_success_url: str = "http://localhost:5173/dashboard?purchase=success"
+    stripe_cancel_url: str = "http://localhost:5173/dashboard?purchase=cancelled"
+
+    # ---------------------------------------------------------------------
+    # Auth brute-force throttle. Per-IP, per-endpoint fixed window: at most
+    # `attempts` signin/signup tries per `window_s` seconds before a 429.
+    # Set attempts <= 0 to disable (e.g. behind an upstream rate limiter).
+    auth_rate_limit_attempts: int = 10
+    auth_rate_limit_window_s: int = 60
 
     # ---------------------------------------------------------------------
     # 0DTE-eligible universe — the ONLY symbols Trade Desk allows users

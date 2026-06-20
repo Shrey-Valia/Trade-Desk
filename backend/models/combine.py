@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, String
+from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
@@ -59,6 +59,27 @@ class Combine(Base):
     # When the evaluation passed and the account auto-funded. None until the
     # combine passes; once set, the account is FUNDED and accrues payout.
     funded_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # Pricing path chosen at purchase, fixed for the combine's life:
+    # "activation" (lower monthly + a one-time $149 fee on funding) or
+    # "no_activation" (higher monthly, $0 fee). See services/pricing.py.
+    pricing_path: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="activation"
+    )
+    # Trader's share of funded-account profit, chosen at purchase: 0.80
+    # (80/20, normal) or 0.50 (50/50, −$10/mo). Drives payout_eligible.
+    profit_split: Mapped[float] = mapped_column(Float, nullable=False, default=0.80)
+    # When the funded account was ACTIVATED (the fee paid via /activate-account
+    # — $149 on the activation path, $0 on no-activation). None until activated;
+    # payouts are gated on it.
+    funded_activated_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True
+    )
+    # Copy trading: when True, this combine mirrors trades opened on the
+    # user's lead combine (user.copy_lead_combine_id). See services/copy_trade.
+    copy_follow: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Size multiplier applied to the lead's contract count before clamping to
+    # this follower's cap (e.g. 0.5×, 1×, 2×). Only meaningful when following.
+    copy_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     # Eval restart point. A reset (after a fail) stamps this; the engine then
     # counts only trades opened at/after it toward the eval — so the eval
     # starts fresh while the trade HISTORY is preserved (rows are never deleted).

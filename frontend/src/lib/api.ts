@@ -38,7 +38,6 @@ import {
   type TradeUpdateInput,
   type TradesResponse,
 } from "@/types/journal";
-import { NewsResponseSchema, type NewsResponse } from "@/types/news";
 import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
 import { WatchlistResponseSchema, type WatchlistResponse } from "@/types/watchlist";
 import { AccountStateSchema, type AccountState } from "@/types/account";
@@ -56,6 +55,7 @@ import {
   type CombineEvent,
   type CombineOut,
   type CombinesOut,
+  type CopyConfigInput,
   type PayoutOut,
   type PurchaseInput,
 } from "@/types/combine";
@@ -101,17 +101,6 @@ export const fetchWatchlist = (): Promise<WatchlistResponse> =>
 export const fetchTickerDetail = (symbol: string): Promise<TickerDetail> =>
   request(`/api/ticker/${encodeURIComponent(symbol)}/detail`, TickerDetailSchema);
 
-/** Ticker-scoped headlines. Server caches per symbol (5min); a 503 here
- *  means the upstream feed errored/rate-limited (distinct from an empty
- *  but successful `items: []`) and surfaces as react-query `isError`. */
-export const fetchTickerNews = (
-  symbol: string,
-  limit = 20,
-): Promise<NewsResponse> =>
-  request(
-    `/api/news?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
-    NewsResponseSchema,
-  );
 
 export const fetchTickerChart = (
   symbol: string,
@@ -273,13 +262,43 @@ export const activateCombine = (id: number): Promise<AccountState> =>
 export const resetCombine = (id: number): Promise<CombineOut> =>
   mutate(`/api/combines/${id}/reset`, CombineOutSchema, { method: "POST" });
 
-/** Request a payout on a funded account (simulated). */
+/** Request a payout on a funded, activated account (simulated). */
 export const requestPayout = (id: number): Promise<PayoutOut> =>
   mutate(`/api/combines/${id}/payout`, PayoutOutSchema, { method: "POST" });
+
+/** Activate a funded combine (one unified flow — charges $149 on the
+ *  activation path, $0 on no-activation); unlocks payouts. */
+export const activateAccount = (id: number): Promise<CombineOut> =>
+  mutate(`/api/combines/${id}/activate-account`, CombineOutSchema, { method: "POST" });
 
 /** Recent lifecycle events across the user's combines (newest first). */
 export const fetchCombineEvents = (): Promise<CombineEvent[]> =>
   request("/api/combines/events", z.array(CombineEventSchema));
+
+/** Set copy trading: the lead combine + which combines follow it. Returns
+ *  the refreshed combines payload. */
+export const updateCopyConfig = (input: CopyConfigInput): Promise<CombinesOut> =>
+  mutate("/api/combines/copy-config", CombinesOutSchema, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+
+// -- DLL overrides (server-enforced) -----------------------------------------
+
+const DllOverridesSchema = z.object({ overrides: z.record(z.number()) });
+
+/** The user's per-tier DLL overrides ({tier: dollars}). */
+export const fetchDllOverrides = (): Promise<Record<string, number>> =>
+  request("/api/account/dll-overrides", DllOverridesSchema).then((r) => r.overrides);
+
+/** Replace the user's per-tier DLL overrides (server clamps to the band). */
+export const updateDllOverrides = (
+  overrides: Record<string, number>,
+): Promise<Record<string, number>> =>
+  mutate("/api/account/dll-overrides", DllOverridesSchema, {
+    method: "PUT",
+    body: JSON.stringify({ overrides }),
+  }).then((r) => r.overrides);
 
 // -- auth --------------------------------------------------------------------
 
@@ -306,6 +325,21 @@ export const updateTrade = (id: number, patch: TradeUpdateInput): Promise<Trade>
     method: "PATCH",
     body: JSON.stringify(patch),
   });
+
+/** Set/clear SL/TP brackets (underlying price levels). PUT semantics: send
+ *  both each time — a null side clears that bracket. */
+export const setBrackets = (
+  id: number,
+  brackets: { stop_loss: number | null; take_profit: number | null },
+): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/brackets`, TradeOutSchema, {
+    method: "PUT",
+    body: JSON.stringify(brackets),
+  });
+
+/** Cancel a working (unfilled) limit/stop order. */
+export const cancelOrder = (id: number): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/cancel`, TradeOutSchema, { method: "POST" });
 
 export const deleteTrade = async (id: number): Promise<void> => {
   const res = await fetch(`${API_BASE}/api/journal/trades/${id}`, {

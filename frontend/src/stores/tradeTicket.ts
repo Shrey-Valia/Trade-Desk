@@ -17,6 +17,8 @@ import { create } from "zustand";
  */
 export type TicketKind = "leg" | "straddle";
 export type TicketSide = "call" | "put";
+/** Entry order type — market fills now; limit/stop place a working order. */
+export type TicketOrderType = "market" | "limit" | "stop";
 
 export interface TicketSelection {
   kind: TicketKind;
@@ -33,16 +35,29 @@ export interface TicketSelection {
 interface TradeTicketState {
   selection: TicketSelection | null;
   contracts: number;
+  /** Entry order type. limit/stop reveal the limitPrice input. */
+  orderType: TicketOrderType;
+  /** Option-premium trigger for a limit/stop order (per-share). */
+  limitPrice: number | null;
   setSelection: (sel: TicketSelection | null) => void;
   setContracts: (n: number) => void;
+  setOrderType: (t: TicketOrderType) => void;
+  setLimitPrice: (p: number | null) => void;
   clear: () => void;
 }
 
 export const useTradeTicket = create<TradeTicketState>((set) => ({
   selection: null,
   contracts: 1,
-  setSelection: (selection) => set({ selection }),
+  orderType: "market",
+  limitPrice: null,
+  // Selecting a contract seeds limitPrice to its indicative price so a
+  // limit/stop order starts at a sensible default the user can nudge.
+  setSelection: (selection) =>
+    set({ selection, limitPrice: selection ? selection.price : null }),
   setContracts: (n) =>
     set({ contracts: Math.max(1, Math.min(100, Math.floor(n))) }),
-  clear: () => set({ selection: null }),
+  setOrderType: (orderType) => set({ orderType }),
+  setLimitPrice: (limitPrice) => set({ limitPrice }),
+  clear: () => set({ selection: null, orderType: "market", limitPrice: null }),
 }));

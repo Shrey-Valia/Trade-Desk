@@ -14,6 +14,7 @@ from jobs.collect_options_chain import collect_options_chain
 from jobs.prewarm_hot_tickers import prewarm_hot_tickers
 from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
+from jobs.monitor_orders import monitor_orders
 from jobs.settle_combines import settle_combines
 from routers import account as account_router
 from routers import analytics as analytics_router
@@ -22,13 +23,12 @@ from routers import combines as combines_router
 from routers import calendar as calendar_router
 from routers import journal as journal_router
 from routers import market as market_router
-from routers import news as news_router
+from routers import payments as payments_router
 from routers import ticker as ticker_router
 from routers import ticker_search as ticker_search_router
 from routers import user_browse as user_browse_router
 from routers import watchlist as watchlist_router
 from routers import zerodte as zerodte_router
-from services import symbol_catalog
 
 logging.basicConfig(
     level=settings.log_level,
@@ -106,24 +106,6 @@ async def lifespan(app: FastAPI):
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,
     )
-    # Symbol catalog refresh — daily at 09:35 ET (5 min after open) so
-    # any newly-listed symbols become searchable by the time the
-    # session is running. APScheduler keeps the prior catalog in
-    # memory if the call fails, so a flaky network doesn't blank the
-    # search.
-    scheduler.add_job(
-        symbol_catalog.refresh,
-        trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour=9,
-            minute=35,
-            timezone="America/New_York",
-        ),
-        id="symbol_catalog_refresh",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=_SCHED_GRACE,
-    )
     # Combine settlement / auto-fail / auto-fund every 5 minutes so the
     # rules fire on a clock, not only when account state is read. DB+CPU
     # only (no network), so the short interval is cheap; idempotent.
@@ -131,6 +113,16 @@ async def lifespan(app: FastAPI):
         settle_combines,
         trigger=IntervalTrigger(minutes=5),
         id="settle_combines",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    # Order monitor — fill working limit/stop orders + auto-close SL/TP
+    # brackets every 20s during market hours. No-ops out of session.
+    scheduler.add_job(
+        monitor_orders,
+        trigger=IntervalTrigger(seconds=20),
+        id="monitor_orders",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,
@@ -143,7 +135,7 @@ async def lifespan(app: FastAPI):
     # them via to_thread so they don't block the event loop, and so the
     # async-running-loop landmine in prewarm doesn't fire.
     async def _background_warm() -> None:
-        log.info("background warm: starting refresh_watchlist + prewarm + symbol catalog")
+        log.info("background warm: starting refresh_watchlist + prewarm")
         try:
             await asyncio.to_thread(refresh_watchlist, force=True)
         except Exception:  # noqa: BLE001
@@ -152,14 +144,6 @@ async def lifespan(app: FastAPI):
             await asyncio.to_thread(prewarm_hot_tickers, force=True)
         except Exception:  # noqa: BLE001
             log.exception("background prewarm_hot_tickers failed")
-        # Symbol catalog warm — the search endpoint serves the fallback
-        # 16-symbol list until this populates (~5-10 seconds against
-        # Alpaca's assets endpoint). Logged separately so the boot
-        # timeline shows when the live catalog landed.
-        try:
-            await asyncio.to_thread(symbol_catalog.refresh)
-        except Exception:  # noqa: BLE001
-            log.exception("background symbol_catalog refresh failed")
         log.info("background warm: complete")
 
     warm_task = asyncio.create_task(_background_warm())
@@ -190,13 +174,13 @@ app.include_router(watchlist_router.router)
 app.include_router(ticker_router.router)
 app.include_router(calendar_router.router)
 app.include_router(market_router.router)
-app.include_router(news_router.router)
 app.include_router(journal_router.router)
 app.include_router(analytics_router.router)
 app.include_router(zerodte_router.router)
 app.include_router(account_router.router)
 app.include_router(auth_router.router)
 app.include_router(combines_router.router)
+app.include_router(payments_router.router)
 app.include_router(ticker_search_router.router)
 app.include_router(user_browse_router.router_user)
 app.include_router(user_browse_router.router_ticker)

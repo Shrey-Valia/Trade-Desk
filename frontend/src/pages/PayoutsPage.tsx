@@ -1,14 +1,15 @@
 import { PageHeader } from "@/components/layout/PageHeader";
 import { MetricPill } from "@/components/ui/MetricPill";
-import { useCombines, useRequestPayout } from "@/hooks/useCombines";
+import { useActivateAccount, useCombines, useRequestPayout } from "@/hooks/useCombines";
+import { splitPct, splitTokenFromValue } from "@/lib/pricing";
 import type { CombineOut } from "@/types/combine";
 
 /**
  * /payouts — funded-account payouts (Topstep's Payouts tab). Lists every
- * FUNDED combine with its available payout (the trader's 50% split of
- * realized profit, net of prior requests) and a request button. Simulated:
- * requesting logs an event and moves no money (real banking lands with
- * pricing/Stripe).
+ * FUNDED combine with its available payout (the trader's chosen 80/20 or
+ * 50/50 split of realized profit, net of prior requests) and a request
+ * button. Accounts on the activation path must pay the one-time $149 fee
+ * first. Simulated: requesting logs an event and moves no money.
  */
 export function PayoutsPage() {
   const { data, isPending } = useCombines();
@@ -21,7 +22,7 @@ export function PayoutsPage() {
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
       <PageHeader
         title="Payouts"
-        subtitle="Funded accounts · trader keeps 50% of profit (simulated)"
+        subtitle="Funded accounts · your share of profit, on request (simulated)"
       />
       <main className="flex-1 min-h-0 overflow-y-auto border-t border-hairline">
         <div className="p-3.5 flex flex-col gap-3.5">
@@ -49,8 +50,8 @@ export function PayoutsPage() {
 
           <span className="text-tiny text-fg-tertiary leading-relaxed">
             Payouts are simulated — requesting records the event and reduces
-            the available figure, but moves no real money. Real banking and
-            the final split land with pricing/Stripe.
+            the available figure, but moves no real money. Your split (80/20 or
+            50/50) and any activation fee were set when you bought the combine.
           </span>
         </div>
       </main>
@@ -60,7 +61,10 @@ export function PayoutsPage() {
 
 function PayoutRow({ combine }: { combine: CombineOut }) {
   const payout = useRequestPayout();
+  const activate = useActivateAccount();
   const available = combine.payout_eligible;
+  const needsActivation = combine.activation_required;
+  const splitText = `${splitPct(splitTokenFromValue(combine.profit_split))}%`;
   return (
     <div
       className="border border-hairline-strong bg-tier-1 flex items-center gap-4 px-3 py-2.5"
@@ -77,6 +81,12 @@ function PayoutRow({ combine }: { combine: CombineOut }) {
           >
             funded
           </span>
+          <span
+            className="border border-hairline-strong text-fg-tertiary-2 px-1 uppercase tracking-label-up shrink-0"
+            style={{ fontSize: 8, borderRadius: 2 }}
+          >
+            keeps {splitText}
+          </span>
         </div>
         <div className="text-fg-tertiary-2 tabular-nums mt-0.5" style={{ fontSize: 10 }}>
           {combine.tier} · {combine.account_code}
@@ -86,18 +96,39 @@ function PayoutRow({ combine }: { combine: CombineOut }) {
       <Figure label="Requested" value={formatDollar(combine.payout_requested)} />
       <Figure
         label="Available"
-        value={formatDollar(available)}
-        tone={available > 0 ? "bullish" : undefined}
+        value={needsActivation ? "locked" : formatDollar(available)}
+        tone={!needsActivation && available > 0 ? "bullish" : undefined}
       />
-      <button
-        type="button"
-        disabled={available <= 0 || payout.isPending}
-        onClick={() => payout.mutate(combine.id)}
-        className="h-8 px-3 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-        style={{ borderRadius: 0 }}
-      >
-        {payout.isPending ? "…" : "Request payout"}
-      </button>
+      {needsActivation ? (
+        <button
+          type="button"
+          disabled={activate.isPending}
+          onClick={() => activate.mutate(combine.id)}
+          title={
+            combine.activation_fee > 0
+              ? `Activate this funded account — a one-time $${combine.activation_fee} fee unlocks payouts (simulated).`
+              : "Activate this funded account — free on the no-activation plan — to unlock payouts."
+          }
+          className="h-8 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+          style={{ borderRadius: 0 }}
+        >
+          {activate.isPending
+            ? "…"
+            : combine.activation_fee > 0
+              ? `Activate — $${combine.activation_fee}`
+              : "Activate — free"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled={available <= 0 || payout.isPending}
+          onClick={() => payout.mutate(combine.id)}
+          className="h-8 px-3 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+          style={{ borderRadius: 0 }}
+        >
+          {payout.isPending ? "…" : "Request payout"}
+        </button>
+      )}
     </div>
   );
 }

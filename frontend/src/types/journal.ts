@@ -1,7 +1,10 @@
 import { z } from "zod";
 
-export const TradeStatusSchema = z.enum(["open", "closed"]);
+export const TradeStatusSchema = z.enum(["working", "open", "closed", "cancelled"]);
 export type TradeStatus = z.infer<typeof TradeStatusSchema>;
+
+export const OrderTypeSchema = z.enum(["market", "limit", "stop"]);
+export type OrderType = z.infer<typeof OrderTypeSchema>;
 
 export const TradeLegSchema = z.object({
   side: z.enum(["call", "put"]),
@@ -29,6 +32,12 @@ export const TradeOutSchema = z.object({
   notes: z.string().nullable().optional(),
   /** Combine tier this trade was opened on (50K / 100K / 150K). */
   tier: z.string().default("50K"),
+  // Limit/stop orders + SL/TP brackets.
+  order_type: OrderTypeSchema.default("market"),
+  limit_price: z.number().nullable().optional(),
+  stop_loss: z.number().nullable().optional(),
+  take_profit: z.number().nullable().optional(),
+  close_reason: z.enum(["manual", "stop_loss", "take_profit", "expiry"]).nullable().optional(),
   // Phase 2 metadata.
   tags: z.array(z.string()).default([]),
   mistake_tags: z.array(z.string()).default([]),

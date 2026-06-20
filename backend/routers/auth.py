@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,6 +27,7 @@ from services.auth import (
     revoke_session,
     verify_password,
 )
+from services.rate_limit import auth_limiter, enforce
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -72,9 +73,11 @@ def _set_session_cookie(response: Response, raw_token: str) -> None:
 @router.post("/signup", response_model=UserOut, status_code=201)
 def signup(
     payload: SignupIn,
+    request: Request,
     response: Response,
     session: Session = Depends(get_session),
 ) -> UserOut:
+    enforce(auth_limiter, request, "signup")
     email = _normalize_email(payload.email)
     existing = session.execute(
         select(User.id).where(User.email == email)
@@ -96,9 +99,11 @@ def signup(
 @router.post("/signin", response_model=UserOut)
 def signin(
     payload: SigninIn,
+    request: Request,
     response: Response,
     session: Session = Depends(get_session),
 ) -> UserOut:
+    enforce(auth_limiter, request, "signin")
     email = payload.email.strip().lower()
     user = session.execute(
         select(User).where(User.email == email)

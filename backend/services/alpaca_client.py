@@ -12,11 +12,9 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
-from alpaca.data.historical.news import NewsClient
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import (
-    NewsRequest,
     OptionBarsRequest,
     OptionChainRequest,
     StockBarsRequest,
@@ -28,6 +26,14 @@ from alpaca.trading.client import TradingClient
 from calculations.types import ContractRow
 from config import settings
 from services.cache import cache
+from services.resilience import resilient_call
+
+# All Alpaca SDK calls share ONE breaker: rate limits are account-wide, so a
+# 429 on the option feed means the stock feed is throttled too. One open
+# circuit short-circuits every Alpaca path for the cooldown, killing the
+# "too many requests" cascade. CircuitOpenError surfaces as the same graceful
+# "no data" the existing per-call try/except already returns.
+_ALPACA = "alpaca"
 
 log = logging.getLogger(__name__)
 
@@ -81,12 +87,6 @@ def _option_client() -> OptionHistoricalDataClient:
     return OptionHistoricalDataClient(settings.alpaca_api_key, settings.alpaca_api_secret)
 
 
-def _news_client() -> NewsClient:
-    # Reuses the SAME Alpaca credentials as the stock/option clients — no
-    # new keys or config. NewsClient takes the same (api_key, secret_key).
-    return NewsClient(settings.alpaca_api_key, settings.alpaca_api_secret)
-
-
 def _trading_client() -> TradingClient:
     """Trading client (paper) — used for the /v2/clock endpoint. Paper vs
     live doesn't matter for the clock; we follow the configured flag."""
@@ -124,7 +124,7 @@ def get_market_clock() -> MarketClock | None:
     if cached is not None:
         return cached
     try:
-        clock = _trading_client().get_clock()
+        clock = resilient_call(_ALPACA, lambda: _trading_client().get_clock())
         out = MarketClock(
             is_open=bool(clock.is_open),
             timestamp=_to_et(clock.timestamp),
@@ -166,7 +166,7 @@ def get_quotes(symbols: list[str]) -> dict[str, Quote]:
 
     client = _stock_client()
     req = StockSnapshotRequest(symbol_or_symbols=symbols)
-    raw = client.get_stock_snapshot(req)
+    raw = resilient_call(_ALPACA, lambda: client.get_stock_snapshot(req))
 
     out: dict[str, Quote] = {}
     for symbol, snap in raw.items():
@@ -211,12 +211,15 @@ def get_year_bars(symbol: str) -> list | None:
     start = datetime.combine(today_et - timedelta(days=365), time.min, tzinfo=_ET)
     client = _stock_client()
     try:
-        bars = client.get_stock_bars(
-            StockBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=TimeFrame.Day,
-                start=start,
-            )
+        bars = resilient_call(
+            _ALPACA,
+            lambda: client.get_stock_bars(
+                StockBarsRequest(
+                    symbol_or_symbols=symbol,
+                    timeframe=TimeFrame.Day,
+                    start=start,
+                )
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("year bars fetch failed for %s: %s", symbol, exc)
@@ -292,7 +295,7 @@ def _fetch_chain(symbol: str):
     client = _option_client()
     req = OptionChainRequest(underlying_symbol=symbol, feed=settings.alpaca_options_feed)
     try:
-        return client.get_option_chain(req)
+        return resilient_call(_ALPACA, lambda: client.get_option_chain(req))
     except Exception as exc:  # noqa: BLE001
         log.warning("alpaca chain fetch failed for %s: %s", symbol, exc)
         return None
@@ -322,7 +325,7 @@ def _sum_today_volume(occ_symbols: list[str], start: datetime) -> int:
             timeframe=TimeFrame.Day,
             start=start,
         )
-        bars = client.get_option_bars(req)
+        bars = resilient_call(_ALPACA, lambda: client.get_option_bars(req))
         # bars.data is dict[symbol, list[Bar]] in alpaca-py >= 0.30
         data = getattr(bars, "data", None) or {}
         for _, bar_list in data.items():
@@ -437,12 +440,15 @@ def _populate_per_contract_volume(
     for i in range(0, len(occ_symbols), _BAR_CHUNK):
         chunk = occ_symbols[i : i + _BAR_CHUNK]
         try:
-            bars = client.get_option_bars(
-                OptionBarsRequest(
-                    symbol_or_symbols=chunk,
-                    timeframe=TimeFrame.Day,
-                    start=today_start,
-                )
+            bars = resilient_call(
+                _ALPACA,
+                lambda: client.get_option_bars(
+                    OptionBarsRequest(
+                        symbol_or_symbols=chunk,
+                        timeframe=TimeFrame.Day,
+                        start=today_start,
+                    )
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("per-contract volume fetch chunk failed: %s", exc)
@@ -522,14 +528,17 @@ def get_bars(symbol: str, timeframe: str) -> list | None:
     start = datetime.combine(today_et - timedelta(days=lookback_days), time.min, tzinfo=_ET)
     client = _stock_client()
     try:
-        bars = client.get_stock_bars(
+        bars = resilient_call(
+            _ALPACA,
             # feed=IEX: free-tier real-time bars (was unspecified → SDK
             # default). Still ~15-min delayed on the free plan — this is a
             # feed choice, NOT a delay removal; "indicative pricing"
             # disclosures stay in place.
-            StockBarsRequest(
-                symbol_or_symbols=symbol, timeframe=tf, start=start, feed=DataFeed.IEX
-            )
+            lambda: client.get_stock_bars(
+                StockBarsRequest(
+                    symbol_or_symbols=symbol, timeframe=tf, start=start, feed=DataFeed.IEX
+                )
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("get_bars failed for %s @ %s: %s", symbol, timeframe, exc)
@@ -587,68 +596,3 @@ def get_daily_bars_history(symbol: str, years_back: int = 5) -> list | None:
     return bar_list
 
 
-# --- News -------------------------------------------------------------------
-
-# Generous success TTL so repeated requests + ticker-flipping don't hammer
-# the free feed (which 429s under load). A SHORT negative TTL caches the
-# error state too, so an outage doesn't turn into a 429 storm of retries.
-_NEWS_TTL = 300        # 5 min — matches the frontend staleTime
-_NEWS_ERR_TTL = 30     # brief negative cache on failure / 429
-# Sentinel distinguishing a cached ERROR from a cached empty list. An
-# empty list is a valid "no news" success and must NOT read as an error.
-_NEWS_ERROR = object()
-
-
-class NewsUnavailable(Exception):
-    """Alpaca news fetch failed or rate-limited — the router maps this to
-    a 503 so the frontend can show 'News unavailable', distinct from an
-    empty (but successful) result."""
-
-
-def get_news(symbol: str, limit: int = 20) -> list[dict]:
-    """Trimmed, symbol-scoped news via Alpaca's news API.
-
-    Returns a list of ``{id, headline, summary, source, url, created_at}``
-    dicts (possibly empty when the symbol genuinely has no recent news).
-    Raises :class:`NewsUnavailable` on error / rate-limit. Cached per
-    (symbol, limit): successes for 5 min, failures for 30 s.
-    """
-    symbol = symbol.upper()
-    cache_key = f"news:{symbol}:{limit}"
-    cached = cache.get(cache_key)
-    if cached is _NEWS_ERROR:
-        raise NewsUnavailable(symbol)
-    if cached is not None:
-        return cached
-
-    try:
-        # NewsRequest.symbols is a comma-separated STRING (not a list).
-        resp = _news_client().get_news(
-            NewsRequest(symbols=symbol, limit=limit, exclude_contentless=True)
-        )
-    except Exception as exc:  # noqa: BLE001
-        # Negative-cache so repeated requests during an outage / 429 don't
-        # pile more load onto the already-throttled free feed.
-        cache.set(cache_key, _NEWS_ERROR, ttl_seconds=_NEWS_ERR_TTL)
-        log.warning("alpaca news fetch failed for %s: %s", symbol, exc)
-        raise NewsUnavailable(symbol) from exc
-
-    raw = getattr(resp, "data", None) or {}
-    articles = raw.get("news", []) if isinstance(raw, dict) else []
-    items = [_trim_news(a) for a in articles]
-    cache.set(cache_key, items, ttl_seconds=_NEWS_TTL)
-    return items
-
-
-def _trim_news(article) -> dict:
-    """Map an Alpaca News model to the trimmed shape the frontend expects.
-    Empty summary collapses to "" (the frontend handles the empty case)."""
-    created = getattr(article, "created_at", None)
-    return {
-        "id": str(getattr(article, "id", "")),
-        "headline": getattr(article, "headline", "") or "",
-        "summary": getattr(article, "summary", "") or "",
-        "source": getattr(article, "source", "") or "",
-        "url": getattr(article, "url", "") or "",
-        "created_at": created.isoformat() if hasattr(created, "isoformat") else (created or ""),
-    }

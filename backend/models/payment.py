@@ -1,11 +1,13 @@
 """Payment records for combine purchases.
 
-PLACEHOLDER ECONOMICS: `amount` is NULL and status is
-'placeholder_paid' until Stripe lands — pricing is a pending business
-decision. The row still exists so every combine traces to a purchase
-event, and the Stripe swap becomes "fill amount + real status" rather
-than a schema change. 'migration_grant' marks combines created by the
-one-time single-user → multi-user backfill.
+SIMULATED economics (paper prop firm — no real money moves), but the
+amounts are REAL: a purchase records `amount` = the matrix monthly price
+(services/pricing.py) with status 'paid'; activating a funded account on
+the activation path records the $149 fee with status 'activation_paid'.
+The row exists so every combine traces to a purchase, and the Stripe swap
+becomes "amount read back from Checkout" rather than a schema change.
+'migration_grant' marks combines created by the one-time single-user →
+multi-user backfill (amount NULL).
 """
 
 from __future__ import annotations
@@ -32,10 +34,12 @@ class Payment(Base):
     # flushed (we need its id); nullable to allow that ordering.
     combine_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tier: Mapped[str] = mapped_column(String(8), nullable=False)
-    # NULL until real pricing exists.
+    # Dollar amount (simulated). Set to the matrix price for purchases /
+    # activations; NULL only for migration_grant backfill rows.
     amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # paid | activation_paid | pending | failed | migration_grant
     status: Mapped[str] = mapped_column(
-        String(24), nullable=False, default="placeholder_paid"
+        String(24), nullable=False, default="paid"
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
