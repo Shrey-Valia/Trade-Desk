@@ -4,8 +4,10 @@ import { Link } from "react-router-dom";
 import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
 import { GaugeDial } from "@/components/analytics/GaugeDial";
 import { CombineCardsGrid } from "@/components/combines/CombineCards";
+import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { colors } from "@/lib/design";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useActivateAccount, useCombines } from "@/hooks/useCombines";
@@ -59,7 +61,7 @@ function FirstCombineHero() {
     <div className="h-full flex flex-col items-center justify-center gap-3 px-6 text-center">
       <span
         className="uppercase tracking-label-up text-fg-secondary"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        style={{ fontSize: 11, letterSpacing: "0.08em" }}
       >
         No combines yet
       </span>
@@ -87,12 +89,17 @@ function DashboardBody() {
   const analytics = useJournalAnalytics(
     activeCombineId != null ? { combineId: activeCombineId } : {},
   );
+  // Until there's at least one closed trade, the three analytics panels are
+  // empty voids — show one purposeful "get started" card instead.
+  const hasTrades = (analytics.data?.kpis?.closed_trades ?? 0) > 0;
+  const showPanels = hasTrades || analytics.isPending;
 
   return (
     <div className="p-3.5 flex flex-col gap-3.5">
       <ActivationBanner />
-      {/* Top strip: active combine identity + CTAs */}
+      {/* Top strip: account switcher + active combine identity + CTAs */}
       <div className="flex items-center gap-3 flex-wrap">
+        <CombineSwitcher />
         {account && (
           <>
             <MetricPill label="BAL" value={formatDollar(account.balance)} />
@@ -128,21 +135,50 @@ function DashboardBody() {
       </div>
 
       {/* Middle: balance curve + perf | path to funding */}
-      <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "2fr 1fr" }}>
+      <div className="grid gap-3.5 items-start grid-cols-1 lg:grid-cols-[2fr_1fr]">
         <div className="flex flex-col gap-3.5 min-w-0">
-          <BalancePanel
-            startingBalance={account?.starting_balance ?? 0}
-            combineName={account?.combine_name}
-            analytics={analytics}
-            mll={account?.mll}
-            profitTargetBalance={
-              account
-                ? account.starting_balance + (account.profit_target ?? 0)
-                : undefined
-            }
-          />
-          <PerformancePanel analytics={analytics} />
-          <TradesByDurationPanel analytics={analytics} />
+          {showPanels ? (
+            <>
+              <BalancePanel
+                startingBalance={account?.starting_balance ?? 0}
+                combineName={account?.combine_name}
+                analytics={analytics}
+                mll={account?.mll}
+                profitTargetBalance={
+                  account
+                    ? account.starting_balance + (account.profit_target ?? 0)
+                    : undefined
+                }
+              />
+              <PerformancePanel analytics={analytics} />
+              <TradesByDurationPanel analytics={analytics} />
+            </>
+          ) : (
+            <Panel title="Your combine at a glance" right={account?.combine_name ?? ""}>
+              <EmptyState
+                title="No closed trades yet"
+                body="Open your first 0DTE position from the terminal. Your balance curve, performance tracker, and trade-by-duration breakdown fill in automatically as you close trades."
+                action={
+                  <>
+                    <Link
+                      to="/positions"
+                      className="h-9 px-4 inline-flex items-center uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 rounded-btn font-medium"
+                      style={{ fontSize: 12 }}
+                    >
+                      Launch terminal →
+                    </Link>
+                    <Link
+                      to="/journal"
+                      className="h-9 px-4 inline-flex items-center uppercase tracking-label-up border border-hairline-strong text-fg-secondary hover:bg-tier-2 hover:text-fg-primary rounded-btn"
+                      style={{ fontSize: 12 }}
+                    >
+                      Log a trade
+                    </Link>
+                  </>
+                }
+              />
+            </Panel>
+          )}
         </div>
         <PathToFunding />
       </div>
@@ -195,7 +231,7 @@ function ActivationRow({ combine }: { combine: CombineOut }) {
         <span className="text-fg-primary font-medium truncate" style={{ fontSize: 13 }}>
           {combine.name}
         </span>
-        <span className="text-fg-tertiary-2 tabular-nums ml-2" style={{ fontSize: 10 }}>
+        <span className="text-fg-tertiary-2 tabular-nums ml-2" style={{ fontSize: 12 }}>
           {combine.tier} · {combine.account_code}
         </span>
       </div>
@@ -257,15 +293,19 @@ function BalancePanel({
             profitTarget={profitTargetBalance}
           />
         </div>
-      ) : (
+      ) : analytics.isPending ? (
         <div
           className="flex items-center justify-center text-tiny text-fg-tertiary-2"
-          style={{ height: 220 }}
+          style={{ height: 120 }}
         >
-          {analytics.isPending
-            ? "Loading…"
-            : "The balance curve appears after your first two closed trades."}
+          Loading…
         </div>
+      ) : (
+        <EmptyState
+          compact
+          title="Balance curve pending"
+          body="The curve appears once you've closed at least two trades on this combine."
+        />
       )}
     </Panel>
   );
@@ -293,7 +333,7 @@ function PerformancePanel({
 
   return (
     <Panel title="Performance tracker" right="closed trades on this combine">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <GaugeDial
           label="Win rate"
           value={win != null ? `${Math.round(win * 100)}%` : "—"}
@@ -379,13 +419,11 @@ function TradesByDurationPanel({
           </span>
         </div>
       ) : (
-        <div
-          className="flex items-center justify-center text-tiny text-fg-tertiary-2 text-center px-4"
-          style={{ height: 120 }}
-        >
-          No closed intraday trades yet — duration buckets appear once timed
-          trades close.
-        </div>
+        <EmptyState
+          compact
+          title="No timed trades yet"
+          body="Duration buckets appear once you close intraday trades."
+        />
       )}
     </Panel>
   );
@@ -416,7 +454,7 @@ function PathToFunding() {
           <div className="flex items-baseline justify-between">
             <span
               className="uppercase tracking-label-up text-fg-secondary"
-              style={{ fontSize: 10 }}
+              style={{ fontSize: 12 }}
             >
               Profit target
             </span>
@@ -480,7 +518,7 @@ function PathToFunding() {
           <div className="flex items-baseline justify-between">
             <span
               className="uppercase tracking-label-up text-fg-secondary"
-              style={{ fontSize: 10 }}
+              style={{ fontSize: 12 }}
             >
               Trading days
             </span>
@@ -529,7 +567,7 @@ function RuleRow({
       <div className="flex items-baseline justify-between gap-2">
         <span
           className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 10 }}
+          style={{ fontSize: 12 }}
         >
           {label}
         </span>
@@ -537,13 +575,13 @@ function RuleRow({
           className={`text-tiny uppercase tracking-label-up ${
             status.tone === "bearish" ? "text-bearish" : "text-bullish"
           }`}
-          style={{ fontSize: 9 }}
+          style={{ fontSize: 11 }}
         >
           {status.text}
         </span>
       </div>
       <span className="text-tiny tabular-nums text-fg-primary">{value}</span>
-      <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 10 }}>
+      <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 12 }}>
         {hint}
       </span>
     </div>
@@ -588,6 +626,7 @@ function CombineCards() {
       <CombineCardsGrid
         combines={combines}
         activeCombineId={data?.active_combine_id}
+        leadCombineId={data?.copy_lead_combine_id}
       />
     </Panel>
   );
@@ -616,7 +655,7 @@ function Panel({
         {right && (
           <span
             className="uppercase tracking-label-up text-fg-tertiary-2 tabular-nums"
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             {right}
           </span>

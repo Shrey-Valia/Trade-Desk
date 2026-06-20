@@ -50,7 +50,7 @@ export function Badge({
         toneCls,
         className,
       ].join(" ")}
-      style={{ height: 16, padding: "0 5px", fontSize: 9 }}
+      style={{ height: 16, padding: "0 5px", fontSize: 11 }}
       {...rest}
     >
       {children}

@@ -1,8 +1,8 @@
 import { useState } from "react";
 
+import { CopyRoleBadge, StageBadge } from "@/components/combines/CombineSwitcher";
 import {
   useActivateAccount,
-  useActivateCombine,
   useArchiveCombine,
   useRenameCombine,
   useResetCombine,
@@ -11,28 +11,28 @@ import type { CombineOut } from "@/types/combine";
 
 /**
  * Responsive grid of combine ("account") cards — balance, closed P&L, MLL,
- * profit-target progress, plus rename / activate / archive. Shared by the
- * dashboard's "Your combines" panel and the dedicated Accounts page so the
- * card behavior lives in one place. Renders just the grid (no panel
- * chrome) — callers wrap it however they like.
+ * profit-target progress, plus rename / archive and the funded-activation
+ * prompt. Switching the active combine happens via the header CombineSwitcher
+ * pill, so the cards carry no "switch" button — the ACTIVE badge marks the
+ * current one and L/F badges mark the copy-trade lead / followers.
  */
 export function CombineCardsGrid({
   combines,
   activeCombineId,
+  leadCombineId,
 }: {
   combines: CombineOut[];
   activeCombineId: number | null | undefined;
+  leadCombineId?: number | null;
 }) {
   return (
-    <div
-      className="grid gap-3"
-      style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}
-    >
+    <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
       {combines.map((c) => (
         <CombineCard
           key={c.id}
           combine={c}
           isActive={c.id === activeCombineId}
+          isLead={c.id === leadCombineId}
         />
       ))}
     </div>
@@ -42,11 +42,12 @@ export function CombineCardsGrid({
 function CombineCard({
   combine,
   isActive,
+  isLead,
 }: {
   combine: CombineOut;
   isActive: boolean;
+  isLead: boolean;
 }) {
-  const activate = useActivateCombine();
   const archive = useArchiveCombine();
   const rename = useRenameCombine();
   const reset = useResetCombine();
@@ -113,7 +114,7 @@ function CombineCard({
           {isActive && !archived && (
             <span
               className="border border-amber text-amber px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
+              style={{ fontSize: 11, borderRadius: 2 }}
             >
               active
             </span>
@@ -121,31 +122,17 @@ function CombineCard({
           {archived && (
             <span
               className="border border-tier-3 text-fg-tertiary-2 px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
+              style={{ fontSize: 11, borderRadius: 2 }}
             >
               archived
             </span>
           )}
-          {combine.funded && (
-            <span
-              className="border border-bullish text-bullish px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
-            >
-              funded
-            </span>
-          )}
-          {!combine.funded && failed && (
-            <span
-              className="border border-bearish text-bearish px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
-            >
-              failed
-            </span>
-          )}
+          {!archived && <StageBadge funded={combine.funded} failed={failed} />}
+          <CopyRoleBadge isLead={isLead} isFollower={combine.copy_follow} />
         </div>
         <div
           className="text-fg-tertiary-2 tabular-nums mt-0.5"
-          style={{ fontSize: 10 }}
+          style={{ fontSize: 12 }}
         >
           {combine.tier} · {combine.account_code}
         </div>
@@ -168,7 +155,7 @@ function CombineCard({
           <div className="flex items-center justify-between gap-2">
             <span
               className="uppercase tracking-label-up text-fg-tertiary-2"
-              style={{ fontSize: 9 }}
+              style={{ fontSize: 11 }}
             >
               Payouts
             </span>
@@ -182,7 +169,7 @@ function CombineCard({
                   : "Activate this funded account — free on the no-activation plan — to unlock payouts."
               }
               className="h-5 px-1.5 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
-              style={{ borderRadius: 0, fontSize: 9 }}
+              style={{ borderRadius: 0, fontSize: 11 }}
             >
               {activateAccount.isPending
                 ? "…"
@@ -204,7 +191,7 @@ function CombineCard({
             fraction={combine.objective_progress}
             tone={combine.objective_progress >= 1 ? "bullish" : "amber"}
           />
-          <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 9 }}>
+          <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 11 }}>
             {Math.round(combine.objective_progress * 100)}% of $
             {combine.profit_target.toLocaleString()} target
           </span>
@@ -212,17 +199,6 @@ function CombineCard({
       </div>
       {!archived && (
         <div className="px-3 pb-2.5 flex items-center gap-2">
-          {!isActive && (
-            <button
-              type="button"
-              disabled={activate.isPending}
-              onClick={() => activate.mutate(combine.id)}
-              className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
-              style={{ borderRadius: 0 }}
-            >
-              Activate
-            </button>
-          )}
           {failed && (
             <button
               type="button"
@@ -292,7 +268,7 @@ function CardRow({
     <div className="flex items-baseline justify-between">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>

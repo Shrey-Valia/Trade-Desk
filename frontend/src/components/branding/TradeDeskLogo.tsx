@@ -31,7 +31,7 @@ export function TradeDeskLogo({ size = "compact", noBlink }: Props) {
   const config =
     size === "mini"
       ? {
-          fontSize: 10,
+          fontSize: 12,
           cursorH: 8,
           cursorW: 5,
           tracking: "0.16em",

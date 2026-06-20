@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { CopyTradingPanel } from "@/components/combines/CopyTradingPanel";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { UIButton } from "@/components/ui/UIButton";
 import { Link, useNavigate } from "react-router-dom";
@@ -9,11 +10,7 @@ import {
   useDllOverrides,
   useUpdateDllOverrides,
 } from "@/hooks/useAccountState";
-import {
-  useActivateCombine,
-  useCombines,
-  useUpdateCopyConfig,
-} from "@/hooks/useCombines";
+import { useActivateCombine } from "@/hooks/useCombines";
 import { useMe, useSignout } from "@/hooks/useAuth";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useChartPrefs } from "@/stores/chartPrefs";
@@ -26,19 +23,30 @@ import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 // the two stay in lockstep automatically.
 const TIMEFRAMES: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
 
+type SettingsTab = "account" | "risk" | "copy" | "trading" | "appearance";
+
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "account", label: "Account" },
+  { id: "risk", label: "Risk management" },
+  { id: "copy", label: "Copy trading" },
+  { id: "trading", label: "Trading" },
+  { id: "appearance", label: "Appearance" },
+];
+
+const SETTINGS_MAXW = 960;
+
 /**
- * Settings — four persisted preferences that affect how the app opens.
+ * Settings — organized into tabs so each concern has room to breathe:
+ *   Account          who's signed in + your combines
+ *   Risk management  per-tier daily-loss-limit overrides (enforced)
+ *   Copy trading     mirror a lead account to followers
+ *   Trading          chart/ticket defaults
+ *   Appearance       chart look
  *
- *   1. Default ticker          (used by PositionsPage cold-open)
- *   2. Default contract qty    (used by chain-cell + straddle opens)
- *   3. Market-structure annotations on by default (chartPrefs)
- *   4. Default chart timeframe (used by PositionsPage initial state)
- *
- * Each row is one preference + its control + a one-line explanation,
- * separated by hairlines per DESIGN.md. No clutter, no Save button —
- * changes persist immediately to localStorage.
+ * Changes persist immediately — no Save button.
  */
 export function SettingsPage() {
+  const [tab, setTab] = useState<SettingsTab>("account");
   const defaultTicker = useUserSettings((s) => s.defaultTicker);
   const setDefaultTicker = useUserSettings((s) => s.setDefaultTicker);
   const defaultContracts = useUserSettings((s) => s.defaultContracts);
@@ -54,62 +62,110 @@ export function SettingsPage() {
   return (
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
       <PageHeader title="Settings" />
-      <main className="flex-1 min-h-0 overflow-y-auto border-t border-hairline">
-        <section className="max-w-2xl">
-          <AccountSection />
-          <CombineTierSection />
-          <CopyTradingSection />
-          <SettingRow
-            label="Default ticker"
-            help="The symbol the chart loads on cold open. Restricted to the 0DTE-eligible allowlist."
-          >
-            <TickerPicker
-              value={defaultTicker}
-              options={universe}
-              onChange={setDefaultTicker}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label="Default contract quantity"
-            help="Fill size for new 0DTE opens (chain click and + BUY/SELL STRADDLE)."
-          >
-            <NumberStepper
-              value={defaultContracts}
-              min={1}
-              max={100}
-              onChange={setDefaultContracts}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label="Market-structure annotations on by default"
-            help="EM±, walls, max pain, gamma flip on the chart. The legend toggle still lets you flip them per session."
-          >
-            <Toggle on={showAnnotations} onChange={toggleAnnotations} />
-          </SettingRow>
-
-          <SettingRow
-            label="Default chart timeframe"
-            help="Timeframe selected when the chart first renders."
-          >
-            <TimeframePicker
-              value={defaultTimeframe}
-              onChange={setDefaultTimeframe}
-            />
-          </SettingRow>
-
-          <ChartAppearanceSection />
-        </section>
-
-        <p
-          className="px-3 py-3 text-fg-tertiary border-t border-hairline"
-          style={{ fontSize: 9 }}
+      <div className="border-b border-hairline px-6">
+        <nav
+          className="mx-auto flex items-stretch gap-6 overflow-x-auto"
+          role="tablist"
+          style={{ maxWidth: SETTINGS_MAXW }}
         >
-          Most settings apply immediately. Default ticker and default timeframe
-          take effect on next reload.
-        </p>
+          {SETTINGS_TABS.map((t) => {
+            const active = t.id === tab;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(t.id)}
+                className={[
+                  "py-3 text-xs2 uppercase tracking-label-up border-b-2 -mb-px whitespace-nowrap transition-colors",
+                  active
+                    ? "text-fg-primary border-amber"
+                    : "text-fg-secondary border-transparent hover:text-fg-primary",
+                ].join(" ")}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      <main className="flex-1 min-h-0 overflow-y-auto">
+        <section
+          className="mx-auto px-6 py-6 flex flex-col gap-5"
+          style={{ maxWidth: SETTINGS_MAXW }}
+        >
+          {tab === "account" && (
+            <Panel>
+              <AccountSection />
+              <CombineTierSection />
+            </Panel>
+          )}
+
+          {tab === "risk" && (
+            <Panel>
+              <RiskManagementSection />
+            </Panel>
+          )}
+
+          {tab === "copy" && (
+            <Panel>
+              <div className="px-4 py-4">
+                <CopyTradingPanel />
+              </div>
+            </Panel>
+          )}
+
+          {tab === "trading" && (
+            <Panel>
+              <SettingRow
+                label="Default ticker"
+                help="The symbol the chart loads on cold open. Restricted to the 0DTE-eligible allowlist."
+              >
+                <TickerPicker value={defaultTicker} options={universe} onChange={setDefaultTicker} />
+              </SettingRow>
+              <SettingRow
+                label="Default contract quantity"
+                help="Fill size for new 0DTE opens (chain click and + Buy / Sell straddle)."
+              >
+                <NumberStepper value={defaultContracts} min={1} max={100} onChange={setDefaultContracts} />
+              </SettingRow>
+              <SettingRow
+                label="Market-structure annotations on by default"
+                help="Expected-move bands, walls, max pain, and gamma flip on the chart. The legend toggle still flips them per session."
+              >
+                <Toggle on={showAnnotations} onChange={toggleAnnotations} />
+              </SettingRow>
+              <SettingRow
+                label="Default chart timeframe"
+                help="Timeframe selected when the chart first renders. Takes effect on next reload."
+              >
+                <TimeframePicker value={defaultTimeframe} onChange={setDefaultTimeframe} />
+              </SettingRow>
+            </Panel>
+          )}
+
+          {tab === "appearance" && (
+            <Panel>
+              <ChartAppearanceSection />
+            </Panel>
+          )}
+        </section>
       </main>
+    </div>
+  );
+}
+
+/** A bordered card that wraps a tab's stacked sections. The sections keep
+ *  their own hairline dividers; the card gives the group a clean edge. */
+function Panel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="border border-hairline-strong bg-tier-1 overflow-hidden"
+      style={{ borderRadius: 4 }}
+    >
+      {children}
     </div>
   );
 }
@@ -121,15 +177,15 @@ function AccountSection() {
   const signout = useSignout();
   const navigate = useNavigate();
   return (
-    <div className="border-b border-hairline px-3 py-3 flex items-center justify-between gap-3">
+    <div className="border-b border-hairline px-5 py-4 flex items-center justify-between gap-3">
       <div className="min-w-0">
         <div
           className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+          style={{ fontSize: 12, letterSpacing: "0.08em" }}
         >
           Account
         </div>
-        <div className="text-fg-primary mt-0.5 truncate" style={{ fontSize: 12 }}>
+        <div className="text-fg-primary mt-1 truncate" style={{ fontSize: 13 }}>
           {me.data?.display_name ? `${me.data.display_name} · ` : ""}
           {me.data?.email ?? "—"}
         </div>
@@ -154,134 +210,6 @@ function AccountSection() {
 // 0 border-radius, amber for active, no shadows.
 // ---------------------------------------------------------------------------
 
-/**
- * Copy trading — pick one LEAD combine and toggle which other combines
- * FOLLOW it. The lead's 0DTE opens mirror to enabled followers (clamped to
- * each follower's contract cap; skipped if locked/failed). Applies
- * immediately — no Save button, like the rest of the page.
- */
-function CopyTradingSection() {
-  const { data } = useCombines();
-  const update = useUpdateCopyConfig();
-  const combines = (data?.combines ?? []).filter((c) => c.status !== "archived");
-  const lead = data?.copy_lead_combine_id ?? null;
-  const followers = combines
-    .filter((c) => c.copy_follow)
-    .map((c) => ({ combine_id: c.id, multiplier: c.copy_multiplier }));
-  const followerMap = new Map(followers.map((f) => [f.combine_id, f.multiplier]));
-
-  const setLead = (id: number | null) =>
-    update.mutate({
-      lead_combine_id: id,
-      followers: followers.filter((f) => f.combine_id !== id),
-    });
-  const toggleFollower = (id: number) =>
-    update.mutate({
-      lead_combine_id: lead,
-      followers: followerMap.has(id)
-        ? followers.filter((f) => f.combine_id !== id)
-        : [...followers, { combine_id: id, multiplier: 1 }],
-    });
-  const setMultiplier = (id: number, multiplier: number) =>
-    update.mutate({
-      lead_combine_id: lead,
-      followers: followers.map((f) =>
-        f.combine_id === id ? { ...f, multiplier } : f,
-      ),
-    });
-
-  const followerOptions = combines.filter((c) => c.id !== lead);
-
-  return (
-    <div className="border-b border-hairline px-3 py-3 flex flex-col gap-3">
-      <div>
-        <div
-          className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 9, letterSpacing: "0.08em" }}
-        >
-          Copy trading
-        </div>
-        <div className="text-fg-tertiary mt-0.5" style={{ fontSize: 11, lineHeight: 1.35 }}>
-          Mirror the lead account&rsquo;s 0DTE opens to the followers you enable
-          — each clamped to that account&rsquo;s contract cap, and skipped if
-          it&rsquo;s daily-loss-locked or has failed.
-        </div>
-      </div>
-
-      {combines.length < 2 ? (
-        <div className="text-tiny text-fg-tertiary-2">
-          Copy trading needs at least two combines. Start another from the
-          dashboard.
-        </div>
-      ) : (
-        <>
-          <label className="flex items-center justify-between gap-3">
-            <span className="text-tiny text-fg-secondary">Lead account</span>
-            <select
-              value={lead ?? ""}
-              disabled={update.isPending}
-              onChange={(e) =>
-                setLead(e.target.value ? Number(e.target.value) : null)
-              }
-              className="h-8 px-2 bg-tier-1 border border-hairline text-fg-primary text-tiny rounded-btn focus:border-amber focus:outline-none disabled:opacity-50"
-              style={{ minWidth: 240 }}
-            >
-              <option value="">Off — no copying</option>
-              {combines.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} · {c.tier}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {lead != null && (
-            <div className="flex flex-col gap-1.5">
-              <span
-                className="uppercase tracking-label-up text-fg-tertiary-2"
-                style={{ fontSize: 9 }}
-              >
-                Follower accounts
-              </span>
-              {followerOptions.length === 0 ? (
-                <span className="text-tiny text-fg-tertiary-2">
-                  No other accounts to follow.
-                </span>
-              ) : (
-                followerOptions.map((c) => {
-                  const on = followerMap.has(c.id);
-                  const mult = followerMap.get(c.id) ?? 1;
-                  return (
-                    <div
-                      key={c.id}
-                      className="flex items-center justify-between gap-3 border border-hairline bg-tier-1 px-2.5 py-1.5"
-                      style={{ borderRadius: 4 }}
-                    >
-                      <span className="text-tiny text-fg-primary truncate">
-                        {c.name}{" "}
-                        <span className="text-fg-tertiary-2">· {c.tier}</span>
-                      </span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {on && (
-                          <MultiplierPicker
-                            value={mult}
-                            onChange={(m) => setMultiplier(c.id, m)}
-                          />
-                        )}
-                        <Toggle on={on} onChange={() => toggleFollower(c.id)} />
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 function SettingRow({
   label,
   help,
@@ -292,22 +220,22 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start gap-4 px-3 py-3 border-b border-hairline">
+    <div className="flex items-start gap-6 px-5 py-4 border-b border-hairline last:border-b-0">
       <div className="flex-1 min-w-0">
         <div
           className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+          style={{ fontSize: 12, letterSpacing: "0.08em" }}
         >
           {label}
         </div>
         <div
-          className="text-fg-tertiary mt-0.5"
-          style={{ fontSize: 11, lineHeight: 1.35 }}
+          className="text-fg-tertiary-2 mt-1"
+          style={{ fontSize: 12, lineHeight: 1.45 }}
         >
           {help}
         </div>
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="shrink-0 pt-0.5">{children}</div>
     </div>
   );
 }
@@ -334,7 +262,7 @@ function CombineTierSection() {
         <div>
           <div
             className="uppercase tracking-label-up text-fg-secondary"
-            style={{ fontSize: 9, letterSpacing: "0.08em" }}
+            style={{ fontSize: 11, letterSpacing: "0.08em" }}
           >
             Combines
           </div>
@@ -354,18 +282,18 @@ function CombineTierSection() {
   }
   const combines = account.combines ?? [];
   return (
-    <div className="border-b border-hairline">
-      <div className="px-3 pt-3 pb-1 flex items-baseline justify-between">
+    <div className="border-b border-hairline last:border-b-0">
+      <div className="px-5 pt-4 pb-1 flex items-baseline justify-between">
         <div>
           <div
             className="uppercase tracking-label-up text-fg-secondary"
-            style={{ fontSize: 9, letterSpacing: "0.08em" }}
+            style={{ fontSize: 12, letterSpacing: "0.08em" }}
           >
             Your combines
           </div>
           <div
-            className="text-fg-tertiary mt-0.5"
-            style={{ fontSize: 11, lineHeight: 1.35 }}
+            className="text-fg-tertiary-2 mt-1"
+            style={{ fontSize: 12, lineHeight: 1.45 }}
           >
             Each combine keeps its own balance, high-water mark, and trade
             history. The active one drives the terminal; manage (rename,
@@ -375,12 +303,12 @@ function CombineTierSection() {
         <Link
           to="/combines/new"
           className="text-tiny uppercase tracking-label-up text-amber hover:underline shrink-0"
-          style={{ fontSize: 10 }}
+          style={{ fontSize: 12 }}
         >
           + new combine
         </Link>
       </div>
-      <div className="grid grid-cols-3 gap-2 px-3 pb-3 pt-1">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 px-5 pb-5 pt-2">
         {combines
           .filter((c) => c.status !== "archived")
           .map((c) => {
@@ -410,13 +338,13 @@ function CombineTierSection() {
                 >
                   {c.name}
                 </span>
-                <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+                <span className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
                   {c.tier} · {c.account_code}
                 </span>
                 {active && (
                   <span
                     className="mt-0.5 uppercase tracking-label-up text-amber"
-                    style={{ fontSize: 9 }}
+                    style={{ fontSize: 11 }}
                   >
                     active
                   </span>
@@ -425,10 +353,31 @@ function CombineTierSection() {
             );
           })}
       </div>
-      <DailyLossLimitRow tiers={account.tiers} />
     </div>
   );
 }
+
+/**
+ * Risk management — per-tier Daily Loss Limit overrides (its own tab).
+ * Fetches account state for the tier specs; falls back gracefully when the
+ * user holds no combine yet.
+ */
+function RiskManagementSection() {
+  const { data: account, isLoading } = useAccountState();
+  const tiers = account?.tiers ?? FALLBACK_RISK_TIERS;
+  if (isLoading) {
+    return (
+      <div className="text-tiny text-fg-tertiary-2 px-1 py-6">Loading risk settings…</div>
+    );
+  }
+  return <DailyLossLimitRow tiers={tiers} />;
+}
+
+const FALLBACK_RISK_TIERS: TierSpec[] = [
+  { key: "50K", label: "50K", starting_balance: 50_000, trailing_distance: 2_000, initial_mll: 48_000, dll_amount: 1_500 },
+  { key: "100K", label: "100K", starting_balance: 100_000, trailing_distance: 4_000, initial_mll: 96_000, dll_amount: 3_000 },
+  { key: "150K", label: "150K", starting_balance: 150_000, trailing_distance: 4_500, initial_mll: 145_500, dll_amount: 4_500 },
+];
 
 /**
  * Per-tier Daily Loss Limit override.
@@ -454,7 +403,7 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
       <div className="px-3 pt-3 pb-1">
         <div
           className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+          style={{ fontSize: 11, letterSpacing: "0.08em" }}
         >
           Daily loss limit
         </div>
@@ -468,7 +417,7 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
           starting balance.
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-2 px-3 pb-3 pt-1">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-3 pb-3 pt-1">
         {tiers.map((t) => {
           const tierKey = t.key as TierKey;
           const override = overrides[tierKey];
@@ -484,7 +433,7 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
             >
               <span
                 className="uppercase tracking-label-up text-fg-tertiary-2"
-                style={{ fontSize: 10 }}
+                style={{ fontSize: 12 }}
               >
                 {t.key} DLL
               </span>
@@ -504,7 +453,7 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
                     type="button"
                     onClick={() => setOverride(tierKey, null)}
                     className="text-fg-tertiary-2 hover:text-fg-secondary uppercase tracking-label-up"
-                    style={{ fontSize: 9 }}
+                    style={{ fontSize: 11 }}
                     aria-label={`Reset ${t.key} DLL to default`}
                     title={`Reset to default ($${t.dll_amount.toLocaleString()})`}
                   >
@@ -512,7 +461,7 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
                   </button>
                 )}
               </div>
-              <span className="text-fg-tertiary-2" style={{ fontSize: 9 }}>
+              <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
                 {isDefault ? "default" : `default $${t.dll_amount.toLocaleString()}`}
               </span>
             </div>
@@ -668,32 +617,6 @@ function NumberStepper({
   );
 }
 
-/** Per-follower size multiplier — 0.5× / 1× / 2× of the lead's contracts. */
-function MultiplierPicker({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (m: number) => void;
-}) {
-  return (
-    <div className="flex" style={{ gap: 4 }}>
-      {[0.5, 1, 2].map((m) => (
-        <UIButton
-          key={m}
-          size="sm"
-          active={value === m}
-          onClick={() => onChange(m)}
-          aria-pressed={value === m}
-          className="min-w-[40px] tabular-nums"
-        >
-          {m}×
-        </UIButton>
-      ))}
-    </div>
-  );
-}
-
 function Toggle({
   on,
   onChange,
@@ -767,7 +690,7 @@ function ChartAppearanceSection() {
         <div className="flex items-baseline justify-between">
           <div
             className="uppercase tracking-label-up text-fg-secondary"
-            style={{ fontSize: 10, letterSpacing: "0.08em" }}
+            style={{ fontSize: 12, letterSpacing: "0.08em" }}
           >
             Chart appearance
           </div>
@@ -776,7 +699,7 @@ function ChartAppearanceSection() {
               type="button"
               onClick={resetAppearance}
               className="text-fg-tertiary-2 hover:text-fg-secondary uppercase tracking-label-up"
-              style={{ fontSize: 9 }}
+              style={{ fontSize: 11 }}
               title="Restore the default candle colors, gradient, and grid opacity"
             >
               reset to defaults

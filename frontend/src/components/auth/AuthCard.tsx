@@ -53,7 +53,7 @@ export function AuthInput({
     <label className="flex flex-col gap-1">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        style={{ fontSize: 11, letterSpacing: "0.08em" }}
       >
         {label}
       </span>

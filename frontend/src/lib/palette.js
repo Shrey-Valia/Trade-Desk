@@ -23,11 +23,14 @@ export const colors = {
   bgTier2: "#222837",
   bgTier3: "#2A3142",
 
-  // Foreground (text) tiers — five-stop ramp (unchanged).
+  // Foreground (text) tiers — five-stop ramp. Revamp: the two dimmest
+  // CONTENT tiers were lifted so any real text clears WCAG AA on the
+  // shipped #131722 ground (the old #5A5A52 tertiary was ~2.5:1 — a fail).
+  // fgDisabled stays dim: it is for decorative / disabled only, never words.
   fgPrimary: "#E8E8E0",
   fgSecondary: "#C4C4BC",
-  fgTertiary2: "#8A8A82",
-  fgTertiary: "#5A5A52",
+  fgTertiary2: "#9B9B92",
+  fgTertiary: "#83837A",
   fgDisabled: "#3F3F3A",
 
   // Borders — bumped up so they read against the lifted background.

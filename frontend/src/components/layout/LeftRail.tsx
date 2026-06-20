@@ -12,7 +12,7 @@ import {
   SettingsIcon,
 } from "./RailIcons";
 
-interface RailItem {
+export interface RailItem {
   to: string;
   label: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
@@ -21,7 +21,8 @@ interface RailItem {
 // Visual rework: WATCH dropped from the rail. The /watchlist route is
 // still reachable directly; we just don't surface it as a destination
 // in the primary nav until the watchlist concept comes back online.
-const TOP_ITEMS: RailItem[] = [
+// Exported so the mobile bottom nav renders the same destinations.
+export const TOP_ITEMS: RailItem[] = [
   { to: "/dashboard", label: "Home", icon: DashboardIcon },
   { to: "/accounts", label: "Accounts", icon: AccountsIcon },
   { to: "/payouts", label: "Payouts", icon: PayoutsIcon },
@@ -30,7 +31,7 @@ const TOP_ITEMS: RailItem[] = [
   { to: "/analytics", label: "Analytics", icon: AnalyticsIcon },
 ];
 
-const BOTTOM_ITEMS: RailItem[] = [
+export const BOTTOM_ITEMS: RailItem[] = [
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
@@ -51,8 +52,8 @@ export function LeftRail() {
   return (
     <nav
       aria-label="Primary"
-      className="flex flex-col items-stretch border-r border-hairline bg-tier-1 shrink-0"
-      style={{ width: 48 }}
+      className="hidden md:flex flex-col items-stretch border-r border-hairline bg-tier-1 shrink-0"
+      style={{ width: 72 }}
     >
       <div className="flex justify-center pt-3 pb-3">
         <TradeDeskMark size={36} />
@@ -104,10 +105,10 @@ function RailEntry({ item }: { item: RailItem }) {
             <Icon />
             <span
               className={[
-                "uppercase tracking-label-up",
+                "uppercase",
                 isActive ? "text-amber" : "text-fg-tertiary-2",
               ].join(" ")}
-              style={{ fontSize: 8, letterSpacing: "0.06em" }}
+              style={{ fontSize: 11, letterSpacing: "0.02em" }}
             >
               {item.label}
             </span>

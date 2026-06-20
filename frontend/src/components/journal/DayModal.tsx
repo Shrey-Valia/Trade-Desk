@@ -108,7 +108,7 @@ function Summary({
 }) {
   return (
     <div className="flex flex-col items-end">
-      <span className="text-fg-tertiary-2 uppercase tracking-label-up" style={{ fontSize: 9 }}>
+      <span className="text-fg-tertiary-2 uppercase tracking-label-up" style={{ fontSize: 11 }}>
         {label}
       </span>
       <span className={`text-xs2 font-medium ${tone ? toneClass(tone) : "text-fg-primary"}`}>
@@ -132,7 +132,7 @@ function TradeHead({ trade }: { trade: Trade }) {
     >
       <div className="flex flex-col leading-tight">
         <span className="text-xs2 font-medium text-fg-primary">{trade.symbol}</span>
-        <span className="text-fg-tertiary-2 uppercase" style={{ fontSize: 9, letterSpacing: "0.04em" }}>
+        <span className="text-fg-tertiary-2 uppercase" style={{ fontSize: 11, letterSpacing: "0.04em" }}>
           {STRATEGY_LABELS[trade.strategy] ?? trade.strategy}
         </span>
       </div>
@@ -198,7 +198,7 @@ function TradeDetail({ trade }: { trade: Trade }) {
       <section>
         <SecHead>Intratrade</SecHead>
         <div className="border border-hairline bg-tier-1 p-2" style={{ borderRadius: 4 }}>
-          <div className="flex justify-between text-fg-tertiary-2 uppercase mb-1" style={{ fontSize: 9, letterSpacing: "0.06em" }}>
+          <div className="flex justify-between text-fg-tertiary-2 uppercase mb-1" style={{ fontSize: 11, letterSpacing: "0.06em" }}>
             <span>{formatTimeEt(trade.entry_date)}</span>
             <span className={pnlClass(trade.realized_pnl ?? null)}>
               {trade.realized_pnl == null ? "—" : formatDollarSigned(trade.realized_pnl)}
@@ -206,7 +206,7 @@ function TradeDetail({ trade }: { trade: Trade }) {
             <span>{formatTimeEt(trade.exit_date ?? null)}</span>
           </div>
           <NetMoveLine pnl={trade.realized_pnl ?? 0} />
-          <div className="text-fg-tertiary mt-1.5" style={{ fontSize: 9 }}>
+          <div className="text-fg-tertiary mt-1.5" style={{ fontSize: 11 }}>
             net move · intratrade path not recorded
           </div>
         </div>
@@ -334,14 +334,14 @@ function TagEditor({ trade }: { trade: Trade }) {
           }}
           placeholder="tag…"
           className="bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary uppercase"
-          style={{ fontSize: 9, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 2, width: 90 }}
+          style={{ fontSize: 11, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 2, width: 90 }}
         />
       ) : (
         <button
           type="button"
           onClick={() => setAdding(true)}
           className="uppercase border border-dashed border-hairline text-fg-tertiary hover:text-amber hover:border-amber"
-          style={{ fontSize: 9, letterSpacing: "0.06em", padding: "2px 7px", borderRadius: 2 }}
+          style={{ fontSize: 11, letterSpacing: "0.06em", padding: "2px 7px", borderRadius: 2 }}
         >
           + tag
         </button>
@@ -381,7 +381,7 @@ function Tag({
   return (
     <span
       className={`inline-flex items-center gap-1 uppercase border ${cls}`}
-      style={{ fontSize: 9, letterSpacing: "0.06em", padding: "2px 7px", borderRadius: 2 }}
+      style={{ fontSize: 11, letterSpacing: "0.06em", padding: "2px 7px", borderRadius: 2 }}
     >
       {label}
       {onRemove && (
@@ -425,7 +425,7 @@ function NetMoveLine({ pnl }: { pnl: number }) {
 
 function SecHead({ children }: { children: React.ReactNode }) {
   return (
-    <div className="uppercase tracking-label-up text-fg-tertiary mb-2" style={{ fontSize: 9 }}>
+    <div className="uppercase tracking-label-up text-fg-tertiary mb-2" style={{ fontSize: 11 }}>
       {children}
     </div>
   );
@@ -443,7 +443,7 @@ function Row({ l, v }: { l: string; v: string }) {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col">
-      <span className="text-fg-tertiary-2 uppercase" style={{ fontSize: 9, letterSpacing: "0.06em" }}>
+      <span className="text-fg-tertiary-2 uppercase" style={{ fontSize: 11, letterSpacing: "0.06em" }}>
         {label}
       </span>
       <span className="text-xs2 text-fg-secondary tabular-nums">{value}</span>

@@ -24,7 +24,7 @@ export function WorkingOrders() {
         </span>
         <span
           className="uppercase tracking-label-up text-fg-tertiary-2"
-          style={{ fontSize: 9 }}
+          style={{ fontSize: 11 }}
         >
           {orders.length} resting
         </span>
@@ -59,7 +59,7 @@ function WorkingRow({
     <div className="flex items-center gap-2 tabular-nums" style={{ fontSize: 11 }}>
       <span
         className="uppercase tracking-label-up text-amber"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
         title="Resting until the option mark crosses the trigger"
       >
         {order.order_type}

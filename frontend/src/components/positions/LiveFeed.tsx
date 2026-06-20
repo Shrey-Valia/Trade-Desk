@@ -61,7 +61,7 @@ function FeedRow({ ev }: { ev: FeedEvent }) {
       title={`${ev.label} · ${ev.symbol} · ${ev.detail}`}
     >
       <div className="flex items-center gap-2">
-        <span className="text-fg-tertiary shrink-0" style={{ fontSize: 9 }}>
+        <span className="text-fg-tertiary shrink-0" style={{ fontSize: 11 }}>
           {relativeTime(new Date(ev.ts).toISOString())}
         </span>
         <FeedBadge ev={ev} />
@@ -134,7 +134,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
         type="button"
         onClick={onRetry}
         className="text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber transition-colors duration-100"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         retry
       </button>

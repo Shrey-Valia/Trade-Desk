@@ -186,7 +186,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
     <div className="flex items-center gap-4 flex-wrap">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2 shrink-0"
-        style={{ fontSize: 9, width: 220 }}
+        style={{ fontSize: 11, width: 220 }}
       >
         {label}
       </span>

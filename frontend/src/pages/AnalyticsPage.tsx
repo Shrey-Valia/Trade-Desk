@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
 import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
 import type {
@@ -102,7 +104,7 @@ function Toolbar({
       {tier && (
         <span
           className="inline-flex items-center h-6 px-2.5 border border-tier-3 bg-tier-2 text-fg-secondary uppercase tracking-label-up"
-          style={{ fontSize: 10, borderRadius: 2 }}
+          style={{ fontSize: 12, borderRadius: 2 }}
         >
           {tier} Combine
         </span>
@@ -168,12 +170,12 @@ function AnalyticsBody({
     <div className="flex flex-col gap-3.5 p-3.5">
       <MetricHero kpis={data.kpis} />
       <EquityPanel equity={data.equity} netSign={data.kpis.net_pnl} />
-      <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+      <div className="grid gap-3.5 items-start grid-cols-1 lg:grid-cols-3">
         <ByStrategyPanel rows={data.by_strategy} />
         <BySymbolPanel rows={data.by_symbol} />
         <StreaksHoldPanel streaks={data.streaks} />
       </div>
-      <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "2fr 1fr" }}>
+      <div className="grid gap-3.5 items-start grid-cols-1 lg:grid-cols-[2fr_1fr]">
         <ByTimeOfDayPanel rows={data.by_time_of_day} />
         <ByDayOfWeekPanel rows={data.by_day_of_week} />
       </div>
@@ -185,41 +187,40 @@ function AnalyticsBody({
 
 function NoTradesInRange() {
   return (
-    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-3 text-center">
-      <span
-        className="uppercase tracking-label-up text-fg-secondary"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
-      >
-        No trades in this view
-      </span>
-      <span className="text-medium text-fg-primary">
-        Nothing matches the current range / account filter.
-      </span>
-      <span className="text-tiny text-fg-tertiary max-w-md">
-        Widen the range (try ALL) or switch the paper/live filter to see
-        your history.
-      </span>
+    <div className="flex items-center justify-center h-full">
+      <EmptyState
+        title="Nothing matches this view"
+        body="No trades fall in the current range or account filter. Widen the range (try All) or switch the paper / live filter to see your history."
+      />
     </div>
   );
 }
 
 function NoTradesYet() {
   return (
-    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-3 text-center">
-      <span
-        className="uppercase tracking-label-up text-fg-secondary"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
-      >
-        No trades yet
-      </span>
-      <span className="text-medium text-fg-primary">
-        Place your first paper trade to start tracking analytics.
-      </span>
-      <span className="text-tiny text-fg-tertiary max-w-md">
-        Open a position from the option chain on the Chart view, or click
-        + Log Trade to enter a trade manually. Closed trades populate the
-        metric hero, strategy breakdown, mistake cost, and equity curve.
-      </span>
+    <div className="flex items-center justify-center h-full">
+      <EmptyState
+        title="No trades yet"
+        body="Closed trades populate your win rate, strategy breakdown, mistake cost, and equity curve. Open a position from the option chain, or log one by hand."
+        action={
+          <>
+            <Link
+              to="/positions"
+              className="h-9 px-4 inline-flex items-center uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 rounded-btn font-medium"
+              style={{ fontSize: 12 }}
+            >
+              Launch terminal →
+            </Link>
+            <Link
+              to="/journal"
+              className="h-9 px-4 inline-flex items-center uppercase tracking-label-up border border-hairline-strong text-fg-secondary hover:bg-tier-2 hover:text-fg-primary rounded-btn"
+              style={{ fontSize: 12 }}
+            >
+              Log a trade
+            </Link>
+          </>
+        }
+      />
     </div>
   );
 }
@@ -235,7 +236,7 @@ function MetricHero({ kpis }: { kpis: KpiBlock }) {
       : null;
 
   return (
-    <div className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(6, minmax(0, 1fr))" }}>
+    <div className="grid gap-2.5 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
       <Metric
         label="Net P&L"
         value={formatDollarSigned(kpis.net_pnl)}
@@ -293,7 +294,7 @@ function Metric({
       className="flex flex-col gap-1 bg-tier-1 border border-hairline px-3 py-2.5"
       style={{ borderRadius: 4 }}
     >
-      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
         {label}
       </span>
       <span
@@ -303,7 +304,7 @@ function Metric({
         {value}
       </span>
       {sub && (
-        <span className={`tabular-nums ${subTone ? toneClass(subTone) : "text-fg-tertiary"}`} style={{ fontSize: 10 }}>
+        <span className={`tabular-nums ${subTone ? toneClass(subTone) : "text-fg-tertiary"}`} style={{ fontSize: 12 }}>
           {sub}
         </span>
       )}
@@ -330,7 +331,7 @@ function EquityPanel({
           drawdownTroughDate={equity.drawdown_trough_date}
         />
       </div>
-      <div className="flex gap-4 px-3 pb-2.5 text-fg-tertiary-2" style={{ fontSize: 10 }}>
+      <div className="flex gap-4 px-3 pb-2.5 text-fg-tertiary-2" style={{ fontSize: 12 }}>
         <span className="inline-flex items-center gap-1.5">
           <span
             className={`inline-block ${netSign >= 0 ? "bg-bullish" : "bg-bearish"}`}
@@ -546,7 +547,7 @@ function ByTimeOfDayPanel({ rows }: { rows: TimeBucket[] }) {
       <PanelHead k="By Time of Day" r="net P&L · 0DTE is intraday" />
       <VBars rows={rows} />
       {!hasTimed && (
-        <div className="px-3 pb-2.5 text-fg-tertiary" style={{ fontSize: 9 }}>
+        <div className="px-3 pb-2.5 text-fg-tertiary" style={{ fontSize: 11 }}>
           No trades with a recorded intraday entry time in this range.
         </div>
       )}
@@ -582,10 +583,10 @@ function VBars({ rows }: { rows: TimeBucket[] }) {
                 />
               )}
             </div>
-            <span className={`tabular-nums ${r.trades ? pnlClass(r.net_pnl) : "text-fg-tertiary"}`} style={{ fontSize: 9 }}>
+            <span className={`tabular-nums ${r.trades ? pnlClass(r.net_pnl) : "text-fg-tertiary"}`} style={{ fontSize: 11 }}>
               {r.trades ? formatDollarSigned(r.net_pnl) : "—"}
             </span>
-            <span className="uppercase text-fg-tertiary-2" style={{ fontSize: 9, letterSpacing: "0.04em" }}>
+            <span className="uppercase text-fg-tertiary-2" style={{ fontSize: 11, letterSpacing: "0.04em" }}>
               {r.label}
             </span>
           </div>
@@ -620,14 +621,14 @@ function RiskPanel({
   return (
     <section className="flex flex-col bg-tier-1 border border-hairline-strong">
       <div className="flex items-center justify-between px-3 border-b border-hairline bg-tier-2 shrink-0" style={{ height: 28 }}>
-        <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 10 }}>
+        <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 12 }}>
           Risk &amp; Discipline{tier ? ` · vs ${tier} MLL trail ${formatDollar(trail ?? 0)}` : ""}
         </span>
-        <span className="uppercase tracking-label-up text-fg-tertiary" style={{ fontSize: 9 }}>
+        <span className="uppercase tracking-label-up text-fg-tertiary" style={{ fontSize: 11 }}>
           are you trading within the rules
         </span>
       </div>
-      <div className="grid gap-3 p-3" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
+      <div className="grid gap-3 p-3 grid-cols-2 lg:grid-cols-4">
         <RiskCell label="Max drawdown" value={formatDollar(equity.max_drawdown)} tone="warn" sub={pct(equity.max_drawdown)} />
         <RiskCell
           label="Largest single loss"
@@ -644,7 +645,7 @@ function RiskPanel({
         />
         {trail && trail > 0 && avgLoss != null && (
           <div className="col-span-4">
-            <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+            <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
               Avg loss vs MLL trail — keep this small
             </span>
             <div className="relative bg-tier-0 border border-hairline mt-1.5" style={{ height: 10 }}>
@@ -686,9 +687,9 @@ function RiskCell({
   const toneCls = tone === "bear" ? "text-bearish" : tone === "warn" ? "text-warning" : tone === "bull" ? "text-bullish" : "text-fg-primary";
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>{label}</span>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>{label}</span>
       <span className={`font-medium tabular-nums ${toneCls}`} style={{ fontSize: 18 }}>{value}</span>
-      <span className="text-fg-tertiary" style={{ fontSize: 10 }}>{sub}</span>
+      <span className="text-fg-tertiary" style={{ fontSize: 12 }}>{sub}</span>
     </div>
   );
 }
@@ -705,11 +706,11 @@ function PanelHead({ k, r }: { k: string; r?: string }) {
       className="flex items-center justify-between px-3 border-b border-hairline shrink-0"
       style={{ height: 28 }}
     >
-      <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 10 }}>
+      <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 12 }}>
         {k}
       </span>
       {r && (
-        <span className="uppercase tracking-label-up text-fg-tertiary tabular-nums" style={{ fontSize: 9 }}>
+        <span className="uppercase tracking-label-up text-fg-tertiary tabular-nums" style={{ fontSize: 11 }}>
           {r}
         </span>
       )}

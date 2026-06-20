@@ -66,13 +66,13 @@ function Hero() {
       >
         <span
           className="uppercase tracking-label-up text-amber border border-amber px-2 py-0.5"
-          style={{ fontSize: 10, borderRadius: 2 }}
+          style={{ fontSize: 12, borderRadius: 2 }}
         >
           0DTE options · funded evaluation
         </span>
         <h1
           className="font-medium leading-tight"
-          style={{ fontSize: 40, maxWidth: 720 }}
+          style={{ fontSize: "clamp(28px, 7vw, 40px)", maxWidth: 720 }}
         >
           Prove you can trade 0DTE options.
           <br />
@@ -123,14 +123,14 @@ function RulesBand() {
   return (
     <section className="border-b border-hairline bg-tier-1">
       <div
-        className="mx-auto px-6 py-4 grid gap-4"
-        style={{ maxWidth: 1080, gridTemplateColumns: "repeat(4, 1fr)" }}
+        className="mx-auto px-6 py-4 grid gap-4 grid-cols-2 sm:grid-cols-4"
+        style={{ maxWidth: 1080 }}
       >
         {items.map((it) => (
           <div key={it.label} className="flex flex-col gap-0.5">
             <span
               className="uppercase tracking-label-up text-fg-tertiary-2"
-              style={{ fontSize: 9, letterSpacing: "0.08em" }}
+              style={{ fontSize: 11, letterSpacing: "0.08em" }}
             >
               {it.label}
             </span>
@@ -178,8 +178,7 @@ function TierPricing() {
           sub="Same rules engine at every size — only the numbers scale."
         />
         <div
-          className="grid gap-4 mt-8"
-          style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
+          className="grid gap-4 mt-8 grid-cols-1 sm:grid-cols-3"
         >
           {tiers.map((t) => (
             <div
@@ -193,7 +192,7 @@ function TierPricing() {
               {t.highlight && (
                 <div
                   className="text-center uppercase tracking-label-up text-amber border-b border-amber py-1"
-                  style={{ fontSize: 9 }}
+                  style={{ fontSize: 11 }}
                 >
                   Most popular
                 </div>
@@ -248,7 +247,7 @@ function LandingSpec({ label, value }: { label: string; value: string }) {
     <div className="flex items-baseline justify-between">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>
@@ -280,8 +279,7 @@ function HowItWorks() {
       <div className="mx-auto px-6 py-12" style={{ maxWidth: 1080 }}>
         <SectionHead kicker="How it works" title="Three steps to funded." />
         <div
-          className="grid gap-6 mt-8"
-          style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
+          className="grid gap-6 mt-8 grid-cols-1 sm:grid-cols-3"
         >
           {steps.map((s) => (
             <div key={s.n} className="flex flex-col gap-2">
@@ -323,8 +321,7 @@ function FeatureBand() {
           title="Everything a 0DTE trader actually uses."
         />
         <div
-          className="grid gap-4 mt-8"
-          style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
+          className="grid gap-4 mt-8 grid-cols-1 sm:grid-cols-3"
         >
           {features.map((f) => (
             <div
@@ -374,7 +371,7 @@ function Footer() {
         style={{ maxWidth: 1080 }}
       >
         <TradeDeskLogo size="mini" />
-        <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 10 }}>
+        <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 12 }}>
           Simulated trading only. Trade Desk combines are evaluations on paper
           execution with live market data — not brokerage accounts, and not
           financial advice.
@@ -397,7 +394,7 @@ function SectionHead({
     <div className="flex flex-col gap-1.5">
       <span
         className="uppercase tracking-label-up text-amber"
-        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         {kicker}
       </span>

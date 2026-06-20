@@ -284,7 +284,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
                   <span
                     key={t}
                     className="inline-flex items-center gap-1 px-1.5 py-px text-tiny border border-hairline bg-tier-1 text-fg-secondary"
-                    style={{ borderRadius: 0, fontSize: 10 }}
+                    style={{ borderRadius: 0, fontSize: 12 }}
                   >
                     {t}
                     <button

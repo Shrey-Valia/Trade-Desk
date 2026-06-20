@@ -40,7 +40,7 @@ export function PositionRiskStrip({ analytics, contextLabel }: Props) {
       {contextLabel && (
         <div
           className="flex items-center px-3 border-r border-hairline text-tiny uppercase tracking-label-up text-fg-tertiary"
-          style={{ fontSize: 9 }}
+          style={{ fontSize: 11 }}
         >
           {contextLabel}
         </div>
@@ -97,7 +97,7 @@ function Cell({
     >
       <span
         className="text-tiny uppercase tracking-label-up text-fg-tertiary"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        style={{ fontSize: 11, letterSpacing: "0.08em" }}
       >
         {label}
       </span>

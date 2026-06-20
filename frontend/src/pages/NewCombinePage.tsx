@@ -127,7 +127,7 @@ function ChooseAccount({
         </div>
       )}
 
-      <div className="grid gap-4 w-full" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+      <div className="grid gap-4 w-full grid-cols-1 sm:grid-cols-3">
         {tiers.map((t) => (
           <AccountCard
             key={t.key}
@@ -189,7 +189,7 @@ function AccountCard({
       {recommended && (
         <div
           className="text-center uppercase tracking-label-up text-amber border-b border-amber py-1"
-          style={{ fontSize: 9 }}
+          style={{ fontSize: 11 }}
         >
           Most popular
         </div>
@@ -197,7 +197,7 @@ function AccountCard({
       <div className="px-4 pt-3.5 pb-3">
         <span
           className="inline-block uppercase tracking-label-up text-fg-tertiary-2 border border-hairline-strong px-2 py-0.5"
-          style={{ fontSize: 9, borderRadius: 2 }}
+          style={{ fontSize: 11, borderRadius: 2 }}
         >
           {path === "no_activation" ? "No Activation Fee" : "Standard"}
         </span>
@@ -279,7 +279,7 @@ function Configure({
       </div>
 
       <div className="px-4 py-3 flex flex-col gap-3">
-        <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+        <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
           Choose your profit split
         </span>
         <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
@@ -311,7 +311,7 @@ function Configure({
           <SpecRow label="Billed" value="monthly, cancel anytime" />
           <div className="border-t border-hairline my-1.5" />
           <div className="flex items-baseline justify-between">
-            <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 10 }}>
+            <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 12 }}>
               Due today
             </span>
             <span className="text-medium font-medium text-fg-primary tabular-nums">
@@ -381,7 +381,7 @@ function SplitCard({
         {title}
       </span>
       <span className="text-tiny tabular-nums text-fg-secondary">{price}</span>
-      <span className="text-fg-tertiary-2" style={{ fontSize: 9 }}>
+      <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
         {note}
       </span>
     </button>
@@ -401,7 +401,7 @@ function SpecRow({
     tone === "good" ? "text-bullish" : tone === "muted" ? "text-fg-tertiary" : "text-fg-secondary";
   return (
     <div className="flex items-baseline justify-between">
-      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
         {label}
       </span>
       <span className={`text-tiny ${valueCls}`}>{value}</span>
@@ -456,7 +456,7 @@ function InfoBanner({ children }: { children: React.ReactNode }) {
     >
       <span
         className="inline-flex items-center justify-center shrink-0 border border-amber text-amber rounded-full"
-        style={{ width: 16, height: 16, fontSize: 10 }}
+        style={{ width: 16, height: 16, fontSize: 12 }}
         aria-hidden
       >
         i
@@ -487,7 +487,7 @@ function Launch({ combine }: { combine: CombineOut }) {
       </div>
       <div className="px-4 py-3 flex flex-col gap-2">
         <label className="flex flex-col gap-1">
-          <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+          <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
             Combine name
           </span>
           <div className="flex gap-2">

@@ -42,7 +42,7 @@ export function TierPill({
       {...rest}
     >
       <span>{tier} Combine</span>
-      <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+      <span className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
         ▾
       </span>
     </button>

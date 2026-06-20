@@ -151,7 +151,7 @@ export function SymbolSearch() {
             >
               No 0DTE-eligible match
               {universe.length > 0 && (
-                <span className="block text-fg-tertiary" style={{ fontSize: 9 }}>
+                <span className="block text-fg-tertiary" style={{ fontSize: 11 }}>
                   Allowed: {universe.join(" · ")}
                 </span>
               )}

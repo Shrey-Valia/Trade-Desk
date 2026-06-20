@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQueries } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-
+import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
 import { useAccountState } from "@/hooks/useAccountState";
-import { useActivateCombine } from "@/hooks/useCombines";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
@@ -60,10 +58,9 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
 
   return (
     <header
-      className="flex items-center gap-2 border-b border-hairline bg-tier-1 px-3 shrink-0 relative"
-      style={{ height: 64 }}
+      className="flex flex-wrap md:flex-nowrap items-center gap-2 border-b border-hairline bg-tier-1 px-3 py-2 md:py-0 min-h-[64px] md:h-16 shrink-0 relative"
     >
-      <CombineSelector />
+      <CombineSwitcher size="md" />
       <SearchTrigger
         symbol={symbol}
         onClick={() => setSearchOpen(true)}
@@ -121,129 +118,11 @@ function SearchTrigger({
       </span>
       <kbd
         className="text-fg-tertiary-2 border border-tier-3 px-1 rounded-btn font-mono"
-        style={{ fontSize: 10, lineHeight: 1.2 }}
+        style={{ fontSize: 12, lineHeight: 1.2 }}
       >
         /
       </kbd>
     </button>
-  );
-}
-
-/**
- * Combine selector — Topstep-style account dropdown.
- *
- * Lists every combine the user owns (name | account code, tier,
- * status badge), active one highlighted; switching activates via
- * POST /api/combines/{id}/activate with a direct cache swap. With
- * zero combines (fresh signup) the pill becomes a START A COMBINE CTA.
- */
-function CombineSelector() {
-  const { data, isError } = useAccountState();
-  const activate = useActivateCombine();
-  const [open, setOpen] = useState(false);
-  const navigate = useNavigate();
-
-  const noCombine = isError || data?.combine_id == null;
-  if (noCombine) {
-    return (
-      <button
-        type="button"
-        onClick={() => navigate("/combines/new")}
-        className="h-10 px-3 rounded-btn uppercase tracking-label-up flex items-center gap-2 border border-amber text-amber bg-tier-2 hover:bg-tier-3 transition-colors duration-100"
-        style={{ fontSize: 12, fontWeight: 500 }}
-        title="You don't own a combine yet — start one to unlock trading"
-      >
-        + Start a combine
-      </button>
-    );
-  }
-
-  const combines = data?.combines ?? [];
-  const breached = data ? data.balance < data.mll : false;
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={[
-          "h-10 px-3 rounded-btn tabular-nums",
-          "flex items-center gap-2 transition-colors duration-100",
-          breached
-            ? "bg-tier-2 border border-bearish text-bearish"
-            : "bg-tier-2 border border-tier-3 text-fg-primary hover:bg-tier-3",
-        ].join(" ")}
-        style={{ fontSize: 12, fontWeight: 500 }}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        title={`${data?.account_code ?? ""} — click to switch combines`}
-      >
-        <span className="uppercase tracking-label-up truncate" style={{ maxWidth: 132 }}>
-          {data?.combine_name ?? "Combine"}
-        </span>
-        <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
-          ▾
-        </span>
-      </button>
-      {open && (
-        <div
-          role="listbox"
-          className="absolute left-0 top-full mt-1 z-30 bg-tier-2 border border-tier-3 rounded-btn overflow-hidden"
-          style={{ minWidth: 280 }}
-        >
-          {combines.map((c) => {
-            const active = c.id === data?.combine_id;
-            const archived = c.status === "archived";
-            return (
-              <button
-                key={c.id}
-                type="button"
-                disabled={archived}
-                onClick={() => {
-                  if (!active && !archived) activate.mutate(c.id);
-                  setOpen(false);
-                }}
-                className={[
-                  "w-full text-left px-3 py-1.5 text-tiny tabular-nums",
-                  archived
-                    ? "text-fg-disabled cursor-not-allowed"
-                    : active
-                      ? "text-amber bg-tier-3"
-                      : "text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
-                ].join(" ")}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="uppercase tracking-label-up" style={{ fontSize: 11 }}>
-                    {c.name}
-                  </span>
-                  {archived && (
-                    <span
-                      className="border border-tier-3 text-fg-tertiary-2 px-1 uppercase tracking-label-up"
-                      style={{ fontSize: 8, borderRadius: 2 }}
-                    >
-                      archived
-                    </span>
-                  )}
-                </div>
-                <div className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
-                  {c.tier} · {c.account_code}
-                </div>
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              navigate("/combines/new");
-            }}
-            className="w-full text-left px-3 py-1.5 text-tiny text-amber hover:bg-tier-3 border-t border-tier-3 uppercase tracking-label-up"
-            style={{ fontSize: 10 }}
-          >
-            + Start a new combine
-          </button>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -264,7 +143,7 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
     <div className="flex items-baseline gap-2 tabular-nums">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 10 }}
+        style={{ fontSize: 12 }}
       >
         {symbol}
       </span>
@@ -396,7 +275,7 @@ function MetricPills() {
           cushion >= 0 ? "+" : "−"
         }$${Math.round(Math.abs(cushion)).toLocaleString()} (balance incl. open URPL vs the floor). Re-baselines up only at the 5pm-PT settlement.`}
       >
-        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 9 }}>
+        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 11 }}>
           {cushion >= 0
             ? `+$${Math.round(cushion).toLocaleString()}`
             : `−$${Math.round(-cushion).toLocaleString()}`}
@@ -404,7 +283,7 @@ function MetricPills() {
         {combine.status === "failed" ? (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 8, height: 14 }}
+            style={{ fontSize: 11, height: 14 }}
             title="MLL floor breached — combine FAILED (permanent)."
           >
             FAILED
@@ -412,7 +291,7 @@ function MetricPills() {
         ) : cushion < 0 ? (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 8, height: 14 }}
+            style={{ fontSize: 11, height: 14 }}
             title="Live balance (incl. URPL) is below the MLL floor."
           >
             BREACH
@@ -432,7 +311,7 @@ function MetricPills() {
           combine.passBlockedReason ? " " + combine.passBlockedReason : ""
         }`}
       >
-        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 9 }}>
+        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 11 }}>
           / ${Math.round(combine.profitTarget / 1000)}K · D{combine.daysTraded}/
           {combine.minTradingDays}
         </span>
@@ -445,7 +324,7 @@ function MetricPills() {
                   ? "border-bullish text-bullish"
                   : "border-warning text-warning"
             }`}
-            style={{ fontSize: 8, height: 14 }}
+            style={{ fontSize: 11, height: 14 }}
             title={
               combine.passBlockedReason ??
               (combine.passed ? "Combine PASSED." : "Profit target reached.")
@@ -468,7 +347,7 @@ function MetricPills() {
         {dllHit && (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 8, height: 14 }}
+            style={{ fontSize: 11, height: 14 }}
             title="Daily loss limit hit — DAY LOCK: no further trading today."
           >
             DAY LOCK
@@ -554,7 +433,7 @@ function MetricPill({
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         {label}
       </span>
@@ -594,7 +473,7 @@ function MarketPill() {
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         MKT
       </span>

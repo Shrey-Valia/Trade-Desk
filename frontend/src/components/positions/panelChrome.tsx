@@ -26,7 +26,7 @@ export function PanelHeader({
         {right && (
           <span
             className="uppercase tracking-label-up text-fg-tertiary-2"
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             {right}
           </span>

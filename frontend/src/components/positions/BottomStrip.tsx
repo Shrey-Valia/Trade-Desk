@@ -75,13 +75,7 @@ export function BottomStrip() {
 
   return (
     <div
-      className="grid border-t border-hairline bg-tier-0 shrink-0"
-      style={{
-        height: 280,
-        // 5 equal columns — the original four shrink proportionally to
-        // make room for the activity FEED; row height is unchanged.
-        gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
-      }}
+      className="grid border-t border-hairline bg-tier-0 shrink-0 grid-cols-1 sm:grid-cols-2 md:grid-cols-5 md:h-[280px]"
     >
       <Column>
         <OpenPositionCol
@@ -169,7 +163,7 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary shrink-0"
-        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         Key levels
       </span>
@@ -199,7 +193,7 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
       <div className="ml-auto flex items-center gap-2 shrink-0">
         <span
           className="uppercase tracking-label-up text-fg-tertiary"
-          style={{ fontSize: 10, letterSpacing: "0.08em" }}
+          style={{ fontSize: 12, letterSpacing: "0.08em" }}
         >
           show on chart
         </span>
@@ -225,7 +219,7 @@ function InlineLevel({
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary"
-        style={{ fontSize: 10, letterSpacing: "0.06em" }}
+        style={{ fontSize: 12, letterSpacing: "0.06em" }}
       >
         {label}
       </span>
@@ -397,7 +391,7 @@ function OpenPositionCol({
               {STRATEGY_LABELS[trade.strategy] ?? trade.strategy}
             </span>
           </div>
-          <div className="text-fg-tertiary-2 mt-0.5" style={{ fontSize: 10 }}>
+          <div className="text-fg-tertiary-2 mt-0.5" style={{ fontSize: 12 }}>
             {summarizeLegs(trade)} · entry{" "}
             {formatTimestamp(trade.entry_date)} ET ·{" "}
             {totalContracts(trade)} contract{totalContracts(trade) === 1 ? "" : "s"}
@@ -405,7 +399,7 @@ function OpenPositionCol({
           {commissionSide > 0 && (
             <div
               className="text-fg-tertiary mt-0.5"
-              style={{ fontSize: 9 }}
+              style={{ fontSize: 11 }}
               title="Simulated commission — folded into UP&L; round trip (entry + exit) booked on close"
             >
               incl. commission −${commissionSide.toFixed(2)}/side ·
@@ -416,7 +410,7 @@ function OpenPositionCol({
           <div className="flex items-baseline justify-between">
             <span
               className="uppercase tracking-label-up text-fg-tertiary-2"
-              style={{ fontSize: 9 }}
+              style={{ fontSize: 11 }}
             >
               UPL
             </span>
@@ -493,7 +487,7 @@ function Greek({
 }) {
   return (
     <div className="flex items-baseline gap-1">
-      <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+      <span className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
         {label}
       </span>
       <span className={`tabular-nums ${valueCls ?? "text-fg-secondary"}`}>
@@ -549,7 +543,7 @@ function RiskItem({
     <div className="flex flex-col leading-tight">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>
@@ -663,7 +657,7 @@ function HoursScrubber({
       <div className="px-3 py-1.5 flex flex-col gap-1.5 flex-1 min-h-0 tabular-nums">
         <span
           className="text-fg-tertiary-2 uppercase tracking-label-up"
-          style={{ fontSize: 9 }}
+          style={{ fontSize: 11 }}
         >
           entry → exp
         </span>
@@ -684,7 +678,7 @@ function HoursScrubber({
         <div className="mt-auto flex items-center justify-between">
           <span
             className="text-tiny text-fg-tertiary-2"
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             BEs widen toward expiry as theta burns
           </span>
@@ -723,7 +717,7 @@ function DaysScrubber({
       <div className="px-3 py-1.5 flex flex-col gap-1.5 flex-1 min-h-0 tabular-nums">
         <span
           className="text-fg-tertiary-2 uppercase tracking-label-up"
-          style={{ fontSize: 9 }}
+          style={{ fontSize: 11 }}
         >
           days remaining
         </span>
@@ -744,7 +738,7 @@ function DaysScrubber({
         <div className="mt-auto flex items-center justify-between">
           <span
             className="text-tiny text-fg-tertiary-2"
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             BEs widen toward expiry as theta burns
           </span>
@@ -956,7 +950,7 @@ function KeyLevelsCol({ symbol }: { symbol: string | null }) {
         {allEmpty && (
           <span
             className="text-fg-tertiary-2 mt-1"
-            style={{ fontSize: 9, lineHeight: 1.4 }}
+            style={{ fontSize: 11, lineHeight: 1.4 }}
           >
             {annotations.isLoading
               ? "Computing levels from today's option chain…"
@@ -966,7 +960,7 @@ function KeyLevelsCol({ symbol }: { symbol: string | null }) {
         <div className="mt-auto pt-2 flex items-center justify-between">
           <span
             className="uppercase tracking-label-up text-fg-tertiary-2"
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             show on chart
           </span>
@@ -993,7 +987,7 @@ function LevelRow({
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>
@@ -1111,7 +1105,7 @@ function TodayRow({ trade, isActive }: { trade: Trade; isActive: boolean }) {
           {STRATEGY_LABELS[trade.strategy] ?? trade.strategy}
         </span>
       </div>
-      <div className="flex items-baseline justify-between" style={{ fontSize: 10 }}>
+      <div className="flex items-baseline justify-between" style={{ fontSize: 12 }}>
         <span className="text-fg-tertiary-2">{trade.symbol}</span>
         <span className={pnlCls}>
           {open ? "—" : formatSignedDollar(pnl)} · {winLabel}
@@ -1137,7 +1131,7 @@ function ColHeader({
       </span>
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {right}
       </span>
