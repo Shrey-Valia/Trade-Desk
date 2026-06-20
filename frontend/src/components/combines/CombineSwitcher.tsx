@@ -112,6 +112,7 @@ export function CombineSwitcher({ size = "sm" }: { size?: "sm" | "md" }) {
                         active
                       </span>
                     )}
+                    <StageBadge funded={c.funded} failed={c.outcome === "failed"} />
                     <CopyRoleBadge isLead={c.id === leadId} isFollower={c.copy_follow} />
                   </div>
                   <div className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
@@ -135,6 +136,43 @@ export function CombineSwitcher({ size = "sm" }: { size?: "sm" | "md" }) {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Lifecycle-stage chip — where the combine sits in its life:
+ *   EVAL    in evaluation (neutral)
+ *   FUNDED  passed → funded account (bullish green)
+ *   FAILED  breached the MLL (bearish red)
+ * Distinct from the amber ACTIVE (which-one-is-selected) and cyan L/F (copy).
+ */
+export function StageBadge({
+  funded,
+  failed,
+}: {
+  funded: boolean;
+  failed: boolean;
+}) {
+  const base = "px-1 uppercase tracking-label-up shrink-0";
+  const style = { fontSize: 11, borderRadius: 2 } as const;
+  if (funded) {
+    return (
+      <span title="Funded account" className={`border border-bullish text-bullish ${base}`} style={style}>
+        Funded
+      </span>
+    );
+  }
+  if (failed) {
+    return (
+      <span title="Evaluation failed — MLL breached" className={`border border-bearish text-bearish ${base}`} style={style}>
+        Failed
+      </span>
+    );
+  }
+  return (
+    <span title="In evaluation" className={`border border-hairline-strong text-fg-secondary ${base}`} style={style}>
+      Eval
+    </span>
   );
 }
 

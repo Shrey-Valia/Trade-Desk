@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { CopyRoleBadge } from "@/components/combines/CombineSwitcher";
+import { CopyRoleBadge, StageBadge } from "@/components/combines/CombineSwitcher";
 import {
   useActivateAccount,
   useArchiveCombine,
@@ -127,22 +127,7 @@ function CombineCard({
               archived
             </span>
           )}
-          {combine.funded && (
-            <span
-              className="border border-bullish text-bullish px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 11, borderRadius: 2 }}
-            >
-              funded
-            </span>
-          )}
-          {!combine.funded && failed && (
-            <span
-              className="border border-bearish text-bearish px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 11, borderRadius: 2 }}
-            >
-              failed
-            </span>
-          )}
+          {!archived && <StageBadge funded={combine.funded} failed={failed} />}
           <CopyRoleBadge isLead={isLead} isFollower={combine.copy_follow} />
         </div>
         <div
