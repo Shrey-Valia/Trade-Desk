@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 
 import { CombineCardsGrid } from "@/components/combines/CombineCards";
+import { CopyTradingPanel } from "@/components/combines/CopyTradingPanel";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useCombines } from "@/hooks/useCombines";
@@ -33,7 +34,7 @@ export function AccountsPage() {
         <div className="p-3.5 flex flex-col gap-3.5">
           {/* Roll-up across active accounts + new-combine CTA. */}
           <div className="flex items-center gap-3 flex-wrap">
-            <MetricPill label="ACTIVE ACCOUNTS" value={String(active.length)} />
+            <MetricPill label="OPEN ACCOUNTS" value={String(active.length)} />
             <MetricPill label="TOTAL BALANCE" value={formatDollar(totalBalance)} />
             <MetricPill
               label="TOTAL CLOSED P&L"
@@ -59,14 +60,14 @@ export function AccountsPage() {
             </div>
           ) : (
             <>
-              <Section title="Active" count={active.length}>
+              <Section title="Open" count={active.length}>
                 {active.length > 0 ? (
                   <CombineCardsGrid
                     combines={active}
                     activeCombineId={data?.active_combine_id}
                   />
                 ) : (
-                  <Empty text="No active accounts — activate or purchase one." />
+                  <Empty text="No open accounts — start one." />
                 )}
               </Section>
               {archived.length > 0 && (
@@ -77,6 +78,14 @@ export function AccountsPage() {
                   />
                 </Section>
               )}
+              <div
+                className="border border-hairline-strong bg-tier-1"
+                style={{ borderRadius: 4 }}
+              >
+                <div className="px-3.5 py-3">
+                  <CopyTradingPanel />
+                </div>
+              </div>
             </>
           )}
         </div>

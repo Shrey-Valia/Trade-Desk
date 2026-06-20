@@ -217,10 +217,11 @@ function CombineCard({
               type="button"
               disabled={activate.isPending}
               onClick={() => activate.mutate(combine.id)}
+              title="Make this the account the terminal trades on."
               className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
               style={{ borderRadius: 0 }}
             >
-              Activate
+              Switch to
             </button>
           )}
           {failed && (
