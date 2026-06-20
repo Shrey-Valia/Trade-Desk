@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
 import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
 import type {
@@ -185,41 +187,40 @@ function AnalyticsBody({
 
 function NoTradesInRange() {
   return (
-    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-3 text-center">
-      <span
-        className="uppercase tracking-label-up text-fg-secondary"
-        style={{ fontSize: 11, letterSpacing: "0.08em" }}
-      >
-        No trades in this view
-      </span>
-      <span className="text-medium text-fg-primary">
-        Nothing matches the current range / account filter.
-      </span>
-      <span className="text-tiny text-fg-tertiary max-w-md">
-        Widen the range (try ALL) or switch the paper/live filter to see
-        your history.
-      </span>
+    <div className="flex items-center justify-center h-full">
+      <EmptyState
+        title="Nothing matches this view"
+        body="No trades fall in the current range or account filter. Widen the range (try All) or switch the paper / live filter to see your history."
+      />
     </div>
   );
 }
 
 function NoTradesYet() {
   return (
-    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-3 text-center">
-      <span
-        className="uppercase tracking-label-up text-fg-secondary"
-        style={{ fontSize: 11, letterSpacing: "0.08em" }}
-      >
-        No trades yet
-      </span>
-      <span className="text-medium text-fg-primary">
-        Place your first paper trade to start tracking analytics.
-      </span>
-      <span className="text-tiny text-fg-tertiary max-w-md">
-        Open a position from the option chain on the Chart view, or click
-        + Log Trade to enter a trade manually. Closed trades populate the
-        metric hero, strategy breakdown, mistake cost, and equity curve.
-      </span>
+    <div className="flex items-center justify-center h-full">
+      <EmptyState
+        title="No trades yet"
+        body="Closed trades populate your win rate, strategy breakdown, mistake cost, and equity curve. Open a position from the option chain, or log one by hand."
+        action={
+          <>
+            <Link
+              to="/positions"
+              className="h-9 px-4 inline-flex items-center uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 rounded-btn font-medium"
+              style={{ fontSize: 12 }}
+            >
+              Launch terminal →
+            </Link>
+            <Link
+              to="/journal"
+              className="h-9 px-4 inline-flex items-center uppercase tracking-label-up border border-hairline-strong text-fg-secondary hover:bg-tier-2 hover:text-fg-primary rounded-btn"
+              style={{ fontSize: 12 }}
+            >
+              Log a trade
+            </Link>
+          </>
+        }
+      />
     </div>
   );
 }

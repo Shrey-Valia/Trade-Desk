@@ -1,4 +1,7 @@
+import { Link } from "react-router-dom";
+
 import { PageHeader } from "@/components/layout/PageHeader";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useActivateAccount, useCombines, useRequestPayout } from "@/hooks/useCombines";
 import { splitPct, splitTokenFromValue } from "@/lib/pricing";
@@ -25,7 +28,7 @@ export function PayoutsPage() {
         subtitle="Funded accounts · your share of profit, on request (simulated)"
       />
       <main className="flex-1 min-h-0 overflow-y-auto border-t border-hairline">
-        <div className="p-3.5 flex flex-col gap-3.5">
+        <div className="p-3.5 flex flex-col gap-3.5 min-h-full">
           <div className="flex items-center gap-3 flex-wrap">
             <MetricPill label="FUNDED ACCOUNTS" value={String(funded.length)} />
             <MetricPill label="AVAILABLE" value={formatDollar(totalAvailable)} />
@@ -35,10 +38,20 @@ export function PayoutsPage() {
           {isPending ? (
             <div className="px-1 py-6 text-tiny text-fg-tertiary-2">Loading…</div>
           ) : funded.length === 0 ? (
-            <div className="px-1 py-10 text-center text-tiny text-fg-tertiary-2">
-              No funded accounts yet. Pass an evaluation (profit target + min
-              trading days + consistency) and the account auto-funds — then
-              payouts appear here.
+            <div className="flex-1 flex items-center justify-center">
+              <EmptyState
+                title="No funded accounts yet"
+                body="Pass an evaluation — hit the profit target with the minimum trading days and consistency — and the account auto-funds. Your payouts appear here once it does."
+                action={
+                  <Link
+                    to="/dashboard"
+                    className="h-9 px-4 inline-flex items-center uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 rounded-btn font-medium"
+                    style={{ fontSize: 12 }}
+                  >
+                    Track your progress →
+                  </Link>
+                }
+              />
             </div>
           ) : (
             <div className="flex flex-col gap-2">
@@ -48,7 +61,7 @@ export function PayoutsPage() {
             </div>
           )}
 
-          <span className="text-tiny text-fg-tertiary leading-relaxed">
+          <span className="text-tiny text-fg-tertiary-2 leading-relaxed">
             Payouts are simulated — requesting records the event and reduces
             the available figure, but moves no real money. Your split (80/20 or
             50/50) and any activation fee were set when you bought the combine.

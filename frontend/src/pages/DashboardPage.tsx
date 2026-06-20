@@ -6,6 +6,7 @@ import { GaugeDial } from "@/components/analytics/GaugeDial";
 import { CombineCardsGrid } from "@/components/combines/CombineCards";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { colors } from "@/lib/design";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useActivateAccount, useCombines } from "@/hooks/useCombines";
@@ -87,6 +88,10 @@ function DashboardBody() {
   const analytics = useJournalAnalytics(
     activeCombineId != null ? { combineId: activeCombineId } : {},
   );
+  // Until there's at least one closed trade, the three analytics panels are
+  // empty voids — show one purposeful "get started" card instead.
+  const hasTrades = (analytics.data?.kpis?.closed_trades ?? 0) > 0;
+  const showPanels = hasTrades || analytics.isPending;
 
   return (
     <div className="p-3.5 flex flex-col gap-3.5">
@@ -130,19 +135,48 @@ function DashboardBody() {
       {/* Middle: balance curve + perf | path to funding */}
       <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "2fr 1fr" }}>
         <div className="flex flex-col gap-3.5 min-w-0">
-          <BalancePanel
-            startingBalance={account?.starting_balance ?? 0}
-            combineName={account?.combine_name}
-            analytics={analytics}
-            mll={account?.mll}
-            profitTargetBalance={
-              account
-                ? account.starting_balance + (account.profit_target ?? 0)
-                : undefined
-            }
-          />
-          <PerformancePanel analytics={analytics} />
-          <TradesByDurationPanel analytics={analytics} />
+          {showPanels ? (
+            <>
+              <BalancePanel
+                startingBalance={account?.starting_balance ?? 0}
+                combineName={account?.combine_name}
+                analytics={analytics}
+                mll={account?.mll}
+                profitTargetBalance={
+                  account
+                    ? account.starting_balance + (account.profit_target ?? 0)
+                    : undefined
+                }
+              />
+              <PerformancePanel analytics={analytics} />
+              <TradesByDurationPanel analytics={analytics} />
+            </>
+          ) : (
+            <Panel title="Your combine at a glance" right={account?.combine_name ?? ""}>
+              <EmptyState
+                title="No closed trades yet"
+                body="Open your first 0DTE position from the terminal. Your balance curve, performance tracker, and trade-by-duration breakdown fill in automatically as you close trades."
+                action={
+                  <>
+                    <Link
+                      to="/positions"
+                      className="h-9 px-4 inline-flex items-center uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 rounded-btn font-medium"
+                      style={{ fontSize: 12 }}
+                    >
+                      Launch terminal →
+                    </Link>
+                    <Link
+                      to="/journal"
+                      className="h-9 px-4 inline-flex items-center uppercase tracking-label-up border border-hairline-strong text-fg-secondary hover:bg-tier-2 hover:text-fg-primary rounded-btn"
+                      style={{ fontSize: 12 }}
+                    >
+                      Log a trade
+                    </Link>
+                  </>
+                }
+              />
+            </Panel>
+          )}
         </div>
         <PathToFunding />
       </div>
@@ -257,15 +291,19 @@ function BalancePanel({
             profitTarget={profitTargetBalance}
           />
         </div>
-      ) : (
+      ) : analytics.isPending ? (
         <div
           className="flex items-center justify-center text-tiny text-fg-tertiary-2"
-          style={{ height: 220 }}
+          style={{ height: 120 }}
         >
-          {analytics.isPending
-            ? "Loading…"
-            : "The balance curve appears after your first two closed trades."}
+          Loading…
         </div>
+      ) : (
+        <EmptyState
+          compact
+          title="Balance curve pending"
+          body="The curve appears once you've closed at least two trades on this combine."
+        />
       )}
     </Panel>
   );
@@ -379,13 +417,11 @@ function TradesByDurationPanel({
           </span>
         </div>
       ) : (
-        <div
-          className="flex items-center justify-center text-tiny text-fg-tertiary-2 text-center px-4"
-          style={{ height: 120 }}
-        >
-          No closed intraday trades yet — duration buckets appear once timed
-          trades close.
-        </div>
+        <EmptyState
+          compact
+          title="No timed trades yet"
+          body="Duration buckets appear once you close intraday trades."
+        />
       )}
     </Panel>
   );
