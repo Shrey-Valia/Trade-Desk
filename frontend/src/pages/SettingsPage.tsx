@@ -308,7 +308,7 @@ function CombineTierSection() {
           + new combine
         </Link>
       </div>
-      <div className="grid grid-cols-3 gap-3 px-5 pb-5 pt-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 px-5 pb-5 pt-2">
         {combines
           .filter((c) => c.status !== "archived")
           .map((c) => {
@@ -417,7 +417,7 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
           starting balance.
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-2 px-3 pb-3 pt-1">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-3 pb-3 pt-1">
         {tiers.map((t) => {
           const tierKey = t.key as TierKey;
           const override = overrides[tierKey];

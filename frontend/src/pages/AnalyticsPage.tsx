@@ -170,12 +170,12 @@ function AnalyticsBody({
     <div className="flex flex-col gap-3.5 p-3.5">
       <MetricHero kpis={data.kpis} />
       <EquityPanel equity={data.equity} netSign={data.kpis.net_pnl} />
-      <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+      <div className="grid gap-3.5 items-start grid-cols-1 lg:grid-cols-3">
         <ByStrategyPanel rows={data.by_strategy} />
         <BySymbolPanel rows={data.by_symbol} />
         <StreaksHoldPanel streaks={data.streaks} />
       </div>
-      <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "2fr 1fr" }}>
+      <div className="grid gap-3.5 items-start grid-cols-1 lg:grid-cols-[2fr_1fr]">
         <ByTimeOfDayPanel rows={data.by_time_of_day} />
         <ByDayOfWeekPanel rows={data.by_day_of_week} />
       </div>
@@ -236,7 +236,7 @@ function MetricHero({ kpis }: { kpis: KpiBlock }) {
       : null;
 
   return (
-    <div className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(6, minmax(0, 1fr))" }}>
+    <div className="grid gap-2.5 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
       <Metric
         label="Net P&L"
         value={formatDollarSigned(kpis.net_pnl)}
@@ -628,7 +628,7 @@ function RiskPanel({
           are you trading within the rules
         </span>
       </div>
-      <div className="grid gap-3 p-3" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
+      <div className="grid gap-3 p-3 grid-cols-2 lg:grid-cols-4">
         <RiskCell label="Max drawdown" value={formatDollar(equity.max_drawdown)} tone="warn" sub={pct(equity.max_drawdown)} />
         <RiskCell
           label="Largest single loss"

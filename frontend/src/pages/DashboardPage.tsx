@@ -135,7 +135,7 @@ function DashboardBody() {
       </div>
 
       {/* Middle: balance curve + perf | path to funding */}
-      <div className="grid gap-3.5 items-start" style={{ gridTemplateColumns: "2fr 1fr" }}>
+      <div className="grid gap-3.5 items-start grid-cols-1 lg:grid-cols-[2fr_1fr]">
         <div className="flex flex-col gap-3.5 min-w-0">
           {showPanels ? (
             <>
@@ -333,7 +333,7 @@ function PerformancePanel({
 
   return (
     <Panel title="Performance tracker" right="closed trades on this combine">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <GaugeDial
           label="Win rate"
           value={win != null ? `${Math.round(win * 100)}%` : "—"}

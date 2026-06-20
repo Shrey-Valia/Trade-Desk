@@ -1,23 +1,24 @@
 import { Outlet } from "react-router-dom";
 
 import { LeftRail } from "./LeftRail";
+import { MobileBottomNav } from "./MobileBottomNav";
 
 /**
- * Shared shell for every chart-first route — the left rail on the
- * outer left, the route's own chrome (TradeDeskToolbar / etc.) and
- * content inside. Outlet renders whatever child route matched.
+ * Shared shell for every rail route. Desktop: left rail + content (flex row).
+ * Mobile (< md): the rail is hidden and a bottom nav takes over (flex column,
+ * content above, nav below) — both in-flow so nothing overlaps.
  *
- * The rail is on the outer flex row, so each child page lays out
- * inside a column that's ~56px narrower than the viewport. Existing
- * pages already use flex-1 / min-w-0 — they shrink cleanly.
+ * Pages already use flex-1 / min-w-0, so they shrink cleanly into whichever
+ * column the breakpoint gives them.
  */
 export function RailShell() {
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex flex-col md:flex-row h-full min-h-0">
       <LeftRail />
       <div className="flex-1 min-w-0 min-h-0 flex flex-col">
         <Outlet />
       </div>
+      <MobileBottomNav />
     </div>
   );
 }

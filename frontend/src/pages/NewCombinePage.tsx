@@ -127,7 +127,7 @@ function ChooseAccount({
         </div>
       )}
 
-      <div className="grid gap-4 w-full" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+      <div className="grid gap-4 w-full grid-cols-1 sm:grid-cols-3">
         {tiers.map((t) => (
           <AccountCard
             key={t.key}

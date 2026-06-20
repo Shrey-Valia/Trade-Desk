@@ -72,7 +72,7 @@ function Hero() {
         </span>
         <h1
           className="font-medium leading-tight"
-          style={{ fontSize: 40, maxWidth: 720 }}
+          style={{ fontSize: "clamp(28px, 7vw, 40px)", maxWidth: 720 }}
         >
           Prove you can trade 0DTE options.
           <br />
@@ -123,8 +123,8 @@ function RulesBand() {
   return (
     <section className="border-b border-hairline bg-tier-1">
       <div
-        className="mx-auto px-6 py-4 grid gap-4"
-        style={{ maxWidth: 1080, gridTemplateColumns: "repeat(4, 1fr)" }}
+        className="mx-auto px-6 py-4 grid gap-4 grid-cols-2 sm:grid-cols-4"
+        style={{ maxWidth: 1080 }}
       >
         {items.map((it) => (
           <div key={it.label} className="flex flex-col gap-0.5">
@@ -178,8 +178,7 @@ function TierPricing() {
           sub="Same rules engine at every size — only the numbers scale."
         />
         <div
-          className="grid gap-4 mt-8"
-          style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
+          className="grid gap-4 mt-8 grid-cols-1 sm:grid-cols-3"
         >
           {tiers.map((t) => (
             <div
@@ -280,8 +279,7 @@ function HowItWorks() {
       <div className="mx-auto px-6 py-12" style={{ maxWidth: 1080 }}>
         <SectionHead kicker="How it works" title="Three steps to funded." />
         <div
-          className="grid gap-6 mt-8"
-          style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
+          className="grid gap-6 mt-8 grid-cols-1 sm:grid-cols-3"
         >
           {steps.map((s) => (
             <div key={s.n} className="flex flex-col gap-2">
@@ -323,8 +321,7 @@ function FeatureBand() {
           title="Everything a 0DTE trader actually uses."
         />
         <div
-          className="grid gap-4 mt-8"
-          style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
+          className="grid gap-4 mt-8 grid-cols-1 sm:grid-cols-3"
         >
           {features.map((f) => (
             <div
