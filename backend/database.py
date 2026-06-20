@@ -163,9 +163,11 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("copy_multiplier", "FLOAT NOT NULL DEFAULT 1.0"),
 ]
 
-# Copy trading added a lead pointer to users. Same idempotent additive pattern.
+# Copy trading added a lead pointer to users; per-tier DLL overrides added the
+# JSON column. Same idempotent additive pattern.
 _USER_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("copy_lead_combine_id", "INTEGER"),
+    ("dll_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 
@@ -266,9 +268,15 @@ def _backfill_multiuser(session_factory: sessionmaker) -> None:
             select(User).where(User.email == settings.dev_user_email)
         ).scalar_one_or_none()
         if dev_user is None:
+            # Never derive a login from a committed default — mint a random
+            # password when none is configured (the dev user is a migration
+            # artifact; set DEV_USER_PASSWORD to log in as it).
+            import secrets
+
+            password = settings.dev_user_password or secrets.token_urlsafe(24)
             dev_user = User(
                 email=settings.dev_user_email,
-                password_hash=hash_password(settings.dev_user_password),
+                password_hash=hash_password(password),
                 display_name="Dev",
             )
             session.add(dev_user)

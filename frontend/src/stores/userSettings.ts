@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import type { TierKey } from "@/types/account";
 import {
   DEFAULT_CHART_TIMEFRAME,
   isChartTimeframe,
@@ -34,12 +33,6 @@ interface UserSettingsState {
   bearishColor: string;
   bgGradient: boolean;
   gridOpacity: number;
-  /**
-   * Per-tier DLL override. `undefined` means use the backend default
-   * (Topstep-aligned $1.5K / $3K / $4.5K). Range 1-10% of starting
-   * balance is enforced at the setter.
-   */
-  dllOverrides: Partial<Record<TierKey, number>>;
   setDefaultTicker: (s: string) => void;
   setDefaultContracts: (n: number) => void;
   setDefaultTimeframe: (tf: ChartTimeframe) => void;
@@ -47,7 +40,6 @@ interface UserSettingsState {
   setBearishColor: (hex: string) => void;
   setBgGradient: (on: boolean) => void;
   setGridOpacity: (pct: number) => void;
-  setDllOverride: (tier: TierKey, amount: number | null) => void;
   /** Restore the four chart-appearance knobs to factory values. */
   resetAppearance: () => void;
 }
@@ -62,12 +54,6 @@ export const APPEARANCE_DEFAULTS = {
   gridOpacity: 30,
 } as const;
 
-const TIER_STARTING_BALANCE: Record<TierKey, number> = {
-  "50K": 50_000,
-  "100K": 100_000,
-  "150K": 150_000,
-};
-
 export const useUserSettings = create<UserSettingsState>()(
   persist(
     (set) => ({
@@ -75,7 +61,6 @@ export const useUserSettings = create<UserSettingsState>()(
       defaultContracts: 1,
       defaultTimeframe: DEFAULT_CHART_TIMEFRAME,
       ...APPEARANCE_DEFAULTS,
-      dllOverrides: {},
       setDefaultTicker: (s) => set({ defaultTicker: s.toUpperCase().trim() }),
       setDefaultContracts: (n) =>
         set({ defaultContracts: Math.max(1, Math.min(100, Math.floor(n))) }),
@@ -88,20 +73,6 @@ export const useUserSettings = create<UserSettingsState>()(
       setBgGradient: (on) => set({ bgGradient: on }),
       setGridOpacity: (pct) =>
         set({ gridOpacity: Math.max(0, Math.min(100, Math.round(pct))) }),
-      setDllOverride: (tier, amount) =>
-        set((state) => {
-          const next = { ...state.dllOverrides };
-          if (amount == null || !Number.isFinite(amount)) {
-            delete next[tier];
-          } else {
-            const start = TIER_STARTING_BALANCE[tier];
-            const min = Math.round(start * 0.01);
-            const max = Math.round(start * 0.10);
-            const clamped = Math.max(min, Math.min(max, Math.round(amount)));
-            next[tier] = clamped;
-          }
-          return { dllOverrides: next };
-        }),
       resetAppearance: () => set({ ...APPEARANCE_DEFAULTS }),
     }),
     {

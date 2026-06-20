@@ -33,7 +33,14 @@ from sqlalchemy.orm import Session
 from models.combine import Combine
 from models.combine_event import CombineEvent
 from models.trade import Trade
-from services.account_tiers import TIERS, compute_balance, compute_mll, update_hwm
+from models.user import User
+from services.account_tiers import (
+    TIERS,
+    compute_balance,
+    compute_mll,
+    resolve_dll_budget,
+    update_hwm,
+)
 from services.combine_objectives import (
     objective_progress,
     payout_eligible,
@@ -214,9 +221,12 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     settled_profit = max(0.0, combine.settled_hwm - tier.starting_balance)
     max_contracts = scaling_max_contracts(combine.tier, settled_profit)
 
-    # DLL — today's realized loss within the current 5pm-PT trading day.
+    # DLL — today's realized loss within the current 5pm-PT trading day,
+    # tested against the user's per-tier override (clamped) or the tier default.
     dll_used = dll_used_today_for_combine(session, combine.id, now, since)
-    dll_budget = tier.dll_amount
+    owner = session.get(User, combine.user_id)
+    dll_override = owner.dll_overrides.get(combine.tier) if owner else None
+    dll_budget = resolve_dll_budget(combine.tier, dll_override)  # type: ignore[arg-type]
     day_locked = dll_used >= dll_budget
 
     # PASS progress (realized-based), bucketed per 5pm-PT trading day.

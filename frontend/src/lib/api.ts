@@ -283,6 +283,23 @@ export const updateCopyConfig = (input: CopyConfigInput): Promise<CombinesOut> =
     body: JSON.stringify(input),
   });
 
+// -- DLL overrides (server-enforced) -----------------------------------------
+
+const DllOverridesSchema = z.object({ overrides: z.record(z.number()) });
+
+/** The user's per-tier DLL overrides ({tier: dollars}). */
+export const fetchDllOverrides = (): Promise<Record<string, number>> =>
+  request("/api/account/dll-overrides", DllOverridesSchema).then((r) => r.overrides);
+
+/** Replace the user's per-tier DLL overrides (server clamps to the band). */
+export const updateDllOverrides = (
+  overrides: Record<string, number>,
+): Promise<Record<string, number>> =>
+  mutate("/api/account/dll-overrides", DllOverridesSchema, {
+    method: "PUT",
+    body: JSON.stringify({ overrides }),
+  }).then((r) => r.overrides);
+
 // -- auth --------------------------------------------------------------------
 
 export const fetchMe = (): Promise<UserOut> =>

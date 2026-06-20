@@ -57,12 +57,12 @@ def _default_spot_for(symbol: str) -> float | None:
 
 
 def _rate() -> float:
-    from services.fred_client import latest_dgs3mo_rate
+    from services.fred_client import DEFAULT_RATE_FALLBACK, latest_dgs3mo_rate
 
     try:
         return latest_dgs3mo_rate()
     except Exception:  # noqa: BLE001
-        return 0.045
+        return DEFAULT_RATE_FALLBACK
 
 
 def _t_to_close(now: datetime) -> float:

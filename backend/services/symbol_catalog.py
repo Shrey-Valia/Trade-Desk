@@ -10,9 +10,6 @@ This module is kept around as a stable adapter so the existing
 `routers/ticker_search.py` doesn't need to change shape — same
 `CatalogEntry`, same `search()` ranking, same `_INDEX_DENYLIST`
 defense. It just sources entries from `curated_universe` now.
-
-`refresh()` is preserved as a no-op so the existing APScheduler job
-registration in `main.py` doesn't need to be torn out.
 """
 
 from __future__ import annotations
@@ -47,16 +44,6 @@ def _curated_to_catalog(e: curated_universe.CuratedEntry) -> CatalogEntry:
     # for the legacy response shape). "CURATED" is a clearer sentinel
     # than picking a real exchange we don't actually verify.
     return CatalogEntry(symbol=e.symbol, name=e.name, exchange="CURATED")
-
-
-def refresh() -> int:
-    """No-op kept for APScheduler compatibility.
-
-    The curated universe is static — there's nothing to refresh. We
-    keep the function signature so `main.py`'s cron registration
-    doesn't need to be unwired during the curated rollout.
-    """
-    return len(curated_universe.CURATED_UNIVERSE)
 
 
 def search(q: str, limit: int = 10) -> list[CatalogEntry]:
@@ -101,10 +88,3 @@ def get_all() -> tuple[CatalogEntry, ...]:
         for e in curated_universe.CURATED_UNIVERSE
         if e.symbol not in _INDEX_DENYLIST
     )
-
-
-def is_loaded_from_alpaca() -> bool:
-    """Legacy signal from the live-catalog era. The curated universe
-    is loaded eagerly at import, so this is always True now — kept
-    to avoid breaking any caller that reads it."""
-    return True

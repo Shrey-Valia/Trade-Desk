@@ -98,7 +98,6 @@ Trade Dashboard/
 │   │   ├── finnhub_client.py
 │   │   ├── fred_client.py          # risk-free rate (DGS3MO)
 │   │   ├── market_calendar.py      # NYSE schedule
-│   │   ├── mock_flow.py            # demo unusual-flow generator
 │   │   ├── symbol_catalog.py       # adapter on top of curated_universe
 │   │   ├── ticker_analytics.py     # dormant algorithmic-popular aggregator
 │   │   ├── timeouts.py             # per-call SDK timeout wrapper

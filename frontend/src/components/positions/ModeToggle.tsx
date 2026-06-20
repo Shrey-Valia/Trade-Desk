@@ -20,13 +20,11 @@ const SEGMENTS: { label: string; to: string; match: (path: string) => boolean }[
 
 /**
  * Top-level mode switcher. Two segments, 11px uppercase tracked. Active
- * segment uses FG PRIMARY + 2px amber bottom rule (matches the existing
- * TopNavBar tab treatment), inactive is FG SECONDARY.
+ * segment uses FG PRIMARY + 2px amber bottom rule, inactive is FG SECONDARY.
  *
- * Used in both shells: rendered on the right side of the Analysis-mode
- * TopNavBar AND inside the Positions-mode TradeDeskToolbar. The mode it
- * shows as active is derived from the URL path, not internal state, so
- * back/forward navigation stays consistent.
+ * Rendered inside the Positions-mode TradeDeskToolbar. The mode it shows as
+ * active is derived from the URL path, not internal state, so back/forward
+ * navigation stays consistent.
  */
 export function ModeToggle() {
   const { pathname } = useLocation();

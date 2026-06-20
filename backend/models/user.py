@@ -12,9 +12,10 @@ read path validates ownership through the combines table instead.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
-from sqlalchemy import Integer, String
+from sqlalchemy import Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
@@ -34,6 +35,13 @@ class User(Base):
     # trading off. Plain Integer for the same circular-FK reason as above.
     copy_lead_combine_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Per-tier Daily Loss Limit overrides as JSON {tier: dollars}. Empty {}
+    # means use each tier's default DLL. Enforced server-side in
+    # combine_state (clamped to the 1-10%-of-starting-balance band).
+    dll_overrides_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         nullable=False,
@@ -45,3 +53,14 @@ class User(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+    @property
+    def dll_overrides(self) -> dict[str, float]:
+        try:
+            return {k: float(v) for k, v in json.loads(self.dll_overrides_json or "{}").items()}
+        except (ValueError, TypeError, AttributeError):
+            return {}
+
+    @dll_overrides.setter
+    def dll_overrides(self, value: dict[str, float]) -> None:
+        self.dll_overrides_json = json.dumps(value)

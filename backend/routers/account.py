@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from database import get_session
 from models.combine import Combine
 from models.user import User
-from services.account_tiers import ALL_TIERS, TIERS
+from services.account_tiers import ALL_TIERS, TIERS, resolve_dll_budget
 from services.auth import get_current_user
 from services.combine_state import combine_snapshot
 
@@ -189,6 +189,45 @@ def get_account_state(
             for c in all_combines
         ],
     )
+
+
+class DllOverridesOut(BaseModel):
+    overrides: dict[str, float] = Field(
+        default_factory=dict, description="User's per-tier DLL overrides (dollars)."
+    )
+
+
+class DllOverridesIn(BaseModel):
+    overrides: dict[str, float]
+
+
+@router.get("/dll-overrides", response_model=DllOverridesOut)
+def get_dll_overrides(
+    user: User = Depends(get_current_user),
+) -> DllOverridesOut:
+    """The user's per-tier DLL overrides (available with zero combines, so the
+    Settings editor works before any account is purchased)."""
+    return DllOverridesOut(overrides=user.dll_overrides)
+
+
+@router.put("/dll-overrides", response_model=DllOverridesOut)
+def set_dll_overrides(
+    payload: DllOverridesIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> DllOverridesOut:
+    """Set per-tier DLL overrides. Each value is clamped to the
+    1-10%-of-starting-balance band; unknown tiers are rejected. These are
+    ENFORCED on the open path (combine_state resolves the budget from them)."""
+    cleaned: dict[str, float] = {}
+    for tier_key, amount in payload.overrides.items():
+        if tier_key not in TIERS:
+            raise HTTPException(422, f"unknown tier {tier_key}")
+        cleaned[tier_key] = resolve_dll_budget(tier_key, amount)  # type: ignore[arg-type]
+    user.dll_overrides = cleaned
+    session.add(user)
+    session.commit()
+    return DllOverridesOut(overrides=cleaned)
 
 
 def _active_combine_or_404(session: Session, user: User) -> Combine:

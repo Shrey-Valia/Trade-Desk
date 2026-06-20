@@ -13,14 +13,18 @@ from services.copy_trade import mirror_open
 from tests.conftest import make_combine
 
 
-def _lead_trade(session, combine: Combine, contracts: int = 5) -> Trade:
+def _lead_trade(
+    session, combine: Combine, contracts: int = 5, status: str = "open"
+) -> Trade:
     t = Trade(
         symbol="SPY",
         strategy="long_call",
         entry_date=datetime.now(timezone.utc),
         entry_underlying_price=500.0,
         net_debit_credit=-1000.0,
-        status="open",
+        status=status,
+        order_type="limit" if status == "working" else "market",
+        limit_price=2.0 if status == "working" else None,
         is_paper=True,
         notes="0DTE long call · indicative fill",
         tier=combine.tier,
@@ -191,3 +195,30 @@ def test_lead_close_cascades_to_followers_scaled(auth_client, session_factory):
         assert copy.status == "closed"
         assert copy.close_reason == "copy"
         assert copy.realized_pnl == 200.0  # 400 × (1/2) contract ratio
+
+
+def test_lead_cancel_cascades_to_followers(auth_client, session_factory):
+    lead = make_combine(auth_client, "50K", name="Lead")
+    f2 = make_combine(auth_client, "50K", name="F2")
+    _set_config(auth_client, lead["id"], [(f2["id"], 1.0)])
+
+    with session_factory() as s:
+        lead_c = s.get(Combine, lead["id"])
+        trade = _lead_trade(s, lead_c, contracts=2, status="working")
+        mirror_open(s, lead_c, trade)
+        lead_id = trade.id
+        # The mirrored copy is a working order too.
+        copy = s.execute(
+            select(Trade).where(Trade.copied_from_trade_id == lead_id)
+        ).scalars().one()
+        assert copy.status == "working"
+
+    # Cancel the lead working order → cascade.
+    res = auth_client.post(f"/api/journal/trades/{lead_id}/cancel")
+    assert res.status_code == 200, res.text
+
+    with session_factory() as s:
+        copy = s.execute(
+            select(Trade).where(Trade.copied_from_trade_id == lead_id)
+        ).scalars().one()
+        assert copy.status == "cancelled"

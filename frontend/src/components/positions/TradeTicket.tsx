@@ -6,8 +6,6 @@ import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
 import { useTradeTicket, type TicketSelection } from "@/stores/tradeTicket";
-import { useUserSettings } from "@/stores/userSettings";
-import type { TierKey } from "@/types/account";
 
 /**
  * Lower-right TRADE TICKET (184px tall).
@@ -332,14 +330,9 @@ function DllRiskHint({
   contracts: number;
 }) {
   const { data: account } = useAccountState();
-  const dllOverrides = useUserSettings((s) => s.dllOverrides);
   if (!account) return null;
-  const activeTier = (account.active_tier ?? "50K") as TierKey;
-  const dllBudget =
-    dllOverrides[activeTier] ??
-    account.tiers.find((t) => t.key === activeTier)?.dll_amount ??
-    account.dll_budget ??
-    0;
+  // Backend resolves + enforces the active combine's DLL (override or default).
+  const dllBudget = account.dll_budget ?? 0;
   if (dllBudget <= 0) return null;
   const remaining = Math.max(0, dllBudget - (account.dll_used ?? 0));
   const cost = selection.price * 100 * contracts;

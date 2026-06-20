@@ -61,8 +61,8 @@ from schemas.journal import (
 from services.alpaca_client import get_quotes
 from services.auth import get_active_combine, get_current_user
 from services.cache import cache
-from services.copy_trade import mirror_close
-from services.fred_client import latest_dgs3mo_rate
+from services.copy_trade import mirror_cancel, mirror_close
+from services.fred_client import DEFAULT_RATE_FALLBACK, latest_dgs3mo_rate
 
 router = APIRouter(prefix="/api/journal", tags=["journal"])
 log = logging.getLogger(__name__)
@@ -260,6 +260,8 @@ def cancel_order(
     trade.status = "cancelled"
     session.commit()
     session.refresh(trade)
+    # Copy trading: cancelling the lead's working order pulls its copies too.
+    mirror_cancel(session, trade)
     return _to_out(trade)
 
 
@@ -395,7 +397,7 @@ def get_trade_analytics(
     try:
         rate = latest_dgs3mo_rate()
     except Exception:  # noqa: BLE001
-        rate = 0.045  # ~3M T-bill rate; safe fallback for the demo
+        rate = DEFAULT_RATE_FALLBACK
 
     if is_intraday:
         # If no override is provided, derive elapsed from wall clock so

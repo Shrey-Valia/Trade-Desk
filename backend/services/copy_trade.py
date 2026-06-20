@@ -167,3 +167,23 @@ def mirror_close(session: Session, lead_trade: Trade) -> int:
     session.commit()
     log.info("copy-trade: lead trade %s closed %d follower copies", lead_trade.id, len(followers))
     return len(followers)
+
+
+def mirror_cancel(session: Session, lead_trade: Trade) -> int:
+    """Cascade a lead WORKING-order cancel to its still-working follower
+    copies (linked via copied_from_trade_id). Returns how many were
+    cancelled."""
+    followers = session.execute(
+        select(Trade).where(
+            Trade.copied_from_trade_id == lead_trade.id,
+            Trade.status == "working",
+        )
+    ).scalars().all()
+    if not followers:
+        return 0
+    for f in followers:
+        f.status = "cancelled"
+        session.add(f)
+    session.commit()
+    log.info("copy-trade: lead trade %s cancelled %d follower copies", lead_trade.id, len(followers))
+    return len(followers)

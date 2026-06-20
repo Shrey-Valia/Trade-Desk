@@ -116,3 +116,38 @@ def test_require_tradeable_allows_healthy_combine(auth_client, session_factory):
     combine = session.get(Combine, c["id"])
     zerodte._require_tradeable(session, combine)  # must not raise
     session.close()
+
+
+def test_require_tradeable_enforces_custom_dll_override(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    # Tighten the 50K DLL from its $1,500 default to $800.
+    res = auth_client.put(
+        "/api/account/dll-overrides", json={"overrides": {"50K": 800}}
+    )
+    assert res.status_code == 200
+    assert res.json()["overrides"]["50K"] == 800
+
+    session = session_factory()
+    # -$1,000 today: under the $1,500 default but OVER the $800 override.
+    _seed_closed_trade(session, c["id"], -1_000.0)
+    combine = session.get(Combine, c["id"])
+    with pytest.raises(HTTPException) as ei:
+        zerodte._require_tradeable(session, combine)
+    assert ei.value.status_code == 403
+    assert "Daily loss limit" in str(ei.value.detail)
+    session.close()
+
+
+def test_dll_override_clamped_to_band(auth_client):
+    # 50K band = 1-10% of $50,000 = $500-$5,000. $50 clamps up to $500.
+    res = auth_client.put("/api/account/dll-overrides", json={"overrides": {"50K": 50}})
+    assert res.status_code == 200
+    assert res.json()["overrides"]["50K"] == 500
+    assert auth_client.get("/api/account/dll-overrides").json()["overrides"]["50K"] == 500
+
+
+def test_dll_override_rejects_unknown_tier(auth_client):
+    res = auth_client.put(
+        "/api/account/dll-overrides", json={"overrides": {"999K": 1000}}
+    )
+    assert res.status_code == 422

@@ -40,7 +40,11 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
     cookie_secure: bool = False
     dev_user_email: str = "dev@local"
-    dev_user_password: str = "devpassword"
+    # No password is committed to source. If left blank, the one-time
+    # legacy-DB backfill mints a random one (the dev user is a migration
+    # artifact, not a login). Set DEV_USER_PASSWORD in .env only if you need
+    # to sign in as it after adopting a pre-multi-user database.
+    dev_user_password: str = ""
 
     # ---------------------------------------------------------------------
     # Stripe (OPT-IN). Payments go live ONLY when stripe_secret_key is set;

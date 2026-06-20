@@ -4,7 +4,11 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { UIButton } from "@/components/ui/UIButton";
 import { Link, useNavigate } from "react-router-dom";
 
-import { useAccountState } from "@/hooks/useAccountState";
+import {
+  useAccountState,
+  useDllOverrides,
+  useUpdateDllOverrides,
+} from "@/hooks/useAccountState";
 import {
   useActivateCombine,
   useCombines,
@@ -437,8 +441,14 @@ function CombineTierSection() {
  * server-side.
  */
 function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
-  const overrides = useUserSettings((s) => s.dllOverrides);
-  const setOverride = useUserSettings((s) => s.setDllOverride);
+  const { data: overrides = {} } = useDllOverrides();
+  const update = useUpdateDllOverrides();
+  const setOverride = (tierKey: TierKey, amount: number | null) => {
+    const next: Record<string, number> = { ...overrides };
+    if (amount == null) delete next[tierKey];
+    else next[tierKey] = amount;
+    update.mutate(next);
+  };
   return (
     <div className="border-b border-hairline">
       <div className="px-3 pt-3 pb-1">

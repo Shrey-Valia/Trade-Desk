@@ -11,7 +11,6 @@ import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { useTrades } from "@/hooks/useTrades";
 import { fetchTradeAnalytics } from "@/lib/api";
 import { formatPercent, formatPrice } from "@/lib/formatters";
-import { useUserSettings } from "@/stores/userSettings";
 import { isZeroDteTrade } from "@/types/journal";
 import type { TierKey } from "@/types/account";
 
@@ -289,7 +288,6 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
 function MetricPills() {
   const { data: account } = useAccountState();
   const { data: tradesData } = useTrades();
-  const dllOverrides = useUserSettings((s) => s.dllOverrides);
   const activeTier = (account?.active_tier ?? "50K") as TierKey;
 
   // Header UP&L is an account-level number: the live unrealized P&L
@@ -375,15 +373,10 @@ function MetricPills() {
           ? "TARGET"
           : null;
 
-  // DLL budget — user can override per-tier in Settings; default falls
-  // back to the active tier's spec (Topstep-aligned 3% of starting
-  // balance, served by the backend). The backend enforces the tier-default
-  // DLL on opens; a tighter override here only adjusts this pill.
-  const dllBudget =
-    dllOverrides[activeTier] ??
-    account?.tiers.find((t) => t.key === activeTier)?.dll_amount ??
-    account?.dll_budget ??
-    0;
+  // DLL budget — the backend resolves the active combine's budget (the
+  // user's per-tier Settings override clamped to the band, else the tier
+  // default) and enforces it on opens, so we read it straight off the snapshot.
+  const dllBudget = account?.dll_budget ?? 0;
   // dll_used from backend is realized-only. Fold in any negative UPL
   // from the active position on this tier (positive UPL doesn't reduce
   // DLL_used — see services/account_tiers, the spec). Mirrors how BAL

@@ -41,7 +41,7 @@ from services.copy_trade import mirror_open
 from models.trade import Trade
 from schemas.journal import TradeOut, compute_net_debit_credit
 from services.alpaca_client import get_chain_snapshot, get_quotes
-from services.fred_client import latest_dgs3mo_rate
+from services.fred_client import DEFAULT_RATE_FALLBACK, latest_dgs3mo_rate
 from services.market_calendar import is_market_open
 
 router = APIRouter(prefix="/api/zerodte", tags=["zerodte"])
@@ -264,7 +264,7 @@ def get_chain_table(
     try:
         rate = latest_dgs3mo_rate()
     except Exception:  # noqa: BLE001
-        rate = 0.045
+        rate = DEFAULT_RATE_FALLBACK
     t_close = _t_years_to_close()
 
     all_strikes = sorted({c.strike for c in same_day})
@@ -784,7 +784,7 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
     try:
         rate = latest_dgs3mo_rate()
     except Exception:  # noqa: BLE001
-        rate = 0.045
+        rate = DEFAULT_RATE_FALLBACK
 
     row = next((r for r in table.rows if r.strike == payload.strike), None)
 
