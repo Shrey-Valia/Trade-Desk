@@ -52,7 +52,7 @@ export function LeftRail() {
     <nav
       aria-label="Primary"
       className="flex flex-col items-stretch border-r border-hairline bg-tier-1 shrink-0"
-      style={{ width: 48 }}
+      style={{ width: 72 }}
     >
       <div className="flex justify-center pt-3 pb-3">
         <TradeDeskMark size={36} />
@@ -104,10 +104,10 @@ function RailEntry({ item }: { item: RailItem }) {
             <Icon />
             <span
               className={[
-                "uppercase tracking-label-up",
+                "uppercase",
                 isActive ? "text-amber" : "text-fg-tertiary-2",
               ].join(" ")}
-              style={{ fontSize: 11, letterSpacing: "0.06em" }}
+              style={{ fontSize: 11, letterSpacing: "0.02em" }}
             >
               {item.label}
             </span>

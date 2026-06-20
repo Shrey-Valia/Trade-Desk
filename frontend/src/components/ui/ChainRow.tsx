@@ -28,7 +28,7 @@ const CALL_W = 84;
 const STRIKE_W = 64;
 const PUT_W = 84;
 const CHAIN_GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
-const ROW_HEIGHT = 18;
+const ROW_HEIGHT = 24;
 
 /**
  * ChainRow — one strike row of the option chain: CALL │ STRIKE │ PUT.
