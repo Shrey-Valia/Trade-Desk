@@ -152,7 +152,8 @@ function CalendarGrid({
     .filter((w) => w.days.some((d) => d.in_month));
 
   return (
-    <div className="border border-hairline">
+    <div className="overflow-x-auto">
+    <div className="border border-hairline min-w-[660px] md:min-w-0">
       {/* Weekday header */}
       <div className="grid border-b border-hairline" style={{ gridTemplateColumns: GRID_TEMPLATE }}>
         {WEEKDAYS.map((wd) => (
@@ -190,6 +191,7 @@ function CalendarGrid({
           <WeekTotalCell week={week} />
         </div>
       ))}
+    </div>
     </div>
   );
 }

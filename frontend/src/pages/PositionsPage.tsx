@@ -211,10 +211,12 @@ export function PositionsPage() {
   }, [activeTrade, analyticsQuery.data, symbol, setBracketsMutation]);
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 overflow-y-auto md:overflow-hidden">
       <TradeDeskHeader symbol={symbol} onSymbolChange={setSymbol} />
-      <div className="flex flex-1 min-h-0">
-        <main className="flex-1 min-w-0 flex flex-col">
+      {/* Desktop: chart | rail side-by-side. Mobile: chart stacked over the
+          chain/ticket rail, the whole page scrolling vertically. */}
+      <div className="flex flex-col md:flex-row flex-1 min-h-0">
+        <main className="flex-1 min-w-0 flex flex-col min-h-[60vh] md:min-h-0">
           <ChartToolbar
             symbol={symbol}
             timeframe={timeframe}
@@ -237,8 +239,7 @@ export function PositionsPage() {
           )}
         </main>
         <div
-          className="border-l border-hairline shrink-0 flex flex-col min-h-0 bg-tier-0"
-          style={{ width: 452, minWidth: 452 }}
+          className="border-t md:border-t-0 md:border-l border-hairline shrink-0 flex flex-col min-h-0 bg-tier-0 w-full md:w-[452px] md:min-w-[452px]"
         >
           {/* Upper-right: option chain (natural height, no flex-grow). */}
           <RightChain symbol={symbol} />

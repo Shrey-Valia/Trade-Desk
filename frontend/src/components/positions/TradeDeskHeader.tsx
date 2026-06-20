@@ -60,8 +60,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
 
   return (
     <header
-      className="flex items-center gap-2 border-b border-hairline bg-tier-1 px-3 shrink-0 relative"
-      style={{ height: 64 }}
+      className="flex flex-wrap md:flex-nowrap items-center gap-2 border-b border-hairline bg-tier-1 px-3 py-2 md:py-0 min-h-[64px] md:h-16 shrink-0 relative"
     >
       <CombineSelector />
       <SearchTrigger

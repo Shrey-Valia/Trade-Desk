@@ -66,7 +66,7 @@ function Toolbar({
 }) {
   return (
     <div
-      className="flex items-center px-3"
+      className="flex items-center px-3 overflow-x-auto"
       style={{ height: 36, gap: 0 }}
       role="toolbar"
       aria-label="Chart toolbar"

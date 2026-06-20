@@ -75,13 +75,7 @@ export function BottomStrip() {
 
   return (
     <div
-      className="grid border-t border-hairline bg-tier-0 shrink-0"
-      style={{
-        height: 280,
-        // 5 equal columns — the original four shrink proportionally to
-        // make room for the activity FEED; row height is unchanged.
-        gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
-      }}
+      className="grid border-t border-hairline bg-tier-0 shrink-0 grid-cols-1 sm:grid-cols-2 md:grid-cols-5 md:h-[280px]"
     >
       <Column>
         <OpenPositionCol
