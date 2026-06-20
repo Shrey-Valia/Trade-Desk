@@ -696,7 +696,7 @@ function ChartSkeleton({ symbol }: { symbol: string }) {
         </div>
         <span
           className="text-tiny uppercase tracking-label-up"
-          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+          style={{ fontSize: 11, letterSpacing: "0.08em" }}
         >
           Loading {symbol} chart…
         </span>

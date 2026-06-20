@@ -102,7 +102,7 @@ function Toolbar({
       {tier && (
         <span
           className="inline-flex items-center h-6 px-2.5 border border-tier-3 bg-tier-2 text-fg-secondary uppercase tracking-label-up"
-          style={{ fontSize: 10, borderRadius: 2 }}
+          style={{ fontSize: 12, borderRadius: 2 }}
         >
           {tier} Combine
         </span>
@@ -188,7 +188,7 @@ function NoTradesInRange() {
     <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-3 text-center">
       <span
         className="uppercase tracking-label-up text-fg-secondary"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        style={{ fontSize: 11, letterSpacing: "0.08em" }}
       >
         No trades in this view
       </span>
@@ -208,7 +208,7 @@ function NoTradesYet() {
     <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-3 text-center">
       <span
         className="uppercase tracking-label-up text-fg-secondary"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        style={{ fontSize: 11, letterSpacing: "0.08em" }}
       >
         No trades yet
       </span>
@@ -293,7 +293,7 @@ function Metric({
       className="flex flex-col gap-1 bg-tier-1 border border-hairline px-3 py-2.5"
       style={{ borderRadius: 4 }}
     >
-      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
         {label}
       </span>
       <span
@@ -303,7 +303,7 @@ function Metric({
         {value}
       </span>
       {sub && (
-        <span className={`tabular-nums ${subTone ? toneClass(subTone) : "text-fg-tertiary"}`} style={{ fontSize: 10 }}>
+        <span className={`tabular-nums ${subTone ? toneClass(subTone) : "text-fg-tertiary"}`} style={{ fontSize: 12 }}>
           {sub}
         </span>
       )}
@@ -330,7 +330,7 @@ function EquityPanel({
           drawdownTroughDate={equity.drawdown_trough_date}
         />
       </div>
-      <div className="flex gap-4 px-3 pb-2.5 text-fg-tertiary-2" style={{ fontSize: 10 }}>
+      <div className="flex gap-4 px-3 pb-2.5 text-fg-tertiary-2" style={{ fontSize: 12 }}>
         <span className="inline-flex items-center gap-1.5">
           <span
             className={`inline-block ${netSign >= 0 ? "bg-bullish" : "bg-bearish"}`}
@@ -546,7 +546,7 @@ function ByTimeOfDayPanel({ rows }: { rows: TimeBucket[] }) {
       <PanelHead k="By Time of Day" r="net P&L · 0DTE is intraday" />
       <VBars rows={rows} />
       {!hasTimed && (
-        <div className="px-3 pb-2.5 text-fg-tertiary" style={{ fontSize: 9 }}>
+        <div className="px-3 pb-2.5 text-fg-tertiary" style={{ fontSize: 11 }}>
           No trades with a recorded intraday entry time in this range.
         </div>
       )}
@@ -582,10 +582,10 @@ function VBars({ rows }: { rows: TimeBucket[] }) {
                 />
               )}
             </div>
-            <span className={`tabular-nums ${r.trades ? pnlClass(r.net_pnl) : "text-fg-tertiary"}`} style={{ fontSize: 9 }}>
+            <span className={`tabular-nums ${r.trades ? pnlClass(r.net_pnl) : "text-fg-tertiary"}`} style={{ fontSize: 11 }}>
               {r.trades ? formatDollarSigned(r.net_pnl) : "—"}
             </span>
-            <span className="uppercase text-fg-tertiary-2" style={{ fontSize: 9, letterSpacing: "0.04em" }}>
+            <span className="uppercase text-fg-tertiary-2" style={{ fontSize: 11, letterSpacing: "0.04em" }}>
               {r.label}
             </span>
           </div>
@@ -620,10 +620,10 @@ function RiskPanel({
   return (
     <section className="flex flex-col bg-tier-1 border border-hairline-strong">
       <div className="flex items-center justify-between px-3 border-b border-hairline bg-tier-2 shrink-0" style={{ height: 28 }}>
-        <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 10 }}>
+        <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 12 }}>
           Risk &amp; Discipline{tier ? ` · vs ${tier} MLL trail ${formatDollar(trail ?? 0)}` : ""}
         </span>
-        <span className="uppercase tracking-label-up text-fg-tertiary" style={{ fontSize: 9 }}>
+        <span className="uppercase tracking-label-up text-fg-tertiary" style={{ fontSize: 11 }}>
           are you trading within the rules
         </span>
       </div>
@@ -644,7 +644,7 @@ function RiskPanel({
         />
         {trail && trail > 0 && avgLoss != null && (
           <div className="col-span-4">
-            <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+            <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
               Avg loss vs MLL trail — keep this small
             </span>
             <div className="relative bg-tier-0 border border-hairline mt-1.5" style={{ height: 10 }}>
@@ -686,9 +686,9 @@ function RiskCell({
   const toneCls = tone === "bear" ? "text-bearish" : tone === "warn" ? "text-warning" : tone === "bull" ? "text-bullish" : "text-fg-primary";
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>{label}</span>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>{label}</span>
       <span className={`font-medium tabular-nums ${toneCls}`} style={{ fontSize: 18 }}>{value}</span>
-      <span className="text-fg-tertiary" style={{ fontSize: 10 }}>{sub}</span>
+      <span className="text-fg-tertiary" style={{ fontSize: 12 }}>{sub}</span>
     </div>
   );
 }
@@ -705,11 +705,11 @@ function PanelHead({ k, r }: { k: string; r?: string }) {
       className="flex items-center justify-between px-3 border-b border-hairline shrink-0"
       style={{ height: 28 }}
     >
-      <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 10 }}>
+      <span className="uppercase tracking-label-up text-fg-secondary" style={{ fontSize: 12 }}>
         {k}
       </span>
       {r && (
-        <span className="uppercase tracking-label-up text-fg-tertiary tabular-nums" style={{ fontSize: 9 }}>
+        <span className="uppercase tracking-label-up text-fg-tertiary tabular-nums" style={{ fontSize: 11 }}>
           {r}
         </span>
       )}

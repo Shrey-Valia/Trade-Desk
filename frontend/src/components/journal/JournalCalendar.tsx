@@ -116,7 +116,7 @@ function CalendarHeader({
       </div>
       <div className="flex items-baseline gap-3 tabular-nums">
         <span className="text-tiny uppercase tracking-label-up text-fg-tertiary-2"
-              style={{ fontSize: 9 }}>
+              style={{ fontSize: 11 }}>
           Month
         </span>
         <span
@@ -159,14 +159,14 @@ function CalendarGrid({
           <div
             key={wd}
             className="px-2 py-1.5 text-tiny uppercase tracking-label-up text-fg-tertiary border-r border-hairline"
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             {wd}
           </div>
         ))}
         <div
           className="px-2 py-1.5 text-tiny uppercase tracking-label-up text-fg-tertiary-2 bg-tier-1"
-          style={{ fontSize: 9 }}
+          style={{ fontSize: 11 }}
         >
           Week
         </div>
@@ -258,7 +258,7 @@ function DayCell({
           style={{ fontSize: 11 }}
         >
           {dayNum}
-          {day.is_today && <span style={{ fontSize: 8, letterSpacing: "0.06em" }}> · today</span>}
+          {day.is_today && <span style={{ fontSize: 11, letterSpacing: "0.06em" }}> · today</span>}
         </span>
         {hasJournal && (
           <span
@@ -273,7 +273,7 @@ function DayCell({
           <span className={`text-large font-medium tabular-nums ${pnlClass(day.realized_pnl)}`}>
             {formatDollarCompact(day.realized_pnl)}
           </span>
-          <span className="flex items-center gap-1.5 text-fg-tertiary-2 tabular-nums" style={{ fontSize: 9 }}>
+          <span className="flex items-center gap-1.5 text-fg-tertiary-2 tabular-nums" style={{ fontSize: 11 }}>
             <span className="inline-flex gap-0.5">
               {dayTrades.map((t) => (
                 <span
@@ -295,7 +295,7 @@ function WeekTotalCell({ week }: { week: CalendarWeek }) {
   const hasActivity = week.trade_count > 0;
   return (
     <div className="flex flex-col justify-center gap-0.5 px-2.5 py-1.5 bg-tier-1 min-h-[84px]">
-      <span className="uppercase tracking-label-up text-fg-tertiary" style={{ fontSize: 8 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary" style={{ fontSize: 11 }}>
         Wk {week.week_of_month}
       </span>
       {hasActivity ? (
@@ -303,12 +303,12 @@ function WeekTotalCell({ week }: { week: CalendarWeek }) {
           <span className={`text-medium font-medium tabular-nums ${pnlClass(week.realized_pnl)}`}>
             {formatDollarCompact(week.realized_pnl)}
           </span>
-          <span className="text-fg-tertiary-2 tabular-nums" style={{ fontSize: 9 }}>
+          <span className="text-fg-tertiary-2 tabular-nums" style={{ fontSize: 11 }}>
             {week.trade_count} trade{week.trade_count === 1 ? "" : "s"}
           </span>
         </>
       ) : (
-        <span className="text-fg-tertiary-2" style={{ fontSize: 9 }}>—</span>
+        <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>—</span>
       )}
     </div>
   );
@@ -363,7 +363,7 @@ function FootItem({ label, value, tone }: { label: string; value: string; tone?:
   const cls = value === "0" && tone === "bull" ? "text-fg-primary" : toneCls;
   return (
     <div className="flex items-baseline gap-1.5">
-      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
         {label}
       </span>
       <span className={`text-xs2 font-medium ${cls}`}>{value}</span>

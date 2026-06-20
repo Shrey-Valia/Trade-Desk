@@ -130,7 +130,7 @@ function PriceCell({
     >
       {price.toFixed(2)}
       {source === "bs" && (
-        <span className="text-fg-tertiary ml-0.5" style={{ fontSize: 8 }}>
+        <span className="text-fg-tertiary ml-0.5" style={{ fontSize: 11 }}>
           ·m
         </span>
       )}

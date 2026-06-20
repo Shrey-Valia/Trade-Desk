@@ -59,7 +59,7 @@ function FirstCombineHero() {
     <div className="h-full flex flex-col items-center justify-center gap-3 px-6 text-center">
       <span
         className="uppercase tracking-label-up text-fg-secondary"
-        style={{ fontSize: 9, letterSpacing: "0.08em" }}
+        style={{ fontSize: 11, letterSpacing: "0.08em" }}
       >
         No combines yet
       </span>
@@ -195,7 +195,7 @@ function ActivationRow({ combine }: { combine: CombineOut }) {
         <span className="text-fg-primary font-medium truncate" style={{ fontSize: 13 }}>
           {combine.name}
         </span>
-        <span className="text-fg-tertiary-2 tabular-nums ml-2" style={{ fontSize: 10 }}>
+        <span className="text-fg-tertiary-2 tabular-nums ml-2" style={{ fontSize: 12 }}>
           {combine.tier} · {combine.account_code}
         </span>
       </div>
@@ -416,7 +416,7 @@ function PathToFunding() {
           <div className="flex items-baseline justify-between">
             <span
               className="uppercase tracking-label-up text-fg-secondary"
-              style={{ fontSize: 10 }}
+              style={{ fontSize: 12 }}
             >
               Profit target
             </span>
@@ -480,7 +480,7 @@ function PathToFunding() {
           <div className="flex items-baseline justify-between">
             <span
               className="uppercase tracking-label-up text-fg-secondary"
-              style={{ fontSize: 10 }}
+              style={{ fontSize: 12 }}
             >
               Trading days
             </span>
@@ -529,7 +529,7 @@ function RuleRow({
       <div className="flex items-baseline justify-between gap-2">
         <span
           className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 10 }}
+          style={{ fontSize: 12 }}
         >
           {label}
         </span>
@@ -537,13 +537,13 @@ function RuleRow({
           className={`text-tiny uppercase tracking-label-up ${
             status.tone === "bearish" ? "text-bearish" : "text-bullish"
           }`}
-          style={{ fontSize: 9 }}
+          style={{ fontSize: 11 }}
         >
           {status.text}
         </span>
       </div>
       <span className="text-tiny tabular-nums text-fg-primary">{value}</span>
-      <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 10 }}>
+      <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 12 }}>
         {hint}
       </span>
     </div>
@@ -616,7 +616,7 @@ function Panel({
         {right && (
           <span
             className="uppercase tracking-label-up text-fg-tertiary-2 tabular-nums"
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             {right}
           </span>

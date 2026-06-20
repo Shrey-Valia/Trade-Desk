@@ -377,7 +377,7 @@ function CloseForm({
           </div>
           <div className="flex items-start gap-3 flex-wrap">
             <span className="text-fg-tertiary uppercase tracking-label-up mt-1 shrink-0"
-                  style={{ fontSize: 9 }}>
+                  style={{ fontSize: 11 }}>
               Mistakes
             </span>
             <div className="flex gap-1 flex-wrap">
@@ -394,7 +394,7 @@ function CloseForm({
                         ? "border-amber text-amber bg-tier-2"
                         : "border-hairline text-fg-tertiary hover:bg-tier-2",
                     ].join(" ")}
-                    style={{ borderRadius: 0, fontSize: 10 }}
+                    style={{ borderRadius: 0, fontSize: 12 }}
                   >
                     {tag}
                   </button>
@@ -413,13 +413,13 @@ function CloseForm({
                 }}
                 placeholder="+ custom"
                 className="h-6 w-24 px-1 text-tiny bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
-                style={{ borderRadius: 0, fontSize: 10 }}
+                style={{ borderRadius: 0, fontSize: 12 }}
               />
             </div>
           </div>
           {mistakes.filter((m) => !MISTAKE_TAG_VOCABULARY.includes(m as never)).length > 0 && (
             <div className="flex items-center gap-1 flex-wrap pl-12">
-              <span className="text-fg-tertiary" style={{ fontSize: 9 }}>
+              <span className="text-fg-tertiary" style={{ fontSize: 11 }}>
                 Custom:
               </span>
               {mistakes
@@ -428,7 +428,7 @@ function CloseForm({
                   <span
                     key={m}
                     className="inline-flex items-center gap-1 px-1.5 py-px border border-amber text-amber"
-                    style={{ borderRadius: 0, fontSize: 10 }}
+                    style={{ borderRadius: 0, fontSize: 12 }}
                   >
                     {m}
                     <button
@@ -445,7 +445,7 @@ function CloseForm({
           )}
           <label className="flex items-start gap-3">
             <span className="text-fg-tertiary uppercase tracking-label-up mt-1 shrink-0"
-                  style={{ fontSize: 9 }}>
+                  style={{ fontSize: 11 }}>
               Review
             </span>
             <textarea

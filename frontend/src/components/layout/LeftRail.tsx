@@ -107,7 +107,7 @@ function RailEntry({ item }: { item: RailItem }) {
                 "uppercase tracking-label-up",
                 isActive ? "text-amber" : "text-fg-tertiary-2",
               ].join(" ")}
-              style={{ fontSize: 8, letterSpacing: "0.06em" }}
+              style={{ fontSize: 11, letterSpacing: "0.06em" }}
             >
               {item.label}
             </span>

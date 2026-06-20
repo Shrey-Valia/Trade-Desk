@@ -51,24 +51,36 @@ export default {
         mono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
       fontSize: {
-        // Bloomberg ramp — pixel values match DESIGN.md. Some legacy names
-        // (tiny=9, xs2=11, sm=13) coexist with canonical aliases (body=13,
-        // medium=15, large=17, display=19) where pixel values overlap. Both
-        // sets are in active use across the codebase post-revamp; renaming
-        // is a separate refactor that doesn't change render output.
-        tiny: ["9px", "12px"],
-        xs2: ["11px", "14px"],
-        sm: ["13px", "17px"],
-        body: ["13px", "18px"],
-        medium: ["15px", "20px"],
-        large: ["17px", "22px"],
-        display: ["19px", "24px"],
+        // Readability revamp: the floor was raised so nothing legible renders
+        // below 11px (was 9px) and the top of the ramp gives real hierarchy
+        // (display 22, large 18). Token NAMES are unchanged so existing usages
+        // keep working; only the pixel values moved up. tiny/xs2 are the label
+        // tier, body the reading tier, medium/large/display the value+heading
+        // tiers. Hard rule: no inline fontSize below 11px anywhere.
+        tiny: ["11px", "15px"], // smallest LABEL size (uppercase chips, captions)
+        xs2: ["12px", "16px"], // secondary labels / dense table text
+        sm: ["13px", "18px"],
+        body: ["13px", "18px"], // default reading size
+        medium: ["15px", "21px"], // emphasized values
+        large: ["18px", "24px"], // sub-headings / hero values
+        display: ["22px", "28px"], // page + panel headings
       },
       borderRadius: {
         hair: "2px",
         // Visual rework: 4px radius for the Topstep-style filled
         // buttons. Hairline panels keep 0; only buttons opt into 4px.
         btn: "4px",
+      },
+      spacing: {
+        // Semantic density scale (additive to Tailwind's default spacing) so
+        // breathing room is a deliberate token choice, not an ad-hoc value.
+        // Use these for panel/section/card rhythm; defaults still apply.
+        cell: "4px",
+        "cell-x": "6px",
+        section: "8px",
+        group: "12px",
+        region: "16px",
+        page: "24px",
       },
       letterSpacing: {
         // Uppercase labels per DESIGN.md type spec.

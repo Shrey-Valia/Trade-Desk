@@ -66,7 +66,7 @@ function Hero() {
       >
         <span
           className="uppercase tracking-label-up text-amber border border-amber px-2 py-0.5"
-          style={{ fontSize: 10, borderRadius: 2 }}
+          style={{ fontSize: 12, borderRadius: 2 }}
         >
           0DTE options · funded evaluation
         </span>
@@ -130,7 +130,7 @@ function RulesBand() {
           <div key={it.label} className="flex flex-col gap-0.5">
             <span
               className="uppercase tracking-label-up text-fg-tertiary-2"
-              style={{ fontSize: 9, letterSpacing: "0.08em" }}
+              style={{ fontSize: 11, letterSpacing: "0.08em" }}
             >
               {it.label}
             </span>
@@ -193,7 +193,7 @@ function TierPricing() {
               {t.highlight && (
                 <div
                   className="text-center uppercase tracking-label-up text-amber border-b border-amber py-1"
-                  style={{ fontSize: 9 }}
+                  style={{ fontSize: 11 }}
                 >
                   Most popular
                 </div>
@@ -248,7 +248,7 @@ function LandingSpec({ label, value }: { label: string; value: string }) {
     <div className="flex items-baseline justify-between">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>
@@ -374,7 +374,7 @@ function Footer() {
         style={{ maxWidth: 1080 }}
       >
         <TradeDeskLogo size="mini" />
-        <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 10 }}>
+        <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 12 }}>
           Simulated trading only. Trade Desk combines are evaluations on paper
           execution with live market data — not brokerage accounts, and not
           financial advice.
@@ -397,7 +397,7 @@ function SectionHead({
     <div className="flex flex-col gap-1.5">
       <span
         className="uppercase tracking-label-up text-amber"
-        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         {kicker}
       </span>

@@ -93,7 +93,7 @@ export function ChartLegend({ hasActivePosition }: { hasActivePosition: boolean 
             enabled={hasActivePosition}
           />
           <div className="text-tiny uppercase tracking-label-up text-fg-tertiary mb-0.5"
-               style={{ fontSize: 9 }}>
+               style={{ fontSize: 11 }}>
             My position
           </div>
           {POSITION_ENTRIES.map((e) => (
@@ -105,7 +105,7 @@ export function ChartLegend({ hasActivePosition }: { hasActivePosition: boolean 
         <div className="flex items-center justify-between mb-0.5">
           <span
             className="text-tiny uppercase tracking-label-up text-fg-tertiary"
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             Market structure
           </span>
@@ -119,7 +119,7 @@ export function ChartLegend({ hasActivePosition }: { hasActivePosition: boolean 
                 : "text-fg-tertiary hover:text-fg-primary",
             ].join(" ")}
             title={showMarketAnnotations ? "Hide annotations" : "Show annotations"}
-            style={{ fontSize: 9 }}
+            style={{ fontSize: 11 }}
           >
             {showMarketAnnotations ? "ON" : "OFF"}
           </button>
@@ -142,11 +142,11 @@ function LegendRow({ entry, dimmed }: { entry: Entry; dimmed?: boolean }) {
       <Swatch color={entry.swatch.color} style={entry.swatch.style} />
       <span
         className="text-tiny text-fg-primary tabular-nums"
-        style={{ fontSize: 10, minWidth: 24 }}
+        style={{ fontSize: 12, minWidth: 24 }}
       >
         {entry.label}
       </span>
-      <span className="text-tiny text-fg-tertiary" style={{ fontSize: 10 }}>
+      <span className="text-tiny text-fg-tertiary" style={{ fontSize: 12 }}>
         {entry.meaning}
       </span>
     </div>

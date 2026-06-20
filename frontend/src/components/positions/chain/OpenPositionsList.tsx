@@ -111,16 +111,16 @@ function OpenRow({
             </span>
           </div>
           <div className="flex items-baseline gap-2 mt-0.5">
-            <span className="text-fg-tertiary" style={{ fontSize: 9 }}>
+            <span className="text-fg-tertiary" style={{ fontSize: 11 }}>
               entry ${trade.entry_underlying_price.toFixed(2)}
             </span>
-            <span className={uplClass(upl)} style={{ fontSize: 10 }}>
+            <span className={uplClass(upl)} style={{ fontSize: 12 }}>
               {upl === null ? "—" : formatSignedDollar(upl)}
             </span>
             {intraday && (
               <span
                 className="ml-auto text-fg-tertiary uppercase tracking-label-up"
-                style={{ fontSize: 8 }}
+                style={{ fontSize: 11 }}
               >
                 0DTE
               </span>

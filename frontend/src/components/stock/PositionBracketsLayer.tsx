@@ -222,7 +222,7 @@ function BracketRow({
       >
         <span
           className="uppercase tracking-label-up px-1"
-          style={{ fontSize: 9, color, background: colors.bgTier0, border: `1px solid ${color}` }}
+          style={{ fontSize: 11, color, background: colors.bgTier0, border: `1px solid ${color}` }}
           title="Drag to move · auto-closes when the underlying crosses"
         >
           {label} {price.toFixed(2)}
@@ -248,7 +248,7 @@ function AddButton({ color, label, onClick }: { color: string; label: string; on
       type="button"
       onClick={onClick}
       className="uppercase tracking-label-up px-1.5 py-0.5 hover:bg-tier-2"
-      style={{ fontSize: 9, color, border: `1px solid ${color}`, background: `${colors.bgTier0}cc` }}
+      style={{ fontSize: 11, color, border: `1px solid ${color}`, background: `${colors.bgTier0}cc` }}
     >
       {label}
     </button>

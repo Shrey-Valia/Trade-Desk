@@ -74,7 +74,7 @@ export function MetricPill({
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         {label}
       </span>
@@ -85,7 +85,7 @@ export function MetricPill({
         {value}
         {children}
         {sub && (
-          <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+          <span className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
             {sub}
           </span>
         )}

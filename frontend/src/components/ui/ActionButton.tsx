@@ -63,7 +63,7 @@ export function ActionButton({
       {sub && (
         <span
           className="tabular-nums"
-          style={{ fontSize: 10, marginTop: 2, opacity: disabled ? 1 : 0.78 }}
+          style={{ fontSize: 12, marginTop: 2, opacity: disabled ? 1 : 0.78 }}
         >
           {sub}
         </span>

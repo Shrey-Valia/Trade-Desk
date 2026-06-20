@@ -121,7 +121,7 @@ function SearchTrigger({
       </span>
       <kbd
         className="text-fg-tertiary-2 border border-tier-3 px-1 rounded-btn font-mono"
-        style={{ fontSize: 10, lineHeight: 1.2 }}
+        style={{ fontSize: 12, lineHeight: 1.2 }}
       >
         /
       </kbd>
@@ -180,7 +180,7 @@ function CombineSelector() {
         <span className="uppercase tracking-label-up truncate" style={{ maxWidth: 132 }}>
           {data?.combine_name ?? "Combine"}
         </span>
-        <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+        <span className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
           ▾
         </span>
       </button>
@@ -218,13 +218,13 @@ function CombineSelector() {
                   {archived && (
                     <span
                       className="border border-tier-3 text-fg-tertiary-2 px-1 uppercase tracking-label-up"
-                      style={{ fontSize: 8, borderRadius: 2 }}
+                      style={{ fontSize: 11, borderRadius: 2 }}
                     >
                       archived
                     </span>
                   )}
                 </div>
-                <div className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+                <div className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
                   {c.tier} · {c.account_code}
                 </div>
               </button>
@@ -237,7 +237,7 @@ function CombineSelector() {
               navigate("/combines/new");
             }}
             className="w-full text-left px-3 py-1.5 text-tiny text-amber hover:bg-tier-3 border-t border-tier-3 uppercase tracking-label-up"
-            style={{ fontSize: 10 }}
+            style={{ fontSize: 12 }}
           >
             + Start a new combine
           </button>
@@ -264,7 +264,7 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
     <div className="flex items-baseline gap-2 tabular-nums">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 10 }}
+        style={{ fontSize: 12 }}
       >
         {symbol}
       </span>
@@ -396,7 +396,7 @@ function MetricPills() {
           cushion >= 0 ? "+" : "−"
         }$${Math.round(Math.abs(cushion)).toLocaleString()} (balance incl. open URPL vs the floor). Re-baselines up only at the 5pm-PT settlement.`}
       >
-        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 9 }}>
+        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 11 }}>
           {cushion >= 0
             ? `+$${Math.round(cushion).toLocaleString()}`
             : `−$${Math.round(-cushion).toLocaleString()}`}
@@ -404,7 +404,7 @@ function MetricPills() {
         {combine.status === "failed" ? (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 8, height: 14 }}
+            style={{ fontSize: 11, height: 14 }}
             title="MLL floor breached — combine FAILED (permanent)."
           >
             FAILED
@@ -412,7 +412,7 @@ function MetricPills() {
         ) : cushion < 0 ? (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 8, height: 14 }}
+            style={{ fontSize: 11, height: 14 }}
             title="Live balance (incl. URPL) is below the MLL floor."
           >
             BREACH
@@ -432,7 +432,7 @@ function MetricPills() {
           combine.passBlockedReason ? " " + combine.passBlockedReason : ""
         }`}
       >
-        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 9 }}>
+        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 11 }}>
           / ${Math.round(combine.profitTarget / 1000)}K · D{combine.daysTraded}/
           {combine.minTradingDays}
         </span>
@@ -445,7 +445,7 @@ function MetricPills() {
                   ? "border-bullish text-bullish"
                   : "border-warning text-warning"
             }`}
-            style={{ fontSize: 8, height: 14 }}
+            style={{ fontSize: 11, height: 14 }}
             title={
               combine.passBlockedReason ??
               (combine.passed ? "Combine PASSED." : "Profit target reached.")
@@ -468,7 +468,7 @@ function MetricPills() {
         {dllHit && (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 8, height: 14 }}
+            style={{ fontSize: 11, height: 14 }}
             title="Daily loss limit hit — DAY LOCK: no further trading today."
           >
             DAY LOCK
@@ -554,7 +554,7 @@ function MetricPill({
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         {label}
       </span>
@@ -594,7 +594,7 @@ function MarketPill() {
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         MKT
       </span>

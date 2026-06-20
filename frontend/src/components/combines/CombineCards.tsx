@@ -113,7 +113,7 @@ function CombineCard({
           {isActive && !archived && (
             <span
               className="border border-amber text-amber px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
+              style={{ fontSize: 11, borderRadius: 2 }}
             >
               active
             </span>
@@ -121,7 +121,7 @@ function CombineCard({
           {archived && (
             <span
               className="border border-tier-3 text-fg-tertiary-2 px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
+              style={{ fontSize: 11, borderRadius: 2 }}
             >
               archived
             </span>
@@ -129,7 +129,7 @@ function CombineCard({
           {combine.funded && (
             <span
               className="border border-bullish text-bullish px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
+              style={{ fontSize: 11, borderRadius: 2 }}
             >
               funded
             </span>
@@ -137,7 +137,7 @@ function CombineCard({
           {!combine.funded && failed && (
             <span
               className="border border-bearish text-bearish px-1 uppercase tracking-label-up shrink-0"
-              style={{ fontSize: 8, borderRadius: 2 }}
+              style={{ fontSize: 11, borderRadius: 2 }}
             >
               failed
             </span>
@@ -145,7 +145,7 @@ function CombineCard({
         </div>
         <div
           className="text-fg-tertiary-2 tabular-nums mt-0.5"
-          style={{ fontSize: 10 }}
+          style={{ fontSize: 12 }}
         >
           {combine.tier} · {combine.account_code}
         </div>
@@ -168,7 +168,7 @@ function CombineCard({
           <div className="flex items-center justify-between gap-2">
             <span
               className="uppercase tracking-label-up text-fg-tertiary-2"
-              style={{ fontSize: 9 }}
+              style={{ fontSize: 11 }}
             >
               Payouts
             </span>
@@ -182,7 +182,7 @@ function CombineCard({
                   : "Activate this funded account — free on the no-activation plan — to unlock payouts."
               }
               className="h-5 px-1.5 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
-              style={{ borderRadius: 0, fontSize: 9 }}
+              style={{ borderRadius: 0, fontSize: 11 }}
             >
               {activateAccount.isPending
                 ? "…"
@@ -204,7 +204,7 @@ function CombineCard({
             fraction={combine.objective_progress}
             tone={combine.objective_progress >= 1 ? "bullish" : "amber"}
           />
-          <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 9 }}>
+          <span className="text-tiny text-fg-tertiary-2" style={{ fontSize: 11 }}>
             {Math.round(combine.objective_progress * 100)}% of $
             {combine.profit_target.toLocaleString()} target
           </span>
@@ -293,7 +293,7 @@ function CardRow({
     <div className="flex items-baseline justify-between">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>

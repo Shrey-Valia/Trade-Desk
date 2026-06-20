@@ -50,10 +50,10 @@ export function Coachmark({ hint, label, body, side = "top", enabled = true }: P
     >
       <div className="flex items-start gap-2">
         <div className="flex-1 min-w-0">
-          <div className="text-tiny uppercase tracking-label-up text-amber" style={{ fontSize: 9 }}>
+          <div className="text-tiny uppercase tracking-label-up text-amber" style={{ fontSize: 11 }}>
             {label}
           </div>
-          <div className="text-tiny text-fg-primary mt-0.5 leading-snug" style={{ fontSize: 10 }}>
+          <div className="text-tiny text-fg-primary mt-0.5 leading-snug" style={{ fontSize: 12 }}>
             {body}
           </div>
         </div>

@@ -48,7 +48,7 @@ export function CopyTradingPanel() {
       <div>
         <div
           className="uppercase tracking-label-up text-fg-secondary"
-          style={{ fontSize: 9, letterSpacing: "0.08em" }}
+          style={{ fontSize: 11, letterSpacing: "0.08em" }}
         >
           Copy trading
         </div>
@@ -87,7 +87,7 @@ export function CopyTradingPanel() {
             <div className="flex flex-col gap-1.5">
               <span
                 className="uppercase tracking-label-up text-fg-tertiary-2"
-                style={{ fontSize: 9 }}
+                style={{ fontSize: 11 }}
               >
                 Follower accounts
               </span>

@@ -71,7 +71,7 @@ export function GaugeDial({ label, value, sub, fraction, color }: Props) {
       </div>
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2 text-center"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>

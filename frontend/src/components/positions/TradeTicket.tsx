@@ -221,7 +221,7 @@ function PassedBanner() {
   return (
     <div
       className="mx-3 mt-1 px-2 py-1 border border-bullish text-bullish text-tiny uppercase tracking-label-up"
-      style={{ borderRadius: 0, fontSize: 9 }}
+      style={{ borderRadius: 0, fontSize: 11 }}
       role="status"
     >
       Combine PASSED — profit target, min days &amp; consistency met.
@@ -235,7 +235,7 @@ function LockBanner({ reason }: { reason: string }) {
   return (
     <div
       className="mx-3 mt-1 px-2 py-1 border border-bearish text-bearish text-tiny uppercase tracking-label-up"
-      style={{ borderRadius: 0, fontSize: 9 }}
+      style={{ borderRadius: 0, fontSize: 11 }}
       role="status"
     >
       {reason}
@@ -251,7 +251,7 @@ function Header() {
       </span>
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         selected from chain ↑
       </span>
@@ -342,7 +342,7 @@ function DllRiskHint({
     return (
       <div
         className="px-3 pb-1 text-bearish tabular-nums"
-        style={{ fontSize: 10 }}
+        style={{ fontSize: 12 }}
         title="Realized losses today have hit your daily loss limit — new opens are blocked until the 5pm-PT settlement."
       >
         DLL exhausted — any further loss exceeds today&rsquo;s budget
@@ -356,7 +356,7 @@ function DllRiskHint({
   return (
     <div
       className={`px-3 pb-1 tabular-nums ${tone}`}
-      style={{ fontSize: 10 }}
+      style={{ fontSize: 12 }}
       title={
         "Worst case if bought: the full debit. Compared against what's left of today's " +
         "daily loss budget (realized losses only). Opens are blocked once realized losses hit the limit."
@@ -404,7 +404,7 @@ function OrderTypeRow({
                   ? "bg-tier-3 border border-amber text-amber"
                   : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
               ].join(" ")}
-              style={{ height: 24, fontSize: 9 }}
+              style={{ height: 24, fontSize: 11 }}
             >
               {t}
             </button>
@@ -412,7 +412,7 @@ function OrderTypeRow({
         })}
       </div>
       {orderType !== "market" && (
-        <label className="flex items-center gap-1 ml-auto" style={{ fontSize: 10 }}>
+        <label className="flex items-center gap-1 ml-auto" style={{ fontSize: 12 }}>
           <span className="uppercase tracking-label-up text-fg-tertiary-2">
             {orderType === "stop" ? "stop @" : "limit @"}
           </span>
@@ -506,7 +506,7 @@ function QuantityRow({
       </div>
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
         title="Scaling plan — max position size grows with built equity; re-evaluates at the 5pm-PT settlement."
       >
         scaling · max {maxContracts} {maxContracts === 1 ? "contract" : "contracts"}
@@ -648,7 +648,7 @@ function ActionButton({
       <span
         className="tabular-nums"
         style={{
-          fontSize: 10,
+          fontSize: 12,
           opacity: disabled ? 1 : 0.78,
           marginTop: 2,
         }}

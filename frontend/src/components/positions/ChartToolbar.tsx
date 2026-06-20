@@ -120,7 +120,7 @@ function Separator() {
 function CandleTypeStub() {
   return (
     <UIButton size="sm" title="Chart type — candles (line/area types coming later)" className="min-w-[80px]">
-      candles <span style={{ fontSize: 9 }}>▾</span>
+      candles <span style={{ fontSize: 11 }}>▾</span>
     </UIButton>
   );
 }
@@ -146,7 +146,7 @@ function DrawIcon({ glyph, label }: { glyph: string; label: string }) {
 function IndicatorsStub() {
   return (
     <UIButton size="sm" title="Indicators — RSI/MACD/EMA coming later" className="min-w-[90px]">
-      indicators <span style={{ fontSize: 9 }}>▾</span>
+      indicators <span style={{ fontSize: 11 }}>▾</span>
     </UIButton>
   );
 }
@@ -170,7 +170,7 @@ function LegendToggle() {
       aria-pressed={show}
       className="uppercase tracking-label-up"
     >
-      <span style={{ fontSize: 10 }}>legend</span>
+      <span style={{ fontSize: 12 }}>legend</span>
     </UIButton>
   );
 }
@@ -184,7 +184,7 @@ function MarketStructToggleHint() {
   return (
     <span
       className="text-fg-tertiary uppercase tracking-label-up"
-      style={{ fontSize: 9 }}
+      style={{ fontSize: 11 }}
       title="Market-structure overlays moved to KEY LEVELS in the bottom strip"
     >
       levels ↓
@@ -232,7 +232,7 @@ function OhlcStrip({
   return (
     <div
       className="flex items-center gap-3 px-3 border-t border-hairline tabular-nums"
-      style={{ height: 20, fontSize: 10 }}
+      style={{ height: 20, fontSize: 12 }}
     >
       <span className="uppercase tracking-label-up text-fg-tertiary-2">
         {symbol ?? "—"} · {timeframe}

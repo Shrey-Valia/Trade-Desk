@@ -79,7 +79,7 @@ export function ContractDetailPanel() {
             <Row label="Max profit" value={maxLabel(v.maxProfit)} tone="bullish" />
           </div>
 
-          <div className="px-3 pb-2 text-fg-tertiary" style={{ fontSize: 9 }}>
+          <div className="px-3 pb-2 text-fg-tertiary" style={{ fontSize: 11 }}>
             {dir === "long" ? "Long" : "Short"}{" "}
             {selection.kind === "straddle" ? "straddle" : selection.side ?? "call"} ·{" "}
             {data.dte_label} · {data.contracts} contract
@@ -147,7 +147,7 @@ function DirToggle({
   onChange: (d: Direction) => void;
 }) {
   return (
-    <span className="flex items-center gap-1" style={{ fontSize: 9 }}>
+    <span className="flex items-center gap-1" style={{ fontSize: 11 }}>
       <DirButton active={dir === "long"} onClick={() => onChange("long")}>
         Long
       </DirButton>
@@ -189,7 +189,7 @@ function Greek({ label, value }: { label: string; value: string }) {
     <div className="flex flex-col gap-0.5">
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>
@@ -215,7 +215,7 @@ function Row({
         : "text-fg-secondary";
   return (
     <div className="flex items-baseline justify-between gap-2 text-tiny">
-      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 9 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
         {label}
       </span>
       <span className={`tabular-nums ${cls}`}>{value}</span>
@@ -239,7 +239,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
         type="button"
         onClick={onRetry}
         className="text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber transition-colors duration-100"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         retry
       </button>

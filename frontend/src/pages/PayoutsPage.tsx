@@ -77,18 +77,18 @@ function PayoutRow({ combine }: { combine: CombineOut }) {
           </span>
           <span
             className="border border-bullish text-bullish px-1 uppercase tracking-label-up shrink-0"
-            style={{ fontSize: 8, borderRadius: 2 }}
+            style={{ fontSize: 11, borderRadius: 2 }}
           >
             funded
           </span>
           <span
             className="border border-hairline-strong text-fg-tertiary-2 px-1 uppercase tracking-label-up shrink-0"
-            style={{ fontSize: 8, borderRadius: 2 }}
+            style={{ fontSize: 11, borderRadius: 2 }}
           >
             keeps {splitText}
           </span>
         </div>
-        <div className="text-fg-tertiary-2 tabular-nums mt-0.5" style={{ fontSize: 10 }}>
+        <div className="text-fg-tertiary-2 tabular-nums mt-0.5" style={{ fontSize: 12 }}>
           {combine.tier} · {combine.account_code}
         </div>
       </div>
@@ -146,7 +146,7 @@ function Figure({
     <div className="flex flex-col items-end shrink-0" style={{ minWidth: 92 }}>
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 9 }}
+        style={{ fontSize: 11 }}
       >
         {label}
       </span>

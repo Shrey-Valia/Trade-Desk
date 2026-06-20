@@ -267,7 +267,7 @@ function Section({
     <section className="mb-4 last:mb-0">
       <div
         className="uppercase tracking-label-up text-fg-tertiary mb-2"
-        style={{ fontSize: 10, letterSpacing: "0.1em" }}
+        style={{ fontSize: 12, letterSpacing: "0.1em" }}
       >
         {label}
       </div>
@@ -344,7 +344,7 @@ function Row({
         {has0dte && (
           <span
             className="inline-flex items-center border border-amber text-amber px-1.5 uppercase tracking-label-up rounded-btn shrink-0"
-            style={{ fontSize: 10, height: 16 }}
+            style={{ fontSize: 12, height: 16 }}
           >
             0DTE today
           </span>

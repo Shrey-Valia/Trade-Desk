@@ -125,7 +125,7 @@ export function RightChain({ symbol }: Props) {
       {!marketOpen && data && (
         <div
           className="px-3 py-1 border-b border-hairline bg-tier-1 text-warning text-center shrink-0"
-          style={{ fontSize: 10 }}
+          style={{ fontSize: 12 }}
           role="status"
         >
           Market closed — indicative pricing; tap a contract to preview, trading resumes next session
@@ -209,7 +209,7 @@ function Header({
         </span>
         <span
           className="ml-auto text-fg-tertiary-2"
-          style={{ fontSize: 10 }}
+          style={{ fontSize: 12 }}
         >
           indicative pricing
         </span>
@@ -229,7 +229,7 @@ function Header({
 function SubItem({ label, value }: { label: string; value: string }) {
   return (
     <span className="text-tiny tabular-nums">
-      <span className="text-fg-tertiary-2 uppercase mr-1" style={{ fontSize: 9 }}>
+      <span className="text-fg-tertiary-2 uppercase mr-1" style={{ fontSize: 11 }}>
         {label}
       </span>
       <span className="text-fg-secondary">{value}</span>
@@ -244,7 +244,7 @@ function ColumnHeader() {
         className="grid items-center text-tiny uppercase tracking-label-up text-fg-tertiary-2"
         style={{
           gridTemplateColumns: GRID,
-          fontSize: 9,
+          fontSize: 11,
           letterSpacing: "0.08em",
           height: ROW_HEIGHT,
         }}
@@ -404,7 +404,7 @@ function Cell({
       {source === "bs" && (
         <span
           className="text-fg-tertiary ml-0.5"
-          style={{ fontSize: 8 }}
+          style={{ fontSize: 11 }}
           aria-hidden
         >
           ·m
@@ -415,7 +415,7 @@ function Cell({
   const greeksEl = (
     <span
       className={`whitespace-nowrap ${disabled ? "text-fg-disabled" : "text-fg-tertiary-2"}`}
-      style={{ fontSize: 9, fontWeight: 400 }}
+      style={{ fontSize: 11, fontWeight: 400 }}
     >
       Δ{delta.toFixed(2)} Θ{theta.toFixed(2)}
     </span>
