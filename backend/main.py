@@ -1,6 +1,8 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -76,6 +78,7 @@ async def lifespan(app: FastAPI):
     # that → drop. Paired with max_instances=1 + coalesce=True so a
     # missed run never stacks behind a still-running one.
     _SCHED_GRACE = 30
+    _SCHED_TZ = ZoneInfo("America/New_York")
 
     scheduler = BackgroundScheduler(timezone="America/New_York")
     scheduler.add_job(
@@ -86,9 +89,19 @@ async def lifespan(app: FastAPI):
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,
     )
+    # Stagger the second 60s job by ~25s. Both refresh_watchlist and
+    # prewarm_hot_tickers fan out per-symbol Alpaca calls on the SINGLE
+    # account key; firing them in phase doubled the burst and collided on
+    # the quota (a big driver of the 429 cascade behind the stuck-loading
+    # chart). An IntervalTrigger with start_date in the future offsets the
+    # whole cadence so the two jobs interleave instead of overlapping.
+    _PREWARM_OFFSET_S = 25
     scheduler.add_job(
         prewarm_hot_tickers,
-        trigger=IntervalTrigger(seconds=60),
+        trigger=IntervalTrigger(
+            seconds=60,
+            start_date=datetime.now(_SCHED_TZ) + timedelta(seconds=_PREWARM_OFFSET_S),
+        ),
         id="prewarm_hot_tickers",
         max_instances=1,
         coalesce=True,
