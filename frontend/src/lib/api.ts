@@ -11,6 +11,10 @@ import {
 } from "@/types/market";
 import { MetricsResponseSchema, type MetricsResponse } from "@/types/metrics";
 import {
+  IndicatorsResponseSchema,
+  type IndicatorsResponse,
+} from "@/types/indicators";
+import {
   AnalyticsResponseSchema,
   type AnalyticsResponse,
 } from "@/types/analytics";
@@ -123,6 +127,22 @@ export const fetchTickerBars = (
 
 export const fetchTickerMetrics = (symbol: string): Promise<MetricsResponse> =>
   request(`/api/ticker/${encodeURIComponent(symbol)}/metrics`, MetricsResponseSchema);
+
+/**
+ * Technical-indicator overlays. `set` is a comma-separated list of
+ * indicator keys (e.g. "sma20,ema50,vwap,rsi14,atr14"); the backend
+ * returns per-bar arrays aligned to the same timestamps as /chart and
+ * /bars. Zod-validated like the other ticker fetchers.
+ */
+export const fetchTickerIndicators = (
+  symbol: string,
+  timeframe: ChartTimeframe,
+  set: string,
+): Promise<IndicatorsResponse> =>
+  request(
+    `/api/ticker/${encodeURIComponent(symbol)}/indicators?timeframe=${timeframe}&set=${encodeURIComponent(set)}`,
+    IndicatorsResponseSchema,
+  );
 
 export const fetchCalendar = (): Promise<CalendarResponse> =>
   request("/api/calendar", CalendarResponseSchema);

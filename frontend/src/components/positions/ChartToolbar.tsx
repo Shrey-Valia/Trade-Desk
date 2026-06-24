@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { UIButton } from "@/components/ui/UIButton";
+import { VolRegimeStrip } from "@/components/stock/VolRegimeStrip";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerChart } from "@/hooks/useTickerChart";
 import { useChartPrefs } from "@/stores/chartPrefs";
+import { useIndicators } from "@/stores/indicators";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
+import { INDICATOR_CATALOG } from "@/types/indicators";
 
 // Seconds per candle interval — mirrors AnnotatedChart's private
 // INTERVAL_SECONDS (the synthetic-candle slot width). "1D" is absent:
@@ -53,6 +56,9 @@ export function ChartToolbar({ symbol, timeframe, onTimeframeChange }: Props) {
     <div className="shrink-0 bg-tier-1 border-b border-hairline">
       <Toolbar timeframe={timeframe} onTimeframeChange={onTimeframeChange} />
       <OhlcStrip symbol={symbol} timeframe={timeframe} />
+      {/* WS1: compact vol-regime readout — surfaces IVR / skew / VRP from
+          the existing /metrics endpoint right under the OHLC strip. */}
+      <VolRegimeStrip symbol={symbol} />
     </div>
   );
 }
@@ -90,11 +96,61 @@ function Toolbar({
           );
         })}
       </div>
+      <ToolbarSeparator />
+      <IndicatorChips />
       <div className="ml-auto flex items-center" style={{ gap: 6 }}>
         <LegendToggle />
         <MarketStructToggleHint />
       </div>
       <span className="sr-only">{timeframe}</span>
+    </div>
+  );
+}
+
+/** Thin vertical rule separating toolbar groups. */
+function ToolbarSeparator() {
+  return (
+    <span
+      aria-hidden
+      className="self-center"
+      style={{ width: 1, height: 16, background: "#2F3545", marginInline: 8 }}
+    />
+  );
+}
+
+/**
+ * Indicator toggle chips — one per entry in INDICATOR_CATALOG. Toggling
+ * a chip flips the persisted indicators store; AnnotatedChart reads the
+ * same store, fetches the enabled set, and attaches a LineSeries per
+ * enabled indicator (SMA/EMA/VWAP on the price scale; RSI/ATR in their
+ * own panes). Active chips use the amber ACTIVE/SELECTED token, matching
+ * the timeframe buttons' active state.
+ */
+function IndicatorChips() {
+  const enabled = useIndicators((s) => s.enabled);
+  const toggle = useIndicators((s) => s.toggle);
+  return (
+    <div className="flex" style={{ gap: 4 }} role="group" aria-label="Indicators">
+      {INDICATOR_CATALOG.map((ind) => {
+        const active = enabled.includes(ind.key);
+        return (
+          <UIButton
+            key={ind.key}
+            size="sm"
+            active={active}
+            aria-pressed={active}
+            onClick={() => toggle(ind.key)}
+            title={
+              active
+                ? `Hide ${ind.label}`
+                : `Show ${ind.label}${ind.pane !== "price" ? " (separate pane)" : ""}`
+            }
+            className="uppercase tracking-label-up"
+          >
+            <span style={{ fontSize: 11 }}>{ind.label}</span>
+          </UIButton>
+        );
+      })}
     </div>
   );
 }
