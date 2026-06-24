@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from calculations.black_scholes import bs_greeks
@@ -37,9 +38,9 @@ from database import get_session
 from models.combine import Combine
 from services.auth import get_active_combine
 from services.combine_state import combine_snapshot
-from services.copy_trade import mirror_open
+from services.copy_trade import mirror_close, mirror_open
 from models.trade import Trade
-from schemas.journal import TradeOut, compute_net_debit_credit
+from schemas.journal import TradeLeg, TradeOut, compute_net_debit_credit
 from services.alpaca_client import get_chain_snapshot, get_quotes
 from services.fred_client import DEFAULT_RATE_FALLBACK, latest_dgs3mo_rate
 from services.market_calendar import is_market_open
@@ -876,3 +877,187 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         max_loss=preview.max_loss,
         greeks=PreviewGreeks(**preview.greeks),
     )
+
+
+# ---------------------------------------------------------------------------
+# Flatten / Reverse-all — bulk position management on the active combine
+# ---------------------------------------------------------------------------
+
+
+class FlattenOut(BaseModel):
+    """Result of a flatten/reverse. `closed` is the trade ids closed;
+    `opened` (reverse only) the new opposite-side trade ids; `realized`
+    the total $ booked across the closed positions."""
+
+    closed: list[int]
+    opened: list[int] = Field(default_factory=list)
+    realized: float
+
+
+def _open_positions_for_combine(session: Session, combine_id: int) -> list[Trade]:
+    return (
+        session.execute(
+            select(Trade).where(
+                Trade.combine_id == combine_id, Trade.status == "open"
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _spot_for_symbol(symbol: str) -> float | None:
+    """Live underlying price, or None when the feed is cold/rate-limited."""
+    try:
+        q = get_quotes([symbol]).get(symbol)
+        return float(q.price) if q is not None else None
+    except Exception:  # noqa: BLE001
+        log.debug("flatten: quote fetch failed for %s", symbol)
+        return None
+
+
+def _close_one(session: Session, trade: Trade, spot: float, now: datetime, reason: str) -> float:
+    """Book a single close exactly like the manual CLOSE button + monitor
+    (unrealized − exit-side commission), then cascade to follower copies.
+    Returns the realized $ booked. Caller owns the commit."""
+    # Reuse the monitor's canonical booking helpers so flatten/manual/auto all
+    # agree on the realized number.
+    from services.order_monitor import _commission_side, _default_unrealized_for
+
+    unrealized = _default_unrealized_for(trade, spot, now)
+    realized = round(unrealized - _commission_side(trade), 2)
+    trade.status = "closed"
+    trade.close_reason = reason
+    trade.exit_date = now
+    trade.exit_underlying_price = spot
+    trade.realized_pnl = realized
+    session.flush()
+    mirror_close(session, trade)
+    return realized
+
+
+@router.post("/flatten", response_model=FlattenOut)
+def flatten_positions(
+    combine: Combine = Depends(get_active_combine),
+    session: Session = Depends(get_session),
+) -> FlattenOut:
+    """Close EVERY open position on the active combine at the live mark.
+
+    Uses the same booking path as the manual close + the order monitor
+    (unrealized − exit commission) and cascades each close through
+    copy_trade.mirror_close. Idempotent: with nothing open it books nothing.
+    A position whose underlying quote is cold is left open (can't price it)."""
+    now = datetime.now(timezone.utc)
+    positions = _open_positions_for_combine(session, combine.id)
+    closed: list[int] = []
+    total = 0.0
+    spot_cache: dict[str, float | None] = {}
+    for t in positions:
+        if t.symbol not in spot_cache:
+            spot_cache[t.symbol] = _spot_for_symbol(t.symbol)
+        spot = spot_cache[t.symbol]
+        if spot is None:
+            continue
+        total += _close_one(session, t, spot, now, "manual")
+        closed.append(t.id)
+    session.commit()
+    return FlattenOut(closed=closed, opened=[], realized=round(total, 2))
+
+
+@router.post("/reverse", response_model=FlattenOut)
+def reverse_positions(
+    combine: Combine = Depends(get_active_combine),
+    session: Session = Depends(get_session),
+) -> FlattenOut:
+    """Flatten every open position on the active combine AND re-open the
+    OPPOSITE side of each at the live mark (buy↔sell flipped, same strikes /
+    expiry / size). Refuses when the session is closed (a fresh open can't be
+    placed). Reuses the single-close path + mirror cascade for the close half,
+    and mirror_open for the new reversed positions."""
+    _require_market_open()
+    now = datetime.now(timezone.utc)
+    positions = _open_positions_for_combine(session, combine.id)
+    closed: list[int] = []
+    opened: list[int] = []
+    total = 0.0
+    spot_cache: dict[str, float | None] = {}
+
+    for t in positions:
+        if t.symbol not in spot_cache:
+            spot_cache[t.symbol] = _spot_for_symbol(t.symbol)
+        spot = spot_cache[t.symbol]
+        if spot is None:
+            continue
+
+        # Snapshot the legs BEFORE closing so we can mint the opposite side.
+        src_legs = t.legs or []
+        total += _close_one(session, t, spot, now, "manual")
+        closed.append(t.id)
+
+        if not src_legs:
+            continue
+        # Flip each leg's action; price the opposite side off the current mark
+        # via the same intraday engine the analytics path uses.
+        from services.order_monitor import _default_option_mark  # per-leg pricer reuse
+
+        rev_legs: list[dict] = []
+        for leg in src_legs:
+            flipped = "sell" if leg.get("action", "buy") == "buy" else "buy"
+            # Price the single leg at the current spot with the chain-default IV.
+            one = dict(leg)
+            one["action"] = flipped
+            px = abs(_default_option_mark(_FakeTrade([one]), spot, now))
+            rev_legs.append(
+                {
+                    "side": leg["side"],
+                    "action": flipped,
+                    "strike": float(leg["strike"]),
+                    "expiry": leg["expiry"],
+                    "contracts": int(leg.get("contracts", 1) or 1),
+                    "entry_price": round(float(px), 4),
+                }
+            )
+        net = compute_net_debit_credit([TradeLeg(**leg) for leg in rev_legs])
+        rev = Trade(
+            symbol=t.symbol,
+            strategy=_reverse_strategy(t.strategy),
+            entry_date=now,
+            entry_underlying_price=spot,
+            net_debit_credit=net,
+            status="open",
+            is_paper=True,
+            notes=f"reversed from #{t.id}",
+            tier=combine.tier,
+            combine_id=combine.id,
+        )
+        rev.legs = rev_legs
+        rev.tags = ["0dte", "reversed"]
+        rev.mistake_tags = []
+        session.add(rev)
+        session.flush()
+        mirror_open(session, combine, rev)
+        opened.append(rev.id)
+
+    session.commit()
+    return FlattenOut(closed=closed, opened=opened, realized=round(total, 2))
+
+
+class _FakeTrade:
+    """Minimal duck-typed stand-in so _default_option_mark (which only reads
+    .legs) can price an ad-hoc single leg without a DB row."""
+
+    def __init__(self, legs: list[dict]) -> None:
+        self.legs = legs
+
+
+def _reverse_strategy(strategy: str) -> str:
+    """The strategy key for the opposite-side position (long↔short)."""
+    flips = {
+        "long_call": "short_call",
+        "short_call": "long_call",
+        "long_put": "short_put",
+        "short_put": "long_put",
+        "long_straddle": "short_straddle",
+        "short_straddle": "long_straddle",
+    }
+    return flips.get(strategy, strategy)

@@ -66,3 +66,39 @@ export async function openZeroDteLeg(input: {
 
 // re-export for symmetry with other tiny api wrappers in lib/
 export const ZeroDteOpenLegResponseSchema = z.object({ trade: TradeOutSchema });
+
+export const FlattenResultSchema = z.object({
+  closed: z.array(z.number().int()),
+  opened: z.array(z.number().int()).default([]),
+  realized: z.number(),
+});
+export type FlattenResult = z.infer<typeof FlattenResultSchema>;
+
+async function _postZerodte(path: string): Promise<FlattenResult> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* non-json body */
+    }
+    throw new Error(detail);
+  }
+  return FlattenResultSchema.parse(await res.json());
+}
+
+/** Close EVERY open position on the active combine at the live mark. */
+export function flattenPositions(): Promise<FlattenResult> {
+  return _postZerodte("/api/zerodte/flatten");
+}
+
+/** Flatten then re-open the OPPOSITE side of each position. */
+export function reversePositions(): Promise<FlattenResult> {
+  return _postZerodte("/api/zerodte/reverse");
+}

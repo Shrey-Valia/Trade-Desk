@@ -164,3 +164,91 @@ def test_cancel_rejected_when_not_working(auth_client, session_factory):
     tid = _seed_trade(session_factory, c["id"], status="open")
     res = auth_client.post(f"/api/journal/trades/{tid}/cancel")
     assert res.status_code == 409
+
+
+# --- flatten / reverse-all --------------------------------------------------
+
+
+def _stub_quote(monkeypatch, price=100.0):
+    monkeypatch.setattr(
+        "routers.zerodte.get_quotes",
+        lambda syms: {syms[0]: types.SimpleNamespace(price=price)},
+    )
+
+
+def test_flatten_closes_all_open_positions(auth_client, session_factory, monkeypatch):
+    c = make_combine(auth_client, "50K")
+    a = _seed_trade(session_factory, c["id"], status="open")
+    b = _seed_trade(session_factory, c["id"], status="open")
+    _stub_quote(monkeypatch)
+
+    res = auth_client.post("/api/zerodte/flatten")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert sorted(body["closed"]) == sorted([a, b])
+    assert body["opened"] == []
+
+    s = session_factory()
+    assert s.get(Trade, a).status == "closed"
+    assert s.get(Trade, b).status == "closed"
+    # Each closed position booked a realized number (manual close reason).
+    assert s.get(Trade, a).close_reason == "manual"
+    assert s.get(Trade, a).realized_pnl is not None
+    s.close()
+
+
+def test_flatten_is_noop_with_nothing_open(auth_client, session_factory, monkeypatch):
+    make_combine(auth_client, "50K")
+    _stub_quote(monkeypatch)
+    res = auth_client.post("/api/zerodte/flatten")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["closed"] == [] and body["realized"] == 0.0
+
+
+def test_flatten_leaves_working_orders_alone(auth_client, session_factory, monkeypatch):
+    c = make_combine(auth_client, "50K")
+    open_t = _seed_trade(session_factory, c["id"], status="open")
+    working = _seed_trade(
+        session_factory, c["id"], status="working", order_type="limit", limit_price=1.0
+    )
+    _stub_quote(monkeypatch)
+    res = auth_client.post("/api/zerodte/flatten")
+    assert res.status_code == 200
+    assert res.json()["closed"] == [open_t]
+    s = session_factory()
+    assert s.get(Trade, working).status == "working"  # untouched
+    s.close()
+
+
+def test_reverse_closes_and_opens_opposite_side(auth_client, session_factory, monkeypatch):
+    c = make_combine(auth_client, "50K")
+    long_call = _seed_trade(
+        session_factory, c["id"], status="open", strategy="long_call"
+    )
+    monkeypatch.setattr("routers.zerodte.is_market_open", lambda: True)
+    _stub_quote(monkeypatch)
+
+    res = auth_client.post("/api/zerodte/reverse")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["closed"] == [long_call]
+    assert len(body["opened"]) == 1
+
+    s = session_factory()
+    assert s.get(Trade, long_call).status == "closed"
+    rev = s.get(Trade, body["opened"][0])
+    assert rev.status == "open"
+    assert rev.strategy == "short_call"          # long → short
+    assert rev.legs[0]["action"] == "sell"       # buy → sell
+    assert "reversed from" in (rev.notes or "")
+    s.close()
+
+
+def test_reverse_rejected_when_market_closed(auth_client, session_factory, monkeypatch):
+    c = make_combine(auth_client, "50K")
+    _seed_trade(session_factory, c["id"], status="open")
+    monkeypatch.setattr("routers.zerodte.is_market_open", lambda: False)
+    _stub_quote(monkeypatch)
+    res = auth_client.post("/api/zerodte/reverse")
+    assert res.status_code == 409

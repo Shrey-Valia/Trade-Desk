@@ -8,10 +8,12 @@ import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { updateTrade } from "@/lib/api";
+import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useSelectedTicker } from "@/stores/selectedTicker";
+import { toast } from "@/stores/toast";
 import { isZeroDteTrade, STRATEGY_LABELS, type Trade, type TradeAnalytics } from "@/types/journal";
 
 /**
@@ -433,16 +435,108 @@ function OpenPositionCol({
               <RiskRow analytics={analytics} />
             </>
           )}
-          <div className="mt-auto pt-2">
+          <div className="mt-auto pt-2 flex flex-col gap-1.5">
             <CloseButton
               disabled={!liveAnalytics || close.isPending}
               upl={liveUpl}
               onClick={() => close.mutate()}
             />
+            <BulkActions />
           </div>
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Flatten-all / Reverse-all — combine-wide bulk actions. FLATTEN closes every
+ * open position on the active combine; REVERSE flattens then re-opens the
+ * opposite side of each. Both invalidate the trade + account queries so the
+ * strip, header and chart reflect the new state immediately.
+ */
+function BulkActions() {
+  const queryClient = useQueryClient();
+  const setActiveTradeId = useActivePosition((s) => s.setTradeId);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+    queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+  };
+
+  const flatten = useMutation({
+    mutationFn: flattenPositions,
+    onSuccess: (r) => {
+      invalidate();
+      setActiveTradeId(null);
+      toast.success(
+        `Flattened ${r.closed.length} position${r.closed.length === 1 ? "" : "s"} · ` +
+          `${formatSignedDollar(r.realized)} realized`,
+      );
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Could not flatten"),
+  });
+
+  const reverse = useMutation({
+    mutationFn: reversePositions,
+    onSuccess: (r) => {
+      invalidate();
+      setActiveTradeId(r.opened[0] ?? null);
+      toast.success(
+        `Reversed ${r.closed.length} → ${r.opened.length} position` +
+          `${r.opened.length === 1 ? "" : "s"}`,
+      );
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Could not reverse"),
+  });
+
+  const pending = flatten.isPending || reverse.isPending;
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <BulkButton
+        label="FLATTEN ALL"
+        title="Close every open position on this combine at the live mark."
+        disabled={pending}
+        onClick={() => flatten.mutate()}
+      />
+      <BulkButton
+        label="REVERSE ALL"
+        title="Flatten every position, then re-open the opposite side of each."
+        disabled={pending}
+        onClick={() => reverse.mutate()}
+      />
+    </div>
+  );
+}
+
+function BulkButton({
+  label,
+  title,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  title: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={[
+        "w-full h-7 rounded-btn font-semibold tabular-nums uppercase",
+        "transition-colors duration-100 border",
+        disabled
+          ? "bg-tier-1 text-fg-disabled border-tier-2 cursor-not-allowed"
+          : "bg-tier-1 text-fg-secondary border-tier-3 hover:bg-tier-2 hover:text-fg-primary",
+      ].join(" ")}
+      style={{ fontSize: 11, letterSpacing: "0.04em" }}
+    >
+      {label}
+    </button>
   );
 }
 
