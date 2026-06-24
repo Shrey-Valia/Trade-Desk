@@ -508,6 +508,18 @@ _TIMEFRAME_CONFIG: dict[str, tuple[TimeFrame, int, int, bool]] = {
 _DEFAULT_TIMEFRAME = "5m"
 
 
+def bars_cache_ttl(timeframe: str) -> int:
+    """Per-timeframe bars cache TTL (seconds).
+
+    Exposes the same TTL grid `get_bars` uses so derived endpoints
+    (e.g. the indicators overlay) can cache with a matching lifetime
+    instead of hard-coding a number. Unknown timeframes fall back to the
+    default timeframe's TTL.
+    """
+    cfg = _TIMEFRAME_CONFIG.get(timeframe) or _TIMEFRAME_CONFIG[_DEFAULT_TIMEFRAME]
+    return cfg[2]
+
+
 def get_bars(symbol: str, timeframe: str) -> list | None:
     """Bars sized to a chart timeframe. See _TIMEFRAME_CONFIG for the grid."""
     if timeframe not in _TIMEFRAME_CONFIG:

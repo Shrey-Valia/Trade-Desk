@@ -57,3 +57,31 @@ class MetricsResponse(BaseModel):
     skew_25d: float | None = None
     pc_ratio: float | None = None
     max_pain: float | None = None
+
+
+class IndicatorSeries(BaseModel):
+    """One technical-indicator overlay, aligned 1:1 with `times`.
+
+    `values` is the same length as the chart's bar array; warm-up bars
+    (insufficient lookback) are `None` so the frontend can plot a
+    LineSeries against the same timestamps with no index juggling.
+
+    `pane` tells the UI where the series belongs:
+      - "price": shares the main price scale (SMA / EMA / VWAP)
+      - "oscillator": its own 0–100 pane (RSI)
+      - "volatility": its own absolute-value pane (ATR)
+    """
+
+    key: str          # e.g. "sma20", "ema50", "vwap", "rsi14", "atr14"
+    label: str        # human label, e.g. "SMA 20"
+    pane: str         # "price" | "oscillator" | "volatility"
+    values: list[float | None]
+
+
+class IndicatorsResponse(BaseModel):
+    symbol: str
+    timeframe: str
+    # ISO timestamps for each bar — identical to /chart and /bars so the
+    # frontend can align overlays without a second bars fetch.
+    times: list[str]
+    series: list[IndicatorSeries]

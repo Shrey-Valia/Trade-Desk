@@ -4,6 +4,7 @@ import {
   ColorType,
   CrosshairMode,
   HistogramSeries,
+  LineSeries,
   LineStyle,
   createChart,
   createSeriesMarkers,
@@ -17,10 +18,12 @@ import {
 } from "lightweight-charts";
 
 import { useTickerAnnotations, useTickerChart } from "@/hooks/useTickerChart";
+import { useTickerIndicators } from "@/hooks/useTickerIndicators";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
+import { enabledSetParam, useIndicators } from "@/stores/indicators";
 import { useUserSettings } from "@/stores/userSettings";
 import {
   CHART_TIMEFRAMES,
@@ -29,6 +32,7 @@ import {
   type ChartAnnotations,
   type ChartTimeframe,
 } from "@/types/chart";
+import type { IndicatorSeries } from "@/types/indicators";
 
 import { PositionBracketsLayer, type BracketOverlay } from "./PositionBracketsLayer";
 import { ChartLegend } from "./ChartLegend";
@@ -109,6 +113,15 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
   // overlay lines when it resolves. The chart does NOT wait for this.
   const annotations = useTickerAnnotations(symbol, timeframe);
 
+  // --- WS1: technical indicators -----------------------------------------
+  // Enabled indicator set (persisted store) -> query -> per-bar series.
+  // Drawn as LineSeries by a dedicated effect inside LightweightChart.
+  const enabledIndicators = useIndicators((s) => s.enabled);
+  const indicatorSet = enabledSetParam(enabledIndicators);
+  const indicators = useTickerIndicators(symbol, timeframe, indicatorSet);
+  const indicatorSeries = indicators.data?.series ?? EMPTY_INDICATOR_SERIES;
+  // --- end WS1 -----------------------------------------------------------
+
   // Synthetic in-progress candle inputs — REUSE the existing quote
   // (header price, 5s poll) and market-status (60s poll) queries; both
   // share their react-query keys so this adds NO request volume. The
@@ -176,6 +189,7 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
               brackets={brackets ?? null}
               quotePrice={quotePrice}
               marketOpen={marketOpen}
+              indicatorSeries={indicatorSeries}
             />
             <ChartLegend hasActivePosition={(positions?.length ?? 0) > 0} />
           </>
@@ -207,6 +221,11 @@ const EMPTY_ANNOTATIONS: ChartAnnotations = {
 // Stable empty array so a no-position render doesn't churn the overlay effect.
 const EMPTY_POSITIONS: PositionOverlay[] = [];
 
+// WS1: stable empty default so the indicators effect has a no-op input
+// before the (or when no) indicator query resolves. A shared constant
+// keeps the prop reference stable across renders (no needless effect runs).
+const EMPTY_INDICATOR_SERIES: IndicatorSeries[] = [];
+
 interface ChartProps {
   symbol: string;
   bars: BarPoint[];
@@ -218,6 +237,8 @@ interface ChartProps {
   quotePrice?: number | null;
   /** Whether the market is open — gates the synthetic in-progress candle. */
   marketOpen?: boolean;
+  /** WS1: enabled technical-indicator series, aligned to `bars`. */
+  indicatorSeries?: IndicatorSeries[];
 }
 
 function LightweightChart({
@@ -229,6 +250,7 @@ function LightweightChart({
   brackets,
   quotePrice = null,
   marketOpen = false,
+  indicatorSeries = EMPTY_INDICATOR_SERIES,
 }: ChartProps) {
   const showMarketAnnotations = useChartPrefs((s) => s.showMarketAnnotations);
   const userBullish = useUserSettings((s) => s.bullishColor);
@@ -240,6 +262,9 @@ function LightweightChart({
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const annotationLinesRef = useRef<IPriceLine[]>([]);
   const positionLinesRef = useRef<IPriceLine[]>([]);
+  // WS1: one LineSeries per enabled indicator, keyed by indicator key so
+  // the effect can diff add/remove without rebuilding everything.
+  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   // Synthetic in-progress candle: the current slot timestamp + running
   // open/high/low so quote ticks update one bar in place (close = quote).
@@ -407,6 +432,9 @@ function LightweightChart({
       ro.disconnect();
       annotationLinesRef.current = [];
       positionLinesRef.current = [];
+      // WS1: chart.remove() drops all series including indicator lines;
+      // just clear the bookkeeping map so the next chart starts clean.
+      indicatorSeriesRef.current.clear();
       markersRef.current = null;
       seriesRef.current = null;
       volumeRef.current = null;
@@ -512,6 +540,97 @@ function LightweightChart({
     // colors (already in deps); the overlay is re-attached from refs here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bars, annotations, timeframe, userBullish, userBearish]);
+
+  // ======================================================================
+  // WS1 — technical indicator overlays
+  //
+  // Self-contained block (placed AFTER the candles/volume effect, BEFORE
+  // the position-overlay effects) so it merges cleanly with WS3's
+  // loading/error-state edits elsewhere in this file.
+  //
+  // SMA/EMA/VWAP share the main RIGHT price scale (overlaid on candles).
+  // RSI gets its own pane via priceScaleId "rsi" pinned to a 0–100 axis;
+  // ATR gets its own pane via priceScaleId "atr". The panes are squeezed
+  // into the bottom of the chart with scaleMargins so they don't fight
+  // the candles for vertical space.
+  //
+  // Indicator values are aligned 1:1 with `bars` (same timestamps), with
+  // `null` warm-up gaps that lightweight-charts simply skips. We diff the
+  // enabled set against the live series map so toggling one indicator
+  // doesn't rebuild the others — and crucially does NOT touch the candle
+  // series, markers, or BE price lines.
+  // ======================================================================
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const live = indicatorSeriesRef.current;
+    const wanted = new Set(indicatorSeries.map((s) => s.key));
+
+    // Remove series that are no longer enabled.
+    for (const [key, series] of live) {
+      if (!wanted.has(key)) {
+        try {
+          chart.removeSeries(series);
+        } catch {
+          /* series already detached (chart rebuild) */
+        }
+        live.delete(key);
+      }
+    }
+
+    // Add / update the enabled series.
+    for (const s of indicatorSeries) {
+      const color = INDICATOR_COLORS[s.key] ?? colors.accentCyan;
+      let series = live.get(s.key);
+      if (!series) {
+        series = chart.addSeries(LineSeries, {
+          color,
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: s.pane !== "price",
+          // RSI/ATR live in their own pane via a dedicated price scale;
+          // price-pane indicators ride the main right scale.
+          priceScaleId: PANE_SCALE_ID[s.pane] ?? "right",
+          ...(s.pane === "oscillator"
+            ? { priceFormat: { type: "price" as const, precision: 0, minMove: 1 } }
+            : {}),
+        });
+        // Squeeze the oscillator/volatility panes into the lower band so
+        // they don't overlap the candles; pin RSI to a fixed 0–100 range.
+        if (s.pane === "oscillator") {
+          series.priceScale().applyOptions({
+            scaleMargins: { top: 0.78, bottom: 0.0 },
+            autoScale: false,
+          });
+          series.applyOptions({
+            autoscaleInfoProvider: () => ({
+              priceRange: { minValue: 0, maxValue: 100 },
+            }),
+          });
+        } else if (s.pane === "volatility") {
+          series.priceScale().applyOptions({
+            scaleMargins: { top: 0.85, bottom: 0.0 },
+          });
+        }
+        live.set(s.key, series);
+      } else {
+        series.applyOptions({ color });
+      }
+
+      series.setData(
+        bars
+          .map((b, i) => {
+            const v = s.values[i];
+            return v == null ? null : { time: toTime(b.t), value: v };
+          })
+          .filter((p): p is { time: UTCTimestamp; value: number } => p !== null),
+      );
+    }
+    // Depend on `bars` so a timeframe switch / bars refetch re-aligns the
+    // overlay data; `indicatorSeries` covers toggle changes.
+  }, [indicatorSeries, bars]);
+  // ===================== end WS1 indicator overlays =====================
 
   // Market-structure annotation overlay — toggle-aware.
   useEffect(() => {
@@ -687,6 +806,28 @@ const INTERVAL_SECONDS: Partial<Record<ChartTimeframe, number>> = {
   "15m": 900,
   "1h": 3600,
   "4h": 14400,
+};
+
+// WS1: per-indicator line colors. Chosen from the design palette so the
+// overlays read as distinct from the magenta POSITION line and the
+// candle bullish/bearish hues. Single source of truth for the hex lives
+// here, next to the chart that draws it.
+const INDICATOR_COLORS: Record<string, string> = {
+  sma20: colors.accentAmber,
+  ema50: colors.accentCyan,
+  vwap: colors.fgSecondary,
+  rsi14: colors.accentCyan,
+  atr14: colors.warning,
+};
+
+// WS1: which price scale each pane binds to. "price" rides the main
+// right scale (overlaid on candles); the oscillator/volatility panes get
+// their own hidden scales so RSI's 0–100 range and ATR's absolute range
+// don't distort the price axis.
+const PANE_SCALE_ID: Record<string, string> = {
+  price: "right",
+  oscillator: "rsi",
+  volatility: "atr",
 };
 
 /** Compose a #RRGGBBAA from #RRGGBB + 0..1 opacity. Falls back to the

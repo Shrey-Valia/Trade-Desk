@@ -26,6 +26,7 @@ from calculations.iv_metrics import iv_percentile, vrp
 from calculations.pc_ratio import pc_ratio
 from calculations.realized_vol import realized_vol
 from calculations.skew import skew_25d
+from calculations.technicals import atr, ema, rsi, sma, vwap
 from calculations.types import ContractRow
 from database import SessionLocal
 from models.options_snapshot import OptionsSnapshot
@@ -33,11 +34,14 @@ from schemas.ticker import (
     BarPoint,
     ChartAnnotations,
     ChartResponse,
+    IndicatorSeries,
+    IndicatorsResponse,
     MetricsResponse,
     TickerDetailOut,
     WallLevel,
 )
 from services.alpaca_client import (
+    bars_cache_ttl,
     get_bars,
     get_chain_snapshot,
     get_quotes,
@@ -159,6 +163,98 @@ def get_ticker_bars(symbol: str, timeframe: str = "5m") -> ChartResponse:
         oi_source="bars_only",
     )
     cache.set(cache_key, response, ttl_seconds=30)
+    return response
+
+
+# -- Phase: technical indicator overlays ------------------------------------
+
+# Supported indicator keys. Each maps to a (label, pane, builder) where
+# builder(closes, bars) -> list[float | None] aligned to the bars. Window
+# sizes are encoded in the key (sma20 -> 20) so the toggle set is the only
+# query param the frontend sends.
+_INDICATOR_SPECS: dict[str, tuple[str, str]] = {
+    "sma20": ("SMA 20", "price"),
+    "sma50": ("SMA 50", "price"),
+    "ema20": ("EMA 20", "price"),
+    "ema50": ("EMA 50", "price"),
+    "vwap": ("VWAP", "price"),
+    "rsi14": ("RSI 14", "oscillator"),
+    "atr14": ("ATR 14", "volatility"),
+}
+
+_DEFAULT_INDICATOR_SET = "sma20,ema50,vwap,rsi14,atr14"
+
+
+def _build_indicator(key: str, closes: list[float], bars: list) -> list | None:
+    """Dispatch one indicator key to its calculation. Returns the per-bar
+    series, or None if the key is unrecognized."""
+    if key == "vwap":
+        return vwap(bars)
+    if key == "atr14":
+        return atr(bars, 14)
+    if key == "rsi14":
+        return rsi(closes, 14)
+    if key.startswith("sma"):
+        return sma(closes, _window_of(key, "sma"))
+    if key.startswith("ema"):
+        return ema(closes, _window_of(key, "ema"))
+    return None
+
+
+def _window_of(key: str, prefix: str) -> int:
+    try:
+        return int(key[len(prefix):])
+    except ValueError:
+        return 0
+
+
+@router.get("/{symbol}/indicators", response_model=IndicatorsResponse)
+def get_ticker_indicators(
+    symbol: str, timeframe: str = "5m", set: str = _DEFAULT_INDICATOR_SET
+) -> IndicatorsResponse:
+    """Per-bar technical-indicator arrays aligned to the SAME bars the
+    /chart and /bars endpoints return.
+
+    `set` is a comma-separated list of indicator keys (e.g.
+    `sma20,ema50,vwap,rsi14,atr14`). Unknown keys are skipped. Each
+    returned series is the same length as the bar array, with `None` in
+    the warm-up region. Cached per (symbol, timeframe, set) reusing the
+    per-timeframe bars TTL."""
+    symbol = symbol.upper()
+    requested = [k.strip().lower() for k in set.split(",") if k.strip()]
+    # Normalize to the canonical, supported, de-duplicated order so the
+    # cache key is stable regardless of how the caller spelled the set.
+    keys = [k for k in _INDICATOR_SPECS if k in requested]
+    norm_set = ",".join(keys)
+
+    cache_key = f"indicators:{symbol}:{timeframe}:{norm_set}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    bars = get_bars(symbol, timeframe) or []
+    if not bars:
+        raise HTTPException(
+            status_code=404, detail=f"no bars for {symbol} @ {timeframe}"
+        )
+
+    closes = [float(b.close) for b in bars]
+    times = [b.timestamp.isoformat() for b in bars]
+
+    series: list[IndicatorSeries] = []
+    for key in keys:
+        values = _build_indicator(key, closes, bars)
+        if values is None:
+            continue
+        label, pane = _INDICATOR_SPECS[key]
+        series.append(
+            IndicatorSeries(key=key, label=label, pane=pane, values=values)
+        )
+
+    response = IndicatorsResponse(
+        symbol=symbol, timeframe=timeframe, times=times, series=series
+    )
+    cache.set(cache_key, response, ttl_seconds=bars_cache_ttl(timeframe))
     return response
 
 
