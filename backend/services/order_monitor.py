@@ -236,6 +236,11 @@ def run_order_monitor(
             .all()
         )
         for trade in trades:
+            # A sibling may have been cancelled/closed earlier this pass (OCO,
+            # or another in-session mutation) — skip anything no longer working
+            # or open so we never re-process it.
+            if trade.status not in ("working", "open"):
+                continue
             # Skip open positions with nothing to monitor (no SL/TP bracket
             # AND no trailing stop). Auto-liquidation still scans them below.
             if (
@@ -451,7 +456,36 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     trade.entry_underlying_price = spot
     trade.entry_date = now
     trade.status = "open"
+    # OCO: filling this working order cancels its resting siblings.
+    _cancel_oco_siblings(session, trade)
     return "filled"
+
+
+def _cancel_oco_siblings(session, trade: Trade) -> int:
+    """OCO: when `trade` fills (working entry) or closes (bracket), cancel the
+    still-WORKING siblings sharing its oco_group. A sibling that is already OPEN
+    or closed is left alone — only resting (unfilled) orders are pulled, which
+    is the one-cancels-the-other guarantee for a bracket pair. Returns the
+    number cancelled. Implicit no-op when oco_group is unset."""
+    group = trade.oco_group
+    if not group:
+        return 0
+    siblings = (
+        session.execute(
+            select(Trade).where(
+                Trade.oco_group == group,
+                Trade.id != trade.id,
+                Trade.status == "working",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for s in siblings:
+        s.status = "cancelled"
+        s.close_reason = None
+        s.notes = (s.notes or "") + " · OCO cancelled (sibling filled)"
+    return len(siblings)
 
 
 def _book_close(trade: Trade, spot: float, now: datetime, unrealized_for, reason: str) -> None:
@@ -477,6 +511,7 @@ def _process_open(
     if _has_trailing_stop(trade) and option_mark is not None:
         mark = option_mark(trade, spot)
         if _process_trailing_stop(trade, mark, spot, now, unrealized_for):
+            _cancel_oco_siblings(session, trade)
             return True
 
     entry_u = trade.entry_underlying_price
@@ -489,4 +524,6 @@ def _process_open(
         return False
 
     _book_close(trade, spot, now, unrealized_for, reason)
+    # OCO: a bracket close cancels any resting siblings in the group.
+    _cancel_oco_siblings(session, trade)
     return True

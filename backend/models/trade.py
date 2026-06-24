@@ -87,6 +87,10 @@ class Trade(Base):
     trail_hwm: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
     take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # OCO (one-cancels-the-other): orders sharing an oco_group are siblings —
+    # when one FILLS (working entry) or its position CLOSES on a bracket, the
+    # monitor cancels the still-working siblings in the group. None = no pairing.
+    oco_group: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     close_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Copy trading: the LEAD trade this row was mirrored from (None for an

@@ -42,6 +42,8 @@ export const TradeOutSchema = z.object({
   trail_amount: z.number().nullable().optional(),
   trail_pct: z.number().nullable().optional(),
   trail_hwm: z.number().nullable().optional(),
+  // OCO group id pairing sibling working orders (one fill cancels the other).
+  oco_group: z.string().nullable().optional(),
   stop_loss: z.number().nullable().optional(),
   take_profit: z.number().nullable().optional(),
   close_reason: z

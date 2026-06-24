@@ -118,6 +118,8 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("trail_hwm", "FLOAT"),
     ("stop_loss", "FLOAT"),
     ("take_profit", "FLOAT"),
+    # OCO grouping: one fill/close cancels still-working siblings in the group.
+    ("oco_group", "VARCHAR(36)"),
     ("close_reason", "VARCHAR(16)"),
     # Copy trading: the lead trade a mirrored row was copied from.
     ("copied_from_trade_id", "INTEGER"),
@@ -232,6 +234,9 @@ def _create_missing_indexes() -> None:
     with engine.connect() as conn:
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_trades_combine_id ON trades(combine_id)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_trades_oco_group ON trades(oco_group)")
         )
         conn.commit()
 

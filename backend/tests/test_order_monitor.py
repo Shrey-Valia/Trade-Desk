@@ -325,6 +325,64 @@ def test_bracket_not_triggered_stays_open(auth_client, session_factory):
     s.close()
 
 
+# --- OCO (one-cancels-the-other) --------------------------------------------
+
+
+def test_oco_fill_cancels_resting_sibling(auth_client, session_factory):
+    """Two working orders in one oco_group: the one whose limit the mark meets
+    FILLS; the still-resting sibling is cancelled the same tick."""
+    c = make_combine(auth_client, "50K")
+    # Buy-limit @1.0 → fills when mark ≤1.0. Sibling buy-limit @0.5 stays resting.
+    a = _seed(session_factory, c["id"], status="working", order_type="limit",
+              limit_price=1.0, oco_group="g1")
+    b = _seed(session_factory, c["id"], status="working", order_type="limit",
+              limit_price=0.5, oco_group="g1")
+    summary = _run(session_factory, option_mark=lambda t, s: 0.90)
+    assert summary["filled"] == 1
+    s = session_factory()
+    ta, tb = s.get(Trade, a), s.get(Trade, b)
+    # Exactly one fills, the other is OCO-cancelled (order-independent).
+    statuses = {ta.status, tb.status}
+    assert statuses == {"open", "cancelled"}
+    cancelled = ta if ta.status == "cancelled" else tb
+    assert "OCO cancelled" in (cancelled.notes or "")
+    s.close()
+
+
+def test_oco_independent_groups_do_not_cross_cancel(auth_client, session_factory):
+    """A fill in group g1 must not cancel an unrelated order in group g2."""
+    c = make_combine(auth_client, "50K")
+    a = _seed(session_factory, c["id"], status="working", order_type="limit",
+              limit_price=1.0, oco_group="g1")
+    other = _seed(session_factory, c["id"], status="working", order_type="limit",
+                  limit_price=0.5, oco_group="g2")
+    _run(session_factory, option_mark=lambda t, s: 0.90)
+    s = session_factory()
+    assert s.get(Trade, a).status == "open"
+    assert s.get(Trade, other).status == "working"  # untouched
+    s.close()
+
+
+def test_oco_bracket_close_cancels_resting_sibling(auth_client, session_factory):
+    """An OPEN position closing on a bracket cancels a resting working sibling
+    in the same oco_group (e.g. a paired take-profit limit order)."""
+    c = make_combine(auth_client, "50K")
+    pos = _seed(session_factory, c["id"], status="open", stop_loss=95.0, oco_group="bracket1")
+    tp = _seed(session_factory, c["id"], status="working", order_type="limit",
+               limit_price=5.0, oco_group="bracket1")
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: 94.0,           # crosses the stop
+        option_mark=lambda t, s: 1.0,        # leaves the tp limit (≥5) unmet
+        unrealized_for=lambda t, s: -50.0,
+    )
+    assert summary["closed"] == 1
+    s = session_factory()
+    assert s.get(Trade, pos).status == "closed"
+    assert s.get(Trade, tp).status == "cancelled"
+    s.close()
+
+
 # --- gating + idempotency ---------------------------------------------------
 
 

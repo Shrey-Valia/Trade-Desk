@@ -404,6 +404,9 @@ class OpenLegRequest(BaseModel):
     # the high-water and stops the position out when the mark retraces past it.
     trail_amount: float | None = Field(default=None, gt=0)
     trail_pct: float | None = Field(default=None, gt=0, le=1)
+    # OCO pairing: two working orders sharing this id are siblings — when one
+    # fills, the monitor cancels the other. None = unpaired.
+    oco_group: str | None = Field(default=None, max_length=36)
 
 
 def _pick_fill_price(q: _LegQuote, action: str = "buy") -> float:
@@ -696,6 +699,7 @@ def open_zerodte_leg(
         ),
         trail_amount=payload.trail_amount,
         trail_pct=payload.trail_pct,
+        oco_group=payload.oco_group,
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
         is_paper=True,
@@ -740,6 +744,7 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         trail_amount=trade.trail_amount,
         trail_pct=trade.trail_pct,
         trail_hwm=trade.trail_hwm,
+        oco_group=trade.oco_group,
         stop_loss=trade.stop_loss,
         take_profit=trade.take_profit,
         close_reason=trade.close_reason,  # type: ignore[arg-type]

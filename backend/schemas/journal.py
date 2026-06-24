@@ -154,6 +154,8 @@ class TradeOut(BaseModel):
     trail_hwm: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
+    # OCO group id pairing sibling working orders (one fill cancels the other).
+    oco_group: str | None = None
     close_reason: CloseReason | None = None
     # Combine-tier introduction. Trades tagged with the tier they were
     # opened on; older rows (none exist post-wipe) default to "50K".
