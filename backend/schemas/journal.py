@@ -147,6 +147,11 @@ class TradeOut(BaseModel):
     limit_price: float | None = None
     # stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
     stop_price: float | None = None
+    # Trailing stop (EXIT): trails the favorable option mark by trail_amount
+    # ($/share) or trail_pct; trail_hwm is the monitor-maintained high-water.
+    trail_amount: float | None = None
+    trail_pct: float | None = None
+    trail_hwm: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
     close_reason: CloseReason | None = None

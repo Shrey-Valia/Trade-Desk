@@ -111,6 +111,11 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("limit_price", "FLOAT"),
     # stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
     ("stop_price", "FLOAT"),
+    # Trailing stop (EXIT): trails the favorable option mark by trail_amount
+    # ($/share) or trail_pct; trail_hwm is the monitor-maintained high-water.
+    ("trail_amount", "FLOAT"),
+    ("trail_pct", "FLOAT"),
+    ("trail_hwm", "FLOAT"),
     ("stop_loss", "FLOAT"),
     ("take_profit", "FLOAT"),
     ("close_reason", "VARCHAR(16)"),

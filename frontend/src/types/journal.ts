@@ -37,6 +37,11 @@ export const TradeOutSchema = z.object({
   limit_price: z.number().nullable().optional(),
   // stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
   stop_price: z.number().nullable().optional(),
+  // Trailing stop (EXIT): trails the favorable option mark; trail_hwm is the
+  // monitor-maintained high-water.
+  trail_amount: z.number().nullable().optional(),
+  trail_pct: z.number().nullable().optional(),
+  trail_hwm: z.number().nullable().optional(),
   stop_loss: z.number().nullable().optional(),
   take_profit: z.number().nullable().optional(),
   close_reason: z

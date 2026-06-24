@@ -46,6 +46,8 @@ export function TradeTicket() {
   const setLimitPrice = useTradeTicket((s) => s.setLimitPrice);
   const stopPrice = useTradeTicket((s) => s.stopPrice);
   const setStopPrice = useTradeTicket((s) => s.setStopPrice);
+  const trailAmount = useTradeTicket((s) => s.trailAmount);
+  const setTrailAmount = useTradeTicket((s) => s.setTrailAmount);
   const clear = useTradeTicket((s) => s.clear);
 
   const legMutation = useOpenZeroDteLeg();
@@ -132,6 +134,7 @@ export function TradeTicket() {
         order_type: effectiveOrderType,
         limit_price: needsLimit ? limitPrice : null,
         stop_price: needsStop ? stopPrice : null,
+        trail_amount: trailAmount && trailAmount > 0 ? trailAmount : null,
       },
       {
         onSuccess: () => clear(),
@@ -174,6 +177,9 @@ export function TradeTicket() {
           stopPrice={stopPrice}
           setStopPrice={setStopPrice}
         />
+      )}
+      {isLeg && (
+        <TrailStopRow trailAmount={trailAmount} setTrailAmount={setTrailAmount} />
       )}
       <QuantityRow
         contracts={contracts}
@@ -460,6 +466,49 @@ function OrderTypeRow({
             ariaLabel="Resting limit price (option premium)"
           />
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Optional trailing-stop EXIT — a checkbox that, when on, reveals a $/share
+ * "trail" input. Attaches a trailing stop to the position at open: the monitor
+ * trails the favorable option mark and stops the position out when the mark
+ * retraces past (high-water − trail). Off (null) by default.
+ */
+function TrailStopRow({
+  trailAmount,
+  setTrailAmount,
+}: {
+  trailAmount: number | null;
+  setTrailAmount: (a: number | null) => void;
+}) {
+  const on = trailAmount != null;
+  return (
+    <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0" style={{ fontSize: 12 }}>
+      <button
+        type="button"
+        onClick={() => setTrailAmount(on ? null : 0.1)}
+        aria-pressed={on}
+        className={[
+          "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+          on
+            ? "bg-tier-3 border border-amber text-amber"
+            : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+        ].join(" ")}
+        style={{ height: 24, fontSize: 11 }}
+        title="Attach a trailing stop: the position exits when the option mark retraces this far from its favorable high-water."
+      >
+        trail stop
+      </button>
+      {on && (
+        <PriceInput
+          label="trail $"
+          value={trailAmount}
+          onChange={(v) => setTrailAmount(v != null && v > 0 ? v : null)}
+          ariaLabel="Trailing stop distance ($/share)"
+        />
       )}
     </div>
   );

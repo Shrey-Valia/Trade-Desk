@@ -199,6 +199,80 @@ def test_stop_limit_arms_then_rests_when_limit_unmet(auth_client, session_factor
     s.close()
 
 
+# --- trailing stops ---------------------------------------------------------
+
+
+def test_trailing_stop_long_trails_up_then_stops_out(auth_client, session_factory):
+    """A long position's trail rides a rising mark up, then closes when the
+    mark retraces past (high-water − trail_amount)."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", trail_amount=0.5)
+
+    # Tick 1: mark 2.0 → hwm 2.0, trigger 1.5 → no close.
+    s1 = _run(session_factory, option_mark=lambda t, s: 2.0)
+    assert s1["closed"] == 0
+    s = session_factory(); assert s.get(Trade, tid).trail_hwm == 2.0; s.close()
+
+    # Tick 2: mark 2.5 → hwm advances to 2.5, trigger 2.0 → no close.
+    s2 = _run(session_factory, option_mark=lambda t, s: 2.5)
+    assert s2["closed"] == 0
+    s = session_factory(); assert s.get(Trade, tid).trail_hwm == 2.5; s.close()
+
+    # Tick 3: mark 1.9 ≤ trigger 2.0 (hwm stays 2.5) → stop out.
+    s3 = _run(session_factory, option_mark=lambda t, s: 1.9, unrealized_for=lambda t, s: 80.0)
+    assert s3["closed"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed" and t.close_reason == "stop_loss"
+    assert "trailing stop" in (t.notes or "")
+    s.close()
+
+
+def test_trailing_stop_short_trails_down_then_stops_out(auth_client, session_factory):
+    """A short position favors a FALLING mark — the trail rides down and closes
+    when the mark rebounds past (low-water + trail_amount)."""
+    c = make_combine(auth_client, "50K")
+    short_leg = [{
+        "side": "call", "action": "sell", "strike": 100.0,
+        "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 2.0,
+    }]
+    tid = _seed(session_factory, c["id"], status="open", trail_amount=0.5, _legs=short_leg)
+
+    _run(session_factory, option_mark=lambda t, s: 2.0)   # trough 2.0, trigger 2.5
+    _run(session_factory, option_mark=lambda t, s: 1.5)   # trough 1.5, trigger 2.0
+    s = session_factory(); assert s.get(Trade, tid).trail_hwm == 1.5; s.close()
+
+    s3 = _run(session_factory, option_mark=lambda t, s: 2.1)  # ≥ 2.0 → stop out
+    assert s3["closed"] == 1
+    s = session_factory()
+    assert s.get(Trade, tid).status == "closed"
+    s.close()
+
+
+def test_trailing_stop_pct_offset(auth_client, session_factory):
+    """trail_pct sets the offset as a fraction of the high-water mark."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", trail_pct=0.10)
+    # hwm 2.0 → trigger 1.8; mark 1.95 stays above → no close.
+    assert _run(session_factory, option_mark=lambda t, s: 2.0)["closed"] == 0
+    assert _run(session_factory, option_mark=lambda t, s: 1.95)["closed"] == 0
+    # mark 1.79 ≤ 1.8 → stop out.
+    assert _run(session_factory, option_mark=lambda t, s: 1.79)["closed"] == 1
+    s = session_factory(); assert s.get(Trade, tid).status == "closed"; s.close()
+
+
+def test_trailing_stop_position_is_monitored_without_fixed_brackets(auth_client, session_factory):
+    """A trailing-stop-only open position must NOT be skipped by the
+    no-brackets early-continue."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", trail_amount=0.5)
+    # First tick seeds the high-water (proof it was processed, not skipped).
+    _run(session_factory, option_mark=lambda t, s: 3.0)
+    s = session_factory()
+    assert s.get(Trade, tid).trail_hwm == 3.0
+    s.close()
+
+
 # --- bracket auto-closes ----------------------------------------------------
 
 

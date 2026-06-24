@@ -399,6 +399,11 @@ class OpenLegRequest(BaseModel):
     stop_price: float | None = Field(default=None, gt=0)
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
+    # Trailing stop (EXIT) attached at open — trails the favorable OPTION mark
+    # by trail_amount ($/share) or trail_pct (0.10 = 10%). The monitor advances
+    # the high-water and stops the position out when the mark retraces past it.
+    trail_amount: float | None = Field(default=None, gt=0)
+    trail_pct: float | None = Field(default=None, gt=0, le=1)
 
 
 def _pick_fill_price(q: _LegQuote, action: str = "buy") -> float:
@@ -689,6 +694,8 @@ def open_zerodte_leg(
             if is_working and payload.order_type == "stop_limit"
             else None
         ),
+        trail_amount=payload.trail_amount,
+        trail_pct=payload.trail_pct,
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
         is_paper=True,
@@ -730,6 +737,9 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         order_type=trade.order_type,  # type: ignore[arg-type]
         limit_price=trade.limit_price,
         stop_price=trade.stop_price,
+        trail_amount=trade.trail_amount,
+        trail_pct=trade.trail_pct,
+        trail_hwm=trade.trail_hwm,
         stop_loss=trade.stop_loss,
         take_profit=trade.take_profit,
         close_reason=trade.close_reason,  # type: ignore[arg-type]

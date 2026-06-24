@@ -145,6 +145,56 @@ def _bracket_triggered(entry_underlying: float, level: float | None, spot: float
     return spot <= level
 
 
+def _has_trailing_stop(trade: Trade) -> bool:
+    return (trade.trail_amount is not None and trade.trail_amount > 0) or (
+        trade.trail_pct is not None and trade.trail_pct > 0
+    )
+
+
+def _trail_offset(mark: float, trade: Trade) -> float:
+    """Absolute $/share trail distance from the high-water mark. trail_amount
+    wins when both are set; otherwise trail_pct × the high-water price."""
+    if trade.trail_amount is not None and trade.trail_amount > 0:
+        return float(trade.trail_amount)
+    return float(trade.trail_pct or 0.0) * mark
+
+
+def _process_trailing_stop(trade: Trade, mark: float, spot: float, now: datetime, unrealized_for) -> bool:
+    """Advance a trailing stop's favorable-mark high-water and close the
+    position if the mark has retraced past the trail. Long (net buy) favors a
+    RISING mark and trails below the peak; short (net sell) favors a FALLING
+    mark and trails above the trough. Returns True if it closed the position.
+
+    Deterministic: the trigger is recomputed from the persisted high-water and
+    the trail offset each tick — no randomness, idempotent once closed."""
+    legs = trade.legs
+    is_long = (legs[0].get("action", "buy") == "buy") if legs else True
+
+    hwm = trade.trail_hwm
+    if hwm is None:
+        # Seed the high-water at the current mark on the first tick.
+        hwm = mark
+    elif is_long:
+        hwm = max(hwm, mark)
+    else:
+        hwm = min(hwm, mark)
+    trade.trail_hwm = round(float(hwm), 4)
+
+    offset = _trail_offset(hwm, trade)
+    if is_long:
+        trigger = hwm - offset
+        hit = mark <= trigger
+    else:
+        trigger = hwm + offset
+        hit = mark >= trigger
+    if not hit:
+        return False
+
+    _book_close(trade, spot, now, unrealized_for, "stop_loss")
+    trade.notes = (trade.notes or "") + " · trailing stop hit"
+    return True
+
+
 # --- the pass ---------------------------------------------------------------
 
 
@@ -186,8 +236,14 @@ def run_order_monitor(
             .all()
         )
         for trade in trades:
-            # Skip open positions with no brackets — nothing to monitor.
-            if trade.status == "open" and trade.stop_loss is None and trade.take_profit is None:
+            # Skip open positions with nothing to monitor (no SL/TP bracket
+            # AND no trailing stop). Auto-liquidation still scans them below.
+            if (
+                trade.status == "open"
+                and trade.stop_loss is None
+                and trade.take_profit is None
+                and not _has_trailing_stop(trade)
+            ):
                 continue
             if trade.symbol not in spot_cache:
                 spot_cache[trade.symbol] = spot_for(trade.symbol)
@@ -202,7 +258,7 @@ def run_order_monitor(
                     elif outcome == "cancelled":
                         cancelled += 1
                 else:
-                    if _process_open(session, trade, spot, now, unrealized_for):
+                    if _process_open(session, trade, spot, now, unrealized_for, option_mark):
                         closed += 1
                 session.commit()
             except Exception:  # noqa: BLE001 — isolate one bad trade from the rest
@@ -411,8 +467,18 @@ def _book_close(trade: Trade, spot: float, now: datetime, unrealized_for, reason
     trade.realized_pnl = round(realized, 2)
 
 
-def _process_open(session, trade: Trade, spot: float, now: datetime, unrealized_for) -> bool:
-    """Close an open position if a bracket triggered. Returns True if closed."""
+def _process_open(
+    session, trade: Trade, spot: float, now: datetime, unrealized_for, option_mark=None
+) -> bool:
+    """Close an open position if a fixed bracket (SL/TP on the underlying) or a
+    trailing stop (on the favorable option mark) triggered. Returns True if
+    closed. The trailing stop is checked first so its high-water advances every
+    tick even on a tick where the fixed brackets don't fire."""
+    if _has_trailing_stop(trade) and option_mark is not None:
+        mark = option_mark(trade, spot)
+        if _process_trailing_stop(trade, mark, spot, now, unrealized_for):
+            return True
+
     entry_u = trade.entry_underlying_price
     reason: str | None = None
     if _bracket_triggered(entry_u, trade.stop_loss, spot):

@@ -77,6 +77,14 @@ class Trade(Base):
     order_type: Mapped[str] = mapped_column(String(16), nullable=False, default="market")
     limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Trailing stop (EXIT) — a dynamic stop on an OPEN position that trails the
+    # favorable OPTION mark. trail_amount is an absolute $/share offset;
+    # trail_pct is a fractional offset (0.10 = 10%). trail_hwm is the
+    # monitor-maintained high-water of the favorable mark the trail hangs off
+    # (peak for a long, trough for a short); None until the first tick seeds it.
+    trail_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trail_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trail_hwm: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
     take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)

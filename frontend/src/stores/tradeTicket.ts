@@ -43,11 +43,15 @@ interface TradeTicketState {
   limitPrice: number | null;
   /** Option-premium ARM level for a stop_limit order (per-share). */
   stopPrice: number | null;
+  /** Optional trailing-stop EXIT distance ($/share off the favorable mark);
+   *  null = no trailing stop attached at open. */
+  trailAmount: number | null;
   setSelection: (sel: TicketSelection | null) => void;
   setContracts: (n: number) => void;
   setOrderType: (t: TicketOrderType) => void;
   setLimitPrice: (p: number | null) => void;
   setStopPrice: (p: number | null) => void;
+  setTrailAmount: (a: number | null) => void;
   clear: () => void;
 }
 
@@ -57,19 +61,29 @@ export const useTradeTicket = create<TradeTicketState>((set) => ({
   orderType: "market",
   limitPrice: null,
   stopPrice: null,
+  trailAmount: null,
   // Selecting a contract seeds limitPrice + stopPrice to its indicative price
   // so a limit/stop/stop_limit order starts at a sensible default to nudge.
+  // The trailing stop stays off (null) unless the user opts in.
   setSelection: (selection) =>
     set({
       selection,
       limitPrice: selection ? selection.price : null,
       stopPrice: selection ? selection.price : null,
+      trailAmount: null,
     }),
   setContracts: (n) =>
     set({ contracts: Math.max(1, Math.min(100, Math.floor(n))) }),
   setOrderType: (orderType) => set({ orderType }),
   setLimitPrice: (limitPrice) => set({ limitPrice }),
   setStopPrice: (stopPrice) => set({ stopPrice }),
+  setTrailAmount: (trailAmount) => set({ trailAmount }),
   clear: () =>
-    set({ selection: null, orderType: "market", limitPrice: null, stopPrice: null }),
+    set({
+      selection: null,
+      orderType: "market",
+      limitPrice: null,
+      stopPrice: null,
+      trailAmount: null,
+    }),
 }));

@@ -21,6 +21,8 @@ export async function openZeroDteLeg(input: {
   limit_price?: number | null;
   /** Option-premium arm level for a stop_limit order. */
   stop_price?: number | null;
+  /** Optional trailing-stop EXIT distance ($/share off the favorable mark). */
+  trail_amount?: number | null;
   /** Optional SL/TP brackets (underlying price levels). */
   stop_loss?: number | null;
   take_profit?: number | null;
@@ -42,6 +44,7 @@ export async function openZeroDteLeg(input: {
       order_type: input.order_type ?? "market",
       limit_price: input.limit_price ?? null,
       stop_price: input.stop_price ?? null,
+      trail_amount: input.trail_amount ?? null,
       stop_loss: input.stop_loss ?? null,
       take_profit: input.take_profit ?? null,
     }),
