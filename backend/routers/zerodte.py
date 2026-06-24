@@ -410,23 +410,63 @@ class OpenLegRequest(BaseModel):
     oco_group: str | None = Field(default=None, max_length=36)
 
 
-def _pick_fill_price(q: _LegQuote, action: str = "buy") -> float:
-    """Indicative fill price.
+# Per-contract size-impact slippage: each contract above the first nudges the
+# fill a further 0.5% of mid against the trader, capped so a big clip can't run
+# away. Deterministic (no RNG) so tests and replays are stable.
+_SIZE_SLIP_PER_CONTRACT = 0.005   # 0.5% of mid per extra contract
+_SIZE_SLIP_CAP = 0.05             # never worse than 5% of mid from size alone
 
-    Buyers pay the ask (worst-case); sellers receive the bid (worst-case).
-    Falls back to mid then last when only one side is quoted. Returns 0
-    if no usable quote at all — caller turns that into a 503."""
-    if action == "sell":
-        if q.bid and q.bid > 0:
-            return float(q.bid)
+
+def _fill_slippage(mid: float, spread: float, action: str, contracts: int) -> float:
+    """Deterministic adverse slippage added to (buy) / subtracted from (sell)
+    the mid for a MARKET fill.
+
+    Two components, both pushing AGAINST the trader:
+      1. cross HALF the bid/ask spread (you don't get filled at mid — you give
+         up half the spread to cross), and
+      2. a size-impact term scaling with the clip size (each contract beyond
+         the first adds 0.5% of mid, capped at 5%).
+
+    Returns the signed price adjustment to apply (always ≥ 0 in magnitude;
+    sign handled by the caller via `action`)."""
+    half_spread = max(0.0, spread) / 2.0
+    extra = max(0, int(contracts) - 1)
+    size_frac = min(_SIZE_SLIP_CAP, extra * _SIZE_SLIP_PER_CONTRACT)
+    return half_spread + mid * size_frac
+
+
+def _pick_fill_price(q: _LegQuote, action: str = "buy", contracts: int = 1) -> float:
+    """Indicative MARKET fill price with DETERMINISTIC slippage.
+
+    Reference mid comes from bid/ask (or last when one-sided). The trader never
+    fills at the perfect mid: buyers pay mid + slippage, sellers receive
+    mid − slippage, where slippage = half the spread + a size-impact term
+    (see _fill_slippage). No RNG, so a given quote+size always yields the same
+    fill. Returns 0 if no usable quote at all — caller turns that into a 503.
+    The result is floored at 0.01 so a wide-spread short can't fill at ≤ 0."""
+    bid = float(q.bid) if q.bid and q.bid > 0 else None
+    ask = float(q.ask) if q.ask and q.ask > 0 else None
+
+    if bid is not None and ask is not None:
+        mid = (bid + ask) / 2.0
+        spread = max(0.0, ask - bid)
+    elif q.last and q.last > 0:
+        # One-sided/last-only: synthesize a nominal spread off last so size
+        # impact still bites; assume a 2%-of-last touch spread.
+        mid = float(q.last)
+        spread = mid * 0.02
+    elif ask is not None:
+        mid = ask
+        spread = 0.0
+    elif bid is not None:
+        mid = bid
+        spread = 0.0
     else:
-        if q.ask and q.ask > 0:
-            return float(q.ask)
-    if q.bid and q.ask and q.bid > 0 and q.ask > 0:
-        return (float(q.bid) + float(q.ask)) / 2
-    if q.last and q.last > 0:
-        return float(q.last)
-    return 0.0
+        return 0.0
+
+    slip = _fill_slippage(mid, spread, action, contracts)
+    px = mid + slip if action == "buy" else mid - slip
+    return max(0.01, round(px, 4))
 
 
 def _require_market_open() -> None:
@@ -538,8 +578,8 @@ def open_zerodte_straddle(
     _require_today_expiry(expiry)
 
     action = payload.action
-    call_price = _pick_fill_price(call_q, action)
-    put_price = _pick_fill_price(put_q, action)
+    call_price = _pick_fill_price(call_q, action, payload.contracts)
+    put_price = _pick_fill_price(put_q, action, payload.contracts)
     if call_price == 0 or put_price == 0:
         raise HTTPException(503, f"{sym} indicative quotes unavailable at ATM {atm}")
     _validate_brackets(spot, payload.stop_loss, payload.take_profit)

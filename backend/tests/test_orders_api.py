@@ -252,3 +252,59 @@ def test_reverse_rejected_when_market_closed(auth_client, session_factory, monke
     _stub_quote(monkeypatch)
     res = auth_client.post("/api/zerodte/reverse")
     assert res.status_code == 409
+
+
+# --- deterministic fill slippage --------------------------------------------
+
+
+def _q(bid=None, ask=None, last=None):
+    return zerodte._LegQuote(symbol="X", strike=100.0, side="call", bid=bid, ask=ask, last=last)
+
+
+def test_slippage_buyer_pays_above_mid_seller_receives_below():
+    q = _q(bid=1.0, ask=1.2)  # mid 1.1, half-spread 0.1
+    buy = zerodte._pick_fill_price(q, "buy", 1)
+    sell = zerodte._pick_fill_price(q, "sell", 1)
+    assert buy == 1.2   # mid 1.1 + half-spread 0.1
+    assert sell == 1.0  # mid 1.1 − half-spread 0.1
+    assert buy > 1.1 > sell  # never the perfect mid
+
+
+def test_slippage_scales_with_size():
+    q = _q(bid=1.0, ask=1.2)  # mid 1.1
+    one = zerodte._pick_fill_price(q, "buy", 1)
+    three = zerodte._pick_fill_price(q, "buy", 3)
+    # 3 contracts: extra=2 → size_frac 0.01 → slip 0.1 + 1.1*0.01 = 0.111.
+    assert three == 1.211
+    assert three > one  # bigger clip → worse fill
+
+
+def test_slippage_size_impact_is_capped():
+    q = _q(bid=1.0, ask=1.2)  # mid 1.1
+    huge = zerodte._pick_fill_price(q, "buy", 100)
+    # size_frac caps at 0.05 → slip 0.1 + 1.1*0.05 = 0.155 → 1.255.
+    assert huge == 1.255
+
+
+def test_slippage_is_deterministic():
+    q = _q(bid=1.0, ask=1.2)
+    a = zerodte._pick_fill_price(q, "buy", 5)
+    b = zerodte._pick_fill_price(q, "buy", 5)
+    assert a == b  # no RNG
+
+
+def test_slippage_last_only_synthesizes_a_touch_spread():
+    q = _q(last=2.0)  # one-sided: 2% synthetic spread → half 0.02
+    buy = zerodte._pick_fill_price(q, "buy", 1)
+    assert buy == 2.02  # 2.0 + 0.02
+    assert buy > 2.0    # still worse than the last/mid
+
+
+def test_slippage_floor_keeps_price_positive():
+    q = _q(bid=0.01, ask=0.05)  # mid 0.03, half-spread 0.02
+    sell = zerodte._pick_fill_price(q, "sell", 50)  # large adverse size impact
+    assert sell >= 0.01  # floored, never ≤ 0
+
+
+def test_no_quote_returns_zero():
+    assert zerodte._pick_fill_price(_q(), "buy", 1) == 0.0
