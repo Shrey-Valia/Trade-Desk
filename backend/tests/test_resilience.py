@@ -198,3 +198,46 @@ def test_chart_endpoint_returns_typed_503_when_circuit_open(api_client, monkeypa
     res2 = api_client.get("/api/ticker/SPY/chart?timeframe=5m")
     assert res2.status_code == 503
     assert res2.json()["error"] == "market_data_unavailable"
+
+
+def test_indicators_endpoint_returns_typed_503_when_circuit_open(api_client, monkeypatch):
+    """The /indicators endpoint degrades like /bars: a circuit-open feed yields
+    the typed 503 (NOT a bare 500), so the indicator overlay shows the same
+    retrying state as the underlying chart instead of failing generically."""
+    from services.alpaca_client import MarketDataUnavailable
+    import routers.ticker as ticker
+
+    def _degraded(symbol, timeframe):
+        raise MarketDataUnavailable(f"{symbol} circuit open")
+
+    monkeypatch.setattr(ticker, "get_bars", _degraded)
+
+    res = api_client.get("/api/ticker/SPY/indicators?timeframe=5m&set=sma20,rsi14")
+    assert res.status_code == 503
+    assert res.json()["error"] == "market_data_unavailable"
+    assert "Retry-After" in res.headers
+
+
+def test_degraded_retry_after_has_floor_before_breaker_opens(api_client, monkeypatch):
+    """Before the Alpaca breaker trips, its remaining cooldown is ~0 so the raw
+    Retry-After would be 1s — telling the client to retry straight back into a
+    just-429'd key. The degraded response floors it to a sane minimum (>=5s)."""
+    from services.alpaca_client import MarketDataUnavailable
+    from services.resilience import get_breaker
+    import routers.ticker as ticker
+
+    # An "alpaca" breaker that EXISTS but is still CLOSED (one failure under a
+    # high threshold) → breaker_retry_after returns 1; the floor must lift it.
+    b = get_breaker("alpaca", fail_threshold=99)
+    b.record_failure()
+    assert not b.is_open
+
+    def _degraded(symbol, timeframe):
+        raise MarketDataUnavailable("429 too many requests")
+
+    monkeypatch.setattr(ticker, "get_bars", _degraded)
+
+    res = api_client.get("/api/ticker/SPY/bars?timeframe=5m")
+    assert res.status_code == 503
+    assert int(res.headers["Retry-After"]) >= 5
+    assert res.json()["retry_after"] >= 5

@@ -59,6 +59,12 @@ log = logging.getLogger(__name__)
 # Alpaca breaker name (kept in sync with services.alpaca_client._ALPACA).
 # Drives the Retry-After header on the degraded chart response.
 _ALPACA_BREAKER = "alpaca"
+# Floor (seconds) for the degraded Retry-After hint. Before the breaker trips
+# (fewer than its fail-threshold consecutive failures) breaker_retry_after
+# returns ~1s, which would tell the client to retry straight back into a
+# just-rate-limited key every second. A 5s floor keeps the early-degradation
+# backoff meaningful; once the breaker opens, its ~30s cooldown dominates.
+_MIN_DEGRADED_RETRY_S = 5
 
 
 class MarketDataDegraded(HTTPException):
@@ -69,7 +75,7 @@ class MarketDataDegraded(HTTPException):
     auto-retry instead of an infinite spinner or a bare 500."""
 
     def __init__(self) -> None:
-        retry_after = breaker_retry_after(_ALPACA_BREAKER)
+        retry_after = max(_MIN_DEGRADED_RETRY_S, breaker_retry_after(_ALPACA_BREAKER))
         super().__init__(
             status_code=503,
             detail="market data temporarily unavailable — retrying",
@@ -276,7 +282,14 @@ def get_ticker_indicators(
     if cached is not None:
         return cached
 
-    bars = get_bars(symbol, timeframe) or []
+    # Same degraded-feed handling as _fetch_bars: a circuit-open / rate-limited
+    # feed surfaces as a typed 503 (retryable) rather than a bare 500, so the
+    # indicator overlay degrades the same way the underlying chart does.
+    try:
+        bars = get_bars(symbol, timeframe) or []
+    except MarketDataUnavailable:
+        log.info("indicators degraded for %s @ %s (circuit open / rate-limited)", symbol, timeframe)
+        raise MarketDataDegraded() from None
     if not bars:
         raise HTTPException(
             status_code=404, detail=f"no bars for {symbol} @ {timeframe}"

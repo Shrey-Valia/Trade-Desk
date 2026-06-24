@@ -151,44 +151,44 @@ def _has_trailing_stop(trade: Trade) -> bool:
     )
 
 
-def _trail_offset(mark: float, trade: Trade) -> float:
-    """Absolute $/share trail distance from the high-water mark. trail_amount
-    wins when both are set; otherwise trail_pct × the high-water price."""
+def _trail_offset(hwm: float, trade: Trade) -> float:
+    """Trail distance in PER-SHARE premium units — matching the per-share
+    favorable value the trailing stop tracks. trail_amount is already a $/share
+    offset (used directly); otherwise trail_pct × the favorable peak magnitude.
+    trail_amount wins when both are set."""
     if trade.trail_amount is not None and trade.trail_amount > 0:
         return float(trade.trail_amount)
-    return float(trade.trail_pct or 0.0) * mark
+    return float(trade.trail_pct or 0.0) * abs(hwm)
 
 
 def _process_trailing_stop(trade: Trade, mark: float, spot: float, now: datetime, unrealized_for) -> bool:
-    """Advance a trailing stop's favorable-mark high-water and close the
-    position if the mark has retraced past the trail. Long (net buy) favors a
-    RISING mark and trails below the peak; short (net sell) favors a FALLING
-    mark and trails above the trough. Returns True if it closed the position.
+    """Advance a trailing stop's favorable high-water and close the position if
+    the favorable value has retraced past the trail. Returns True if it closed.
 
-    Deterministic: the trigger is recomputed from the persisted high-water and
-    the trail offset each tick — no randomness, idempotent once closed."""
-    legs = trade.legs
-    is_long = (legs[0].get("action", "buy") == "buy") if legs else True
+    `mark` is the SIGNED, contracts-scaled position value (Σ sign·contracts·px
+    from _default_option_mark). We reduce it to a PER-SHARE favorable value
+    `fav = mark / contracts` in which HIGHER is always more favorable for BOTH
+    long and short: a long gains as premium rises (fav rises); a short gains as
+    premium decays (its negative fav rises toward 0). So one rule covers both —
+    advance the max fav and stop when it retraces past the (per-share) trail.
+
+    This normalization fixes two latent bugs that the unit tests masked (they
+    inject positive per-share marks with contracts=1): using the signed mark
+    directly INVERTED the trail for shorts (favorable moves triggered the stop),
+    and comparing a $/share trail_amount against a contracts-scaled mark
+    tightened the trail by a factor of `contracts`. Deterministic, idempotent."""
+    total_contracts = max((int(leg.get("contracts", 1) or 1) for leg in trade.legs), default=1)
+    fav = mark / max(1, total_contracts)
 
     hwm = trade.trail_hwm
-    if hwm is None:
-        # Seed the high-water at the current mark on the first tick.
-        hwm = mark
-    elif is_long:
-        hwm = max(hwm, mark)
-    else:
-        hwm = min(hwm, mark)
+    if hwm is None or fav > hwm:
+        # Seed at — or advance to — the favorable high-water.
+        hwm = fav
     trade.trail_hwm = round(float(hwm), 4)
 
     offset = _trail_offset(hwm, trade)
-    if is_long:
-        trigger = hwm - offset
-        hit = mark <= trigger
-    else:
-        trigger = hwm + offset
-        hit = mark >= trigger
-    if not hit:
-        return False
+    if fav > hwm - offset:
+        return False  # still within the trail of the favorable peak
 
     _book_close(trade, spot, now, unrealized_for, "stop_loss")
     trade.notes = (trade.notes or "") + " · trailing stop hit"
@@ -426,7 +426,13 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     if not legs:
         return None
     action = legs[0].get("action", "buy")
-    mark = option_mark(trade, spot)
+    # option_mark returns the SIGNED, contracts-scaled position value
+    # (Σ sign·contracts·px). Working-order triggers and the user's limit/stop
+    # prices are PER-SHARE premium, so reduce to a positive per-share premium
+    # before comparing. (Using the raw signed mark armed every SELL order on the
+    # first tick — negative ≤ positive — and mis-scaled multi-contract orders.)
+    total_contracts = max((int(leg.get("contracts", 1) or 1) for leg in legs), default=1)
+    prem = abs(option_mark(trade, spot)) / max(1, total_contracts)
 
     # STOP-LIMIT — two phases. Phase 1: the order rests until the mark crosses
     # stop_price (stop semantics). Arming converts it into a plain LIMIT at
@@ -436,17 +442,17 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     # immediately below; otherwise it waits as a limit.
     if trade.order_type == "stop_limit":
         stop_trigger = float(trade.stop_price) if trade.stop_price is not None else 0.0
-        if not _entry_fill_triggered("stop", action, mark, stop_trigger):
+        if not _entry_fill_triggered("stop", action, prem, stop_trigger):
             return None  # not yet armed
         trade.order_type = "limit"  # armed → now a resting limit at limit_price
         trade.notes = (trade.notes or "") + " · stop armed → limit"
 
     trigger = float(trade.limit_price) if trade.limit_price is not None else 0.0
-    if not _entry_fill_triggered(trade.order_type, action, mark, trigger):
+    if not _entry_fill_triggered(trade.order_type, action, prem, trigger):
         return None
 
-    # limit → fill AT the limit price; stop → fill at the current mark.
-    fill_px = trigger if trade.order_type == "limit" else max(0.01, mark)
+    # limit → fill AT the limit price; stop → fill at the current per-share mark.
+    fill_px = trigger if trade.order_type == "limit" else max(0.01, prem)
     for leg in legs:
         leg["entry_price"] = round(float(fill_px), 4)
     trade.legs = legs

@@ -199,6 +199,34 @@ def test_stop_limit_arms_then_rests_when_limit_unmet(auth_client, session_factor
     s.close()
 
 
+def test_sell_stop_uses_per_share_premium_not_signed_mark(auth_client, session_factory):
+    """A SELL working order arms against the POSITIVE per-share premium, not the
+    SIGNED mark (which is NEGATIVE for a short). Regression: the pre-fix code
+    passed the raw mark, so `negative ≤ positive_stop` armed every sell order on
+    the first tick and booked a $0.01 fill from max(0.01, negative_mark)."""
+    c = make_combine(auth_client, "50K")
+    sell_leg = [{
+        "side": "call", "action": "sell", "strike": 100.0,
+        "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 3.0,
+    }]
+    # Sell-stop fills when the premium falls to ≤ 2.0 (stop stored in limit_price).
+    tid = _seed(
+        session_factory, c["id"], status="working",
+        order_type="stop", limit_price=2.0, _legs=sell_leg,
+    )
+    # Premium 3.0 → signed mark −3.0. Per-share premium 3.0 > stop 2.0 → NOT armed.
+    assert _run(session_factory, option_mark=lambda t, s: -3.0)["filled"] == 0
+    s = session_factory(); assert s.get(Trade, tid).status == "working"; s.close()
+
+    # Premium decays to 1.8 → mark −1.8. Per-share 1.8 ≤ stop 2.0 → fills at ~1.8.
+    assert _run(session_factory, option_mark=lambda t, s: -1.8)["filled"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "open"
+    assert t.legs[0]["entry_price"] > 1.0   # positive per-share fill, never $0.01
+    s.close()
+
+
 # --- trailing stops ---------------------------------------------------------
 
 
@@ -229,24 +257,66 @@ def test_trailing_stop_long_trails_up_then_stops_out(auth_client, session_factor
 
 
 def test_trailing_stop_short_trails_down_then_stops_out(auth_client, session_factory):
-    """A short position favors a FALLING mark — the trail rides down and closes
-    when the mark rebounds past (low-water + trail_amount)."""
+    """A short position favors a DECAYING premium. Production prices it to a
+    SIGNED mark (NEGATIVE for a short: −contracts·premium), where a HIGHER
+    (less-negative) mark is more favorable. The trail rides the favorable
+    high-water and closes only when the premium REBOUNDS (mark drops) past it.
+
+    Regression: the pre-fix code branched on is_long and tracked the MIN mark
+    for shorts, which inverted the trail — a winning short (premium decaying)
+    was stopped out immediately. The old test masked this by injecting POSITIVE
+    marks (the wrong sign for a short); this one uses the production sign."""
     c = make_combine(auth_client, "50K")
     short_leg = [{
         "side": "call", "action": "sell", "strike": 100.0,
-        "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 2.0,
+        "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 3.0,
     }]
     tid = _seed(session_factory, c["id"], status="open", trail_amount=0.5, _legs=short_leg)
 
-    _run(session_factory, option_mark=lambda t, s: 2.0)   # trough 2.0, trigger 2.5
-    _run(session_factory, option_mark=lambda t, s: 1.5)   # trough 1.5, trigger 2.0
-    s = session_factory(); assert s.get(Trade, tid).trail_hwm == 1.5; s.close()
+    # $3.00 short premium → signed mark −3.0 (seed favorable high-water).
+    _run(session_factory, option_mark=lambda t, s: -3.0)
+    # Premium DECAYS to 2.0 (favorable for the seller) → mark −2.0: must NOT stop.
+    _run(session_factory, option_mark=lambda t, s: -2.0)
+    s = session_factory()
+    assert s.get(Trade, tid).trail_hwm == -2.0
+    assert s.get(Trade, tid).status == "open"   # winning short is NOT stopped
+    s.close()
 
-    s3 = _run(session_factory, option_mark=lambda t, s: 2.1)  # ≥ 2.0 → stop out
+    # Premium REBOUNDS to 2.6 (adverse) → mark −2.6 ≤ hwm(−2.0) − 0.5 = −2.5 → stop.
+    s3 = _run(session_factory, option_mark=lambda t, s: -2.6)
     assert s3["closed"] == 1
     s = session_factory()
-    assert s.get(Trade, tid).status == "closed"
+    t = s.get(Trade, tid)
+    assert t.status == "closed" and t.close_reason == "stop_loss"
     s.close()
+
+
+def test_trailing_stop_multi_contract_uses_per_share_trail(auth_client, session_factory):
+    """trail_amount is $/SHARE. Production marks are contracts-scaled
+    (Σ sign·contracts·px), so a 3-contract long must not stop until the PER-SHARE
+    premium retraces by trail_amount — not by trail_amount/contracts.
+
+    Regression: the pre-fix code compared the $/share trail against the scaled
+    mark, tightening the trail by a factor of `contracts` (stopped ~3× early)."""
+    c = make_combine(auth_client, "50K")
+    legs = [{
+        "side": "call", "action": "buy", "strike": 100.0,
+        "expiry": _TODAY.isoformat(), "contracts": 3, "entry_price": 2.0,
+    }]
+    tid = _seed(session_factory, c["id"], status="open", trail_amount=0.5, _legs=legs)
+
+    # Per-share premium peaks at 2.5 → contracts-scaled mark 7.5; hwm is per-share.
+    _run(session_factory, option_mark=lambda t, s: 7.5)
+    s = session_factory(); assert s.get(Trade, tid).trail_hwm == 2.5; s.close()
+
+    # Premium retraces to 2.1 (mark 6.3) → only 0.4/share < 0.5 trail → NO stop.
+    # (The pre-fix bug stopped here, effectively applying a 0.5/3 ≈ 0.17 trail.)
+    assert _run(session_factory, option_mark=lambda t, s: 6.3)["closed"] == 0
+    s = session_factory(); assert s.get(Trade, tid).status == "open"; s.close()
+
+    # Premium retraces to 1.9 (mark 5.7) → 0.6/share ≥ 0.5 trail → stop out.
+    assert _run(session_factory, option_mark=lambda t, s: 5.7)["closed"] == 1
+    s = session_factory(); assert s.get(Trade, tid).status == "closed"; s.close()
 
 
 def test_trailing_stop_pct_offset(auth_client, session_factory):
