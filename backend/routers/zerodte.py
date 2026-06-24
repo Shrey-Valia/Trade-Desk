@@ -381,8 +381,10 @@ class OpenLegRequest(BaseModel):
     order_type="market" (default) fills immediately at `entry_price` (what
     the UI showed at click time). order_type="limit"/"stop" places a WORKING
     order — `limit_price` is the OPTION-premium trigger the monitor fills
-    against; `entry_price` is ignored. Optional stop_loss/take_profit are
-    UNDERLYING price levels (the draggable chart brackets)."""
+    against; `entry_price` is ignored. order_type="stop_limit" ARMS at
+    `stop_price` (mark crosses it) then RESTS as a limit at `limit_price`.
+    Optional stop_loss/take_profit are UNDERLYING price levels (the draggable
+    chart brackets)."""
 
     symbol: str = Field(min_length=1, max_length=16)
     side: Literal["call", "put"]
@@ -390,8 +392,11 @@ class OpenLegRequest(BaseModel):
     strike: float = Field(gt=0)
     entry_price: float = Field(ge=0)
     contracts: int = Field(gt=0, le=100, default=1)
-    order_type: Literal["market", "limit", "stop"] = "market"
+    order_type: Literal["market", "limit", "stop", "stop_limit"] = "market"
     limit_price: float | None = Field(default=None, gt=0)
+    # stop_limit: the OPTION-premium level the order arms at (then rests as a
+    # limit at limit_price). Required for stop_limit; ignored otherwise.
+    stop_price: float | None = Field(default=None, gt=0)
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
 
@@ -624,10 +629,14 @@ def open_zerodte_leg(
         raise HTTPException(503, f"{sym} quote unavailable")
     spot = float(quote.price)
 
-    is_working = payload.order_type in ("limit", "stop")
+    is_working = payload.order_type in ("limit", "stop", "stop_limit")
     if is_working:
         if payload.limit_price is None or payload.limit_price <= 0:
             raise HTTPException(400, "limit_price must be > 0 for a limit/stop order")
+        if payload.order_type == "stop_limit" and (
+            payload.stop_price is None or payload.stop_price <= 0
+        ):
+            raise HTTPException(400, "stop_price must be > 0 for a stop_limit order")
         # Expected fill (placeholder); the monitor overwrites with the real
         # fill premium when the option mark crosses the trigger.
         fill_ref = round(float(payload.limit_price), 4)
@@ -647,7 +656,13 @@ def open_zerodte_leg(
         strategy = "short_call" if side == "call" else "short_put"
         notes = f"0DTE short {side} · indicative credit"
     if is_working:
-        notes = f"0DTE {payload.order_type} {side} · working @ {payload.limit_price}"
+        if payload.order_type == "stop_limit":
+            notes = (
+                f"0DTE stop_limit {side} · arms @ {payload.stop_price} → "
+                f"limit @ {payload.limit_price}"
+            )
+        else:
+            notes = f"0DTE {payload.order_type} {side} · working @ {payload.limit_price}"
 
     leg_json = {
         "side": side,
@@ -669,6 +684,11 @@ def open_zerodte_leg(
         status="working" if is_working else "open",
         order_type=payload.order_type,
         limit_price=float(payload.limit_price) if is_working else None,
+        stop_price=(
+            float(payload.stop_price)
+            if is_working and payload.order_type == "stop_limit"
+            else None
+        ),
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
         is_paper=True,
@@ -709,6 +729,7 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         tier=trade.tier,
         order_type=trade.order_type,  # type: ignore[arg-type]
         limit_price=trade.limit_price,
+        stop_price=trade.stop_price,
         stop_loss=trade.stop_loss,
         take_profit=trade.take_profit,
         close_reason=trade.close_reason,  # type: ignore[arg-type]

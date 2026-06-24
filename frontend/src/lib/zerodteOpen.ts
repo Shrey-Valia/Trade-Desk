@@ -15,10 +15,12 @@ export async function openZeroDteLeg(input: {
   strike: number;
   entry_price: number;
   contracts?: number;
-  /** market (default) fills now; limit/stop place a working order. */
-  order_type?: "market" | "limit" | "stop";
-  /** Option-premium trigger for a limit/stop order. */
+  /** market (default) fills now; limit/stop/stop_limit place a working order. */
+  order_type?: "market" | "limit" | "stop" | "stop_limit";
+  /** Option-premium trigger for a limit/stop order (the resting limit for stop_limit). */
   limit_price?: number | null;
+  /** Option-premium arm level for a stop_limit order. */
+  stop_price?: number | null;
   /** Optional SL/TP brackets (underlying price levels). */
   stop_loss?: number | null;
   take_profit?: number | null;
@@ -39,6 +41,7 @@ export async function openZeroDteLeg(input: {
       contracts: input.contracts ?? 1,
       order_type: input.order_type ?? "market",
       limit_price: input.limit_price ?? null,
+      stop_price: input.stop_price ?? null,
       stop_loss: input.stop_loss ?? null,
       take_profit: input.take_profit ?? null,
     }),

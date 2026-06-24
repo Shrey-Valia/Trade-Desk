@@ -365,8 +365,22 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     if not legs:
         return None
     action = legs[0].get("action", "buy")
-    trigger = float(trade.limit_price) if trade.limit_price is not None else 0.0
     mark = option_mark(trade, spot)
+
+    # STOP-LIMIT — two phases. Phase 1: the order rests until the mark crosses
+    # stop_price (stop semantics). Arming converts it into a plain LIMIT at
+    # limit_price (persisted), so phase 2 (and every later tick) is a normal
+    # limit fill. This deterministically reproduces "trigger at stop, then rest
+    # as a limit": if the limit is already satisfied the same tick, it fills
+    # immediately below; otherwise it waits as a limit.
+    if trade.order_type == "stop_limit":
+        stop_trigger = float(trade.stop_price) if trade.stop_price is not None else 0.0
+        if not _entry_fill_triggered("stop", action, mark, stop_trigger):
+            return None  # not yet armed
+        trade.order_type = "limit"  # armed → now a resting limit at limit_price
+        trade.notes = (trade.notes or "") + " · stop armed → limit"
+
+    trigger = float(trade.limit_price) if trade.limit_price is not None else 0.0
     if not _entry_fill_triggered(trade.order_type, action, mark, trigger):
         return None
 

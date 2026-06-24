@@ -140,6 +140,65 @@ def test_working_order_cancelled_when_combine_failed(auth_client, session_factor
     s.close()
 
 
+# --- stop-limit working orders ----------------------------------------------
+
+
+def test_stop_limit_does_not_arm_below_stop(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(
+        session_factory, c["id"], status="working",
+        order_type="stop_limit", stop_price=1.5, limit_price=1.6,
+    )
+    summary = _run(session_factory, option_mark=lambda t, s: 1.0)  # below stop
+    assert summary["filled"] == 0
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "working"
+    assert t.order_type == "stop_limit"  # still unarmed
+    s.close()
+
+
+def test_stop_limit_arms_then_fills_at_limit(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(
+        session_factory, c["id"], status="working",
+        order_type="stop_limit", stop_price=1.5, limit_price=1.6,
+    )
+    # Mark crosses the stop (≥1.5) AND satisfies the buy-limit (≤1.6) → fills
+    # at the resting limit price in the same tick it arms.
+    summary = _run(session_factory, option_mark=lambda t, s: 1.55)
+    assert summary["filled"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "open"
+    assert t.order_type == "limit"  # armed → converted to a resting limit
+    assert t.legs[0]["entry_price"] == 1.6  # filled AT the limit
+    s.close()
+
+
+def test_stop_limit_arms_then_rests_when_limit_unmet(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(
+        session_factory, c["id"], status="working",
+        order_type="stop_limit", stop_price=1.5, limit_price=1.6,
+    )
+    # Mark blows through both the stop and the limit (1.9 > 1.6): the stop arms
+    # but the buy-limit (mark ≤ 1.6) is NOT met → rests as a limit, no fill.
+    summary = _run(session_factory, option_mark=lambda t, s: 1.9)
+    assert summary["filled"] == 0
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "working"
+    assert t.order_type == "limit"  # armed but resting
+    s.close()
+    # A later tick where the mark pulls back into the limit fills it.
+    summary2 = _run(session_factory, option_mark=lambda t, s: 1.55)
+    assert summary2["filled"] == 1
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    s.close()
+
+
 # --- bracket auto-closes ----------------------------------------------------
 
 

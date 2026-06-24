@@ -21,7 +21,12 @@ export function useOpenZeroDteLeg() {
       if (trade.status === "working") {
         // A resting limit/stop order — not yet a position, so don't make
         // it the active chart position; it shows in the working-orders list.
-        const kind = trade.order_type === "stop" ? "Stop" : "Limit";
+        const kind =
+          trade.order_type === "stop"
+            ? "Stop"
+            : trade.order_type === "stop_limit"
+              ? "Stop-limit"
+              : "Limit";
         toast.success(`${kind} order placed — ${trade.symbol}.`);
       } else {
         setActiveTradeId(trade.id);

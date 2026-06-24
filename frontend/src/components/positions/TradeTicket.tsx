@@ -5,7 +5,11 @@ import { useCombineStatus } from "@/hooks/useCombineStatus";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
-import { useTradeTicket, type TicketSelection } from "@/stores/tradeTicket";
+import {
+  useTradeTicket,
+  type TicketSelection,
+  type TicketOrderType,
+} from "@/stores/tradeTicket";
 
 /**
  * Lower-right TRADE TICKET (184px tall).
@@ -40,6 +44,8 @@ export function TradeTicket() {
   const setOrderType = useTradeTicket((s) => s.setOrderType);
   const limitPrice = useTradeTicket((s) => s.limitPrice);
   const setLimitPrice = useTradeTicket((s) => s.setLimitPrice);
+  const stopPrice = useTradeTicket((s) => s.stopPrice);
+  const setStopPrice = useTradeTicket((s) => s.setStopPrice);
   const clear = useTradeTicket((s) => s.clear);
 
   const legMutation = useOpenZeroDteLeg();
@@ -81,8 +87,11 @@ export function TradeTicket() {
   const isLeg = selection?.kind === "leg";
   const effectiveOrderType = isLeg ? orderType : "market";
   const needsLimit = effectiveOrderType !== "market";
+  const needsStop = effectiveOrderType === "stop_limit";
   const limitOk = !needsLimit || (limitPrice != null && limitPrice > 0);
-  const canFire = hasSelection && marketOpen && !pending && !locked && limitOk;
+  const stopOk = !needsStop || (stopPrice != null && stopPrice > 0);
+  const canFire =
+    hasSelection && marketOpen && !pending && !locked && limitOk && stopOk;
 
   // Synchronous double-click guard. The button's disabled prop tracks
   // mutation.isPending after react renders — but two synchronous clicks
@@ -122,6 +131,7 @@ export function TradeTicket() {
         contracts,
         order_type: effectiveOrderType,
         limit_price: needsLimit ? limitPrice : null,
+        stop_price: needsStop ? stopPrice : null,
       },
       {
         onSuccess: () => clear(),
@@ -161,6 +171,8 @@ export function TradeTicket() {
           setOrderType={setOrderType}
           limitPrice={limitPrice}
           setLimitPrice={setLimitPrice}
+          stopPrice={stopPrice}
+          setStopPrice={setStopPrice}
         />
       )}
       <QuantityRow
@@ -371,69 +383,118 @@ function DllRiskHint({
 }
 
 /**
- * Order-type selector (Market | Limit | Stop) + a limit-price input that
- * appears for limit/stop. The price is the OPTION premium the order fills
- * against — a working order rests until the monitor sees the mark cross it.
+ * Order-type selector (Market | Limit | Stop | Stop-limit) + the option-premium
+ * price input(s) that apply. A working order rests until the monitor sees the
+ * mark cross the trigger:
+ *   - limit / stop → one trigger (limit @ / stop @)
+ *   - stop_limit   → arms @ stopPrice, then rests as a limit @ limitPrice
  */
 function OrderTypeRow({
   orderType,
   setOrderType,
   limitPrice,
   setLimitPrice,
+  stopPrice,
+  setStopPrice,
 }: {
-  orderType: "market" | "limit" | "stop";
-  setOrderType: (t: "market" | "limit" | "stop") => void;
+  orderType: TicketOrderType;
+  setOrderType: (t: TicketOrderType) => void;
   limitPrice: number | null;
   setLimitPrice: (p: number | null) => void;
+  stopPrice: number | null;
+  setStopPrice: (p: number | null) => void;
 }) {
-  const types: Array<"market" | "limit" | "stop"> = ["market", "limit", "stop"];
+  const types: Array<{ key: TicketOrderType; label: string }> = [
+    { key: "market", label: "market" },
+    { key: "limit", label: "limit" },
+    { key: "stop", label: "stop" },
+    { key: "stop_limit", label: "stop lim" },
+  ];
+  const isStopLimit = orderType === "stop_limit";
   return (
-    <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0">
-      <div className="flex" style={{ gap: 4 }}>
-        {types.map((t) => {
-          const active = orderType === t;
-          return (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setOrderType(t)}
-              aria-pressed={active}
-              className={[
-                "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
-                active
-                  ? "bg-tier-3 border border-amber text-amber"
-                  : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
-              ].join(" ")}
-              style={{ height: 24, fontSize: 11 }}
-            >
-              {t}
-            </button>
-          );
-        })}
-      </div>
-      {orderType !== "market" && (
-        <label className="flex items-center gap-1 ml-auto" style={{ fontSize: 12 }}>
-          <span className="uppercase tracking-label-up text-fg-tertiary-2">
-            {orderType === "stop" ? "stop @" : "limit @"}
-          </span>
-          <input
-            type="number"
-            inputMode="decimal"
-            min={0}
-            step={0.01}
-            value={limitPrice ?? ""}
-            onChange={(e) => {
-              const v = parseFloat(e.target.value);
-              setLimitPrice(Number.isFinite(v) ? v : null);
-            }}
-            placeholder="0.00"
-            aria-label="Limit price (option premium)"
-            className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
-            style={{ width: 64, height: 24, fontSize: 12 }}
+    <div className="flex flex-col gap-1 px-3 pb-1 tabular-nums shrink-0">
+      <div className="flex items-center gap-2">
+        <div className="flex" style={{ gap: 4 }}>
+          {types.map((t) => {
+            const active = orderType === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setOrderType(t.key)}
+                aria-pressed={active}
+                className={[
+                  "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+                  active
+                    ? "bg-tier-3 border border-amber text-amber"
+                    : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                ].join(" ")}
+                style={{ height: 24, fontSize: 11 }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+        {orderType !== "market" && !isStopLimit && (
+          <PriceInput
+            label={orderType === "stop" ? "stop @" : "limit @"}
+            value={limitPrice}
+            onChange={setLimitPrice}
+            ariaLabel="Limit price (option premium)"
           />
-        </label>
+        )}
+      </div>
+      {isStopLimit && (
+        <div className="flex items-center gap-2 ml-auto">
+          <PriceInput
+            label="arms @"
+            value={stopPrice}
+            onChange={setStopPrice}
+            ariaLabel="Stop arm price (option premium)"
+          />
+          <PriceInput
+            label="limit @"
+            value={limitPrice}
+            onChange={setLimitPrice}
+            ariaLabel="Resting limit price (option premium)"
+          />
+        </div>
       )}
     </div>
+  );
+}
+
+function PriceInput({
+  label,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (p: number | null) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <label className="flex items-center gap-1" style={{ fontSize: 12 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2">{label}</span>
+      <input
+        type="number"
+        inputMode="decimal"
+        min={0}
+        step={0.01}
+        value={value ?? ""}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value);
+          onChange(Number.isFinite(v) ? v : null);
+        }}
+        placeholder="0.00"
+        aria-label={ariaLabel}
+        className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+        style={{ width: 64, height: 24, fontSize: 12 }}
+      />
+    </label>
   );
 }
 

@@ -17,8 +17,9 @@ import { create } from "zustand";
  */
 export type TicketKind = "leg" | "straddle";
 export type TicketSide = "call" | "put";
-/** Entry order type — market fills now; limit/stop place a working order. */
-export type TicketOrderType = "market" | "limit" | "stop";
+/** Entry order type — market fills now; limit/stop/stop_limit place a
+ *  working order. stop_limit arms at stopPrice, then rests as a limit. */
+export type TicketOrderType = "market" | "limit" | "stop" | "stop_limit";
 
 export interface TicketSelection {
   kind: TicketKind;
@@ -35,14 +36,18 @@ export interface TicketSelection {
 interface TradeTicketState {
   selection: TicketSelection | null;
   contracts: number;
-  /** Entry order type. limit/stop reveal the limitPrice input. */
+  /** Entry order type. limit/stop/stop_limit reveal price inputs. */
   orderType: TicketOrderType;
-  /** Option-premium trigger for a limit/stop order (per-share). */
+  /** Option-premium trigger for a limit/stop order; the resting limit for
+   *  a stop_limit (per-share). */
   limitPrice: number | null;
+  /** Option-premium ARM level for a stop_limit order (per-share). */
+  stopPrice: number | null;
   setSelection: (sel: TicketSelection | null) => void;
   setContracts: (n: number) => void;
   setOrderType: (t: TicketOrderType) => void;
   setLimitPrice: (p: number | null) => void;
+  setStopPrice: (p: number | null) => void;
   clear: () => void;
 }
 
@@ -51,13 +56,20 @@ export const useTradeTicket = create<TradeTicketState>((set) => ({
   contracts: 1,
   orderType: "market",
   limitPrice: null,
-  // Selecting a contract seeds limitPrice to its indicative price so a
-  // limit/stop order starts at a sensible default the user can nudge.
+  stopPrice: null,
+  // Selecting a contract seeds limitPrice + stopPrice to its indicative price
+  // so a limit/stop/stop_limit order starts at a sensible default to nudge.
   setSelection: (selection) =>
-    set({ selection, limitPrice: selection ? selection.price : null }),
+    set({
+      selection,
+      limitPrice: selection ? selection.price : null,
+      stopPrice: selection ? selection.price : null,
+    }),
   setContracts: (n) =>
     set({ contracts: Math.max(1, Math.min(100, Math.floor(n))) }),
   setOrderType: (orderType) => set({ orderType }),
   setLimitPrice: (limitPrice) => set({ limitPrice }),
-  clear: () => set({ selection: null, orderType: "market", limitPrice: null }),
+  setStopPrice: (stopPrice) => set({ stopPrice }),
+  clear: () =>
+    set({ selection: null, orderType: "market", limitPrice: null, stopPrice: null }),
 }));

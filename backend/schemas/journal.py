@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from calculations.strategies import STRATEGY_TYPES
 
 TradeStatus = Literal["working", "open", "closed", "cancelled"]
-OrderType = Literal["market", "limit", "stop"]
+OrderType = Literal["market", "limit", "stop", "stop_limit"]
 CloseReason = Literal["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"]
 LegSide = Literal["call", "put"]
 LegAction = Literal["buy", "sell"]
@@ -145,6 +145,8 @@ class TradeOut(BaseModel):
     # trigger; stop_loss/take_profit = underlying price levels (chart brackets).
     order_type: OrderType = "market"
     limit_price: float | None = None
+    # stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
+    stop_price: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
     close_reason: CloseReason | None = None

@@ -3,7 +3,7 @@ import { z } from "zod";
 export const TradeStatusSchema = z.enum(["working", "open", "closed", "cancelled"]);
 export type TradeStatus = z.infer<typeof TradeStatusSchema>;
 
-export const OrderTypeSchema = z.enum(["market", "limit", "stop"]);
+export const OrderTypeSchema = z.enum(["market", "limit", "stop", "stop_limit"]);
 export type OrderType = z.infer<typeof OrderTypeSchema>;
 
 export const TradeLegSchema = z.object({
@@ -35,6 +35,8 @@ export const TradeOutSchema = z.object({
   // Limit/stop orders + SL/TP brackets.
   order_type: OrderTypeSchema.default("market"),
   limit_price: z.number().nullable().optional(),
+  // stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
+  stop_price: z.number().nullable().optional(),
   stop_loss: z.number().nullable().optional(),
   take_profit: z.number().nullable().optional(),
   close_reason: z
