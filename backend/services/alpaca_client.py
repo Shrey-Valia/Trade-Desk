@@ -26,7 +26,26 @@ from alpaca.trading.client import TradingClient
 from calculations.types import ContractRow
 from config import settings
 from services.cache import cache
-from services.resilience import resilient_call
+from services.resilience import CircuitOpenError, resilient_call
+
+
+class MarketDataUnavailable(RuntimeError):
+    """The upstream market-data feed is degraded — the circuit breaker is
+    open or the call was rate-limited — as opposed to a genuine "no data
+    for this symbol/timeframe" (which is an empty result, not an error).
+
+    Chart endpoints map this to a typed 503 (+ Retry-After) so the
+    frontend can render an explicit "data unavailable — retrying" state
+    with auto-retry instead of a 404 or an infinite spinner."""
+
+
+def _is_degraded(exc: Exception) -> bool:
+    """True when `exc` means the feed is throttled/circuit-open (a transient,
+    retryable degradation) rather than a malformed/empty response."""
+    if isinstance(exc, CircuitOpenError):
+        return True
+    s = str(exc).lower()
+    return "too many requests" in s or "429" in s or "rate limit" in s
 
 # All Alpaca SDK calls share ONE breaker: rate limits are account-wide, so a
 # 429 on the option feed means the stock feed is throttled too. One open
@@ -542,6 +561,13 @@ def get_bars(symbol: str, timeframe: str) -> list | None:
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("get_bars failed for %s @ %s: %s", symbol, timeframe, exc)
+        # A circuit-open / rate-limit failure is a TRANSIENT degradation,
+        # not "this symbol has no bars". Surface it as a typed error so the
+        # chart endpoint returns a 503 (retryable) rather than a 404 or a
+        # negative-cached empty that would stick for the whole TTL and leave
+        # the frontend stuck. Genuine empty results below still 404.
+        if _is_degraded(exc):
+            raise MarketDataUnavailable(f"{symbol} bars degraded: {exc}") from exc
         cache.set(cache_key, _NEGATIVE, ttl_seconds=ttl)
         return None
 

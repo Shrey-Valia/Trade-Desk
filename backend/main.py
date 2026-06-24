@@ -16,6 +16,7 @@ from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
 from jobs.monitor_orders import monitor_orders
 from jobs.settle_combines import settle_combines
+from routers.ticker import MarketDataDegraded
 from routers import account as account_router
 from routers import analytics as analytics_router
 from routers import auth as auth_router
@@ -159,6 +160,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Options Dashboard", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(MarketDataDegraded)
+async def _market_data_degraded_handler(_request, exc: MarketDataDegraded):
+    """Render the typed degraded body the frontend keys on. Without this,
+    FastAPI's default HTTPException handler would emit a bare
+    `{"detail": ...}` — the richer `{"error": "market_data_unavailable"}`
+    shape lets api.ts detect the degraded state distinctly from a 404/500."""
+    return exc.to_response()
 
 app.add_middleware(
     CORSMiddleware,

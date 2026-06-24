@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,6 +39,7 @@ from schemas.ticker import (
     WallLevel,
 )
 from services.alpaca_client import (
+    MarketDataUnavailable,
     get_bars,
     get_chain_snapshot,
     get_quotes,
@@ -45,9 +47,42 @@ from services.alpaca_client import (
 )
 from services.cache import cache
 from services.finnhub_client import next_earnings_for
+from services.resilience import breaker_retry_after
 
 router = APIRouter(prefix="/api/ticker", tags=["ticker"])
 log = logging.getLogger(__name__)
+
+# Alpaca breaker name (kept in sync with services.alpaca_client._ALPACA).
+# Drives the Retry-After header on the degraded chart response.
+_ALPACA_BREAKER = "alpaca"
+
+
+class MarketDataDegraded(HTTPException):
+    """HTTP 503 raised when the market-data feed is degraded (circuit
+    breaker open / rate-limited). Carries a `Retry-After` header and a
+    JSON body the frontend keys on (`{"error": "market_data_unavailable",
+    ...}`) to render an explicit "data unavailable — retrying" state with
+    auto-retry instead of an infinite spinner or a bare 500."""
+
+    def __init__(self) -> None:
+        retry_after = breaker_retry_after(_ALPACA_BREAKER)
+        super().__init__(
+            status_code=503,
+            detail="market data temporarily unavailable — retrying",
+            headers={"Retry-After": str(retry_after)},
+        )
+        self.retry_after = retry_after
+
+    def to_response(self) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": str(self.retry_after)},
+            content={
+                "error": "market_data_unavailable",
+                "detail": self.detail,
+                "retry_after": self.retry_after,
+            },
+        )
 
 _ET = ZoneInfo("America/New_York")
 _TRADING_YEAR = 252
@@ -118,8 +153,17 @@ def get_ticker_detail(symbol: str) -> TickerDetailOut:
 
 def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
     """Bars-only fetch. Separated so the bars path doesn't block on the
-    options-chain fetch that drives annotations — see split below."""
-    bars = get_bars(symbol, timeframe) or []
+    options-chain fetch that drives annotations — see split below.
+
+    Raises MarketDataDegraded (503) when the upstream feed is circuit-open
+    / rate-limited — distinct from a genuine "no bars" (404) so the
+    frontend can show a retrying state instead of treating it as terminal.
+    """
+    try:
+        bars = get_bars(symbol, timeframe) or []
+    except MarketDataUnavailable:
+        log.info("bars degraded for %s @ %s (circuit open / rate-limited)", symbol, timeframe)
+        raise MarketDataDegraded() from None
     if not bars:
         raise HTTPException(status_code=404, detail=f"no bars for {symbol} @ {timeframe}")
     return [

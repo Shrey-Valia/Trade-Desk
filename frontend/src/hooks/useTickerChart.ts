@@ -1,7 +1,29 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchTickerBars, fetchTickerChart } from "@/lib/api";
+import { MarketDataUnavailableError, fetchTickerBars, fetchTickerChart } from "@/lib/api";
 import type { ChartTimeframe } from "@/types/chart";
+
+// ── WS3: auto-retry the market-data-degraded (503) state ─────────────────────
+// When the feed is circuit-open the backend returns a typed 503. Keep
+// retrying indefinitely so the chart recovers on its own once the breaker
+// closes, but back off using the server's suggested Retry-After (clamped)
+// so we don't hammer an already-throttled key. Non-degraded errors fall
+// back to a small fixed retry count.
+const MAX_RETRY_DELAY_MS = 30_000;
+
+function chartRetry(failureCount: number, error: unknown): boolean {
+  if (error instanceof MarketDataUnavailableError) return true;
+  return failureCount < 2;
+}
+
+function chartRetryDelay(attempt: number, error: unknown): number {
+  if (error instanceof MarketDataUnavailableError) {
+    const suggested = (error.retryAfter || 5) * 1000;
+    return Math.min(suggested, MAX_RETRY_DELAY_MS);
+  }
+  return Math.min(1000 * 2 ** attempt, MAX_RETRY_DELAY_MS);
+}
+// ── end WS3 ──────────────────────────────────────────────────────────────────
 
 /**
  * Fast-path bars query — only fetches candles, no options-chain dependency.
@@ -24,6 +46,9 @@ export function useTickerChart(symbol: string | null, timeframe: ChartTimeframe)
     staleTime: 60_000,
     refetchInterval: 60_000,
     placeholderData: (prev) => prev,
+    // WS3: keep retrying the degraded (503) state until the breaker closes.
+    retry: chartRetry,
+    retryDelay: chartRetryDelay,
   });
 }
 

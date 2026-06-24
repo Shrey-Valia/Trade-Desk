@@ -19,6 +19,7 @@ import {
 import { useTickerAnnotations, useTickerChart } from "@/hooks/useTickerChart";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
+import { MarketDataUnavailableError } from "@/lib/api"; // WS3: degraded-state detection
 import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useUserSettings } from "@/stores/userSettings";
@@ -113,6 +114,21 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
   const data = bars.data;
   const annotationData = annotations.data?.annotations;
 
+  // ── WS3: detect the market-data-degraded (503) state ──────────────────────
+  // `failureReason` carries the latest error while react-query is still
+  // auto-retrying (isError stays false during the retry loop); `error` carries
+  // it once retries stop. Either being a MarketDataUnavailableError means the
+  // upstream feed is degraded and we should show the retrying panel.
+  const degradedErr =
+    bars.failureReason instanceof MarketDataUnavailableError
+      ? bars.failureReason
+      : bars.error instanceof MarketDataUnavailableError
+        ? bars.error
+        : null;
+  const isMarketDataDegraded = degradedErr != null;
+  const degradedRetryAfter = degradedErr?.retryAfter ?? 30;
+  // ── end WS3 ────────────────────────────────────────────────────────────────
+
   return (
     <div className="px-3 py-1.5 border-b border-hairline flex-1 min-h-0 flex flex-col">
       {!hideHeader && (
@@ -144,12 +160,31 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
       )}
 
       <div className="flex-1 min-h-0 relative">
-        {bars.isLoading && !data && <ChartSkeleton symbol={symbol} />}
-        {bars.isError && (
-          <div className="text-tiny text-bearish px-2 py-2">
-            {(bars.error as Error)?.message ?? "Failed to load chart"}
-          </div>
+        {/* ── WS3: market-data graceful-degrade states ──────────────────────
+            A typed 503 (circuit open / feed rate-limited) surfaces as a
+            MarketDataUnavailableError. While react-query keeps auto-retrying
+            it, `failureReason` holds the error even though `isError` stays
+            false — so we detect it there and show an explicit "retrying"
+            panel instead of an infinite spinner. When retries are finally
+            exhausted on a NON-degraded error, the plain error line below
+            renders as before. Keep edits scoped to THIS block for WS1 merge. */}
+        {isMarketDataDegraded && !data ? (
+          <MarketDataUnavailable
+            symbol={symbol}
+            retryAfter={degradedRetryAfter}
+            onRetry={() => bars.refetch()}
+          />
+        ) : (
+          <>
+            {bars.isLoading && !data && <ChartSkeleton symbol={symbol} />}
+            {bars.isError && !isMarketDataDegraded && (
+              <div className="text-tiny text-bearish px-2 py-2">
+                {(bars.error as Error)?.message ?? "Failed to load chart"}
+              </div>
+            )}
+          </>
         )}
+        {/* ── end WS3 ──────────────────────────────────────────────────────── */}
         {data && data.bars.length === 0 && !bars.isLoading && !bars.isError && (
           <div className="h-full flex items-center justify-center text-tiny text-fg-tertiary px-4 text-center">
             No {timeframe} bars for {symbol} right now — try another timeframe.
@@ -674,6 +709,51 @@ function alphaHex(hex: string, opacity: number): string {
     .padStart(2, "0");
   return `#${m[1]}${aa}`;
 }
+
+// ── WS3: degraded market-data panel ─────────────────────────────────────────
+// Shown when the chart's bars request hits the typed 503 (circuit open /
+// feed rate-limited). Distinct from the loading skeleton: it tells the user
+// the feed is the issue and that we're auto-retrying, with a manual retry
+// escape hatch. The query keeps retrying on its own (see useTickerChart).
+function MarketDataUnavailable({
+  symbol,
+  retryAfter,
+  onRetry,
+}: {
+  symbol: string;
+  retryAfter: number;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className="h-full w-full bg-tier-1 border border-hairline flex items-center justify-center"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex flex-col items-center gap-2 text-fg-secondary px-4 text-center">
+        <span
+          className="text-tiny uppercase tracking-label-up text-amber"
+          style={{ fontSize: 11, letterSpacing: "0.08em" }}
+        >
+          Market data unavailable
+        </span>
+        <span className="text-tiny text-fg-tertiary" style={{ fontSize: 11 }}>
+          The {symbol} feed is rate-limited — retrying automatically
+          {retryAfter > 0 ? ` (~${Math.round(retryAfter)}s)` : ""}…
+        </span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber transition-colors duration-100 border border-hairline px-2 py-0.5"
+          style={{ fontSize: 9, borderRadius: 0 }}
+        >
+          retry now
+        </button>
+      </div>
+    </div>
+  );
+}
+// ── end WS3 ──────────────────────────────────────────────────────────────────
 
 function ChartSkeleton({ symbol }: { symbol: string }) {
   return (

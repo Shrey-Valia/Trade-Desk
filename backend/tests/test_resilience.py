@@ -7,6 +7,8 @@ import pytest
 from services.resilience import (
     CircuitBreaker,
     CircuitOpenError,
+    breaker_retry_after,
+    get_breaker,
     reset_breakers,
     resilient_call,
 )
@@ -143,3 +145,56 @@ def test_succeeds_after_one_transient_retry():
     )
     assert out == "ok"
     assert calls["n"] == 2
+
+
+# -- retry-after / degraded response -----------------------------------------
+
+
+def test_retry_after_reflects_remaining_cooldown():
+    clk = FakeClock()
+    b = CircuitBreaker("ra", fail_threshold=1, cooldown=30.0, clock=clk)
+    assert b.retry_after() == 0.0  # closed → may call now
+    b.record_failure()             # opens at t=0
+    assert b.retry_after() == 30.0
+    clk.advance(20.0)
+    assert b.retry_after() == 10.0
+    clk.advance(15.0)              # past cooldown → half-open
+    assert b.retry_after() == 0.0
+
+
+def test_breaker_retry_after_helper_rounds_up_and_defaults():
+    # Unknown breaker → the supplied default (whole seconds).
+    assert breaker_retry_after("does-not-exist", default=42) == 42
+
+    clk = FakeClock()
+    b = get_breaker("known", fail_threshold=1, cooldown=30.0, clock=clk)
+    b.record_failure()  # opens
+    clk.advance(0.4)
+    # 29.6s remaining → rounds UP to 30, and is never 0 (would re-trip).
+    assert breaker_retry_after("known") == 30
+
+
+def test_chart_endpoint_returns_typed_503_when_circuit_open(api_client, monkeypatch):
+    """A circuit-open / degraded feed yields a typed 503 (Retry-After +
+    {"error": "market_data_unavailable"} body) — NOT a bare 500 or a 404
+    — so the frontend can render a retrying state instead of a spinner."""
+    from services.alpaca_client import MarketDataUnavailable
+    import routers.ticker as ticker
+
+    def _degraded(symbol, timeframe):
+        raise MarketDataUnavailable(f"{symbol} circuit open")
+
+    monkeypatch.setattr(ticker, "get_bars", _degraded)
+
+    res = api_client.get("/api/ticker/SPY/bars?timeframe=5m")
+    assert res.status_code == 503
+    assert "Retry-After" in res.headers
+    assert int(res.headers["Retry-After"]) >= 1
+    body = res.json()
+    assert body["error"] == "market_data_unavailable"
+    assert "retry_after" in body
+
+    # The full /chart endpoint degrades the same way (bars are its first leg).
+    res2 = api_client.get("/api/ticker/SPY/chart?timeframe=5m")
+    assert res2.status_code == 503
+    assert res2.json()["error"] == "market_data_unavailable"

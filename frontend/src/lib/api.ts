@@ -70,6 +70,22 @@ import {
 
 const API_BASE = "";
 
+// ── WS3: market-data graceful-degrade ───────────────────────────────────────
+// Typed error for the backend's 503 "market data unavailable" degraded
+// response (circuit breaker open / Alpaca rate-limited). The chart UI keys
+// on `instanceof MarketDataUnavailableError` to render an explicit
+// "retrying" state with auto-retry instead of an infinite spinner.
+export class MarketDataUnavailableError extends Error {
+  /** Seconds the backend suggests waiting before retrying (Retry-After). */
+  readonly retryAfter: number;
+  constructor(message: string, retryAfter: number) {
+    super(message);
+    this.name = "MarketDataUnavailableError";
+    this.retryAfter = retryAfter;
+  }
+}
+// ── end WS3 ─────────────────────────────────────────────────────────────────
+
 async function request<S extends z.ZodTypeAny>(
   path: string,
   schema: S,
@@ -83,12 +99,32 @@ async function request<S extends z.ZodTypeAny>(
     // this text — e.g. ChainTable looks for "No 0DTE for" to render the
     // strict-0DTE empty state instead of a generic error.
     let detail = `${res.status} ${res.statusText}`;
+    let body: unknown = null;
     try {
-      const body = await res.json();
-      if (body?.detail) detail = String(body.detail);
+      body = await res.json();
+      const d = (body as { detail?: unknown })?.detail;
+      if (d) detail = String(d);
     } catch {
       /* non-JSON body */
     }
+    // ── WS3: detect the typed market-data-degraded 503 ──────────────────────
+    // Body shape: {"error": "market_data_unavailable", retry_after, detail}.
+    // Throw the typed error so the chart can show a retrying state distinct
+    // from a 404 ("no bars") or a generic failure.
+    if (
+      res.status === 503 &&
+      (body as { error?: unknown })?.error === "market_data_unavailable"
+    ) {
+      const ra = Number((body as { retry_after?: unknown })?.retry_after);
+      const headerRa = Number(res.headers.get("Retry-After"));
+      const retryAfter = Number.isFinite(ra)
+        ? ra
+        : Number.isFinite(headerRa)
+          ? headerRa
+          : 30;
+      throw new MarketDataUnavailableError(detail, retryAfter);
+    }
+    // ── end WS3 ─────────────────────────────────────────────────────────────
     throw new Error(detail);
   }
   const json = await res.json();
