@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -30,9 +30,15 @@ import {
   type ChartTimeframe,
 } from "@/types/chart";
 
-import { ChartDrawingLayer } from "./ChartDrawingLayer";
 import { PositionBracketsLayer, type BracketOverlay } from "./PositionBracketsLayer";
 import { ChartLegend } from "./ChartLegend";
+
+// The drawing-tools engine (~44 KB gzip) is code-split so it loads only with
+// the chart, not on every page. Rendered behind Suspense with a null fallback —
+// the chart paints immediately and the toolbar appears a beat later.
+const ChartDrawingLayer = lazy(() =>
+  import("./ChartDrawingLayer").then((m) => ({ default: m.ChartDrawingLayer })),
+);
 
 const TIMEFRAMES: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
 
@@ -58,6 +64,9 @@ export interface PositionOverlay {
    *  When present, gets appended to each BE line's title so the right-
    *  axis pill becomes "BE +$42.18" — the line IS the live P&L readout. */
   uplLabel?: string;
+  /** Sign of the position's unrealized P&L — colors the breakeven line
+   *  green when ≥ 0, red when < 0. Defaults to green when omitted. */
+  uplPositive?: boolean;
 }
 
 interface Props {
@@ -67,10 +76,11 @@ interface Props {
     onChange: (tf: ChartTimeframe) => void;
   };
   hideHeader?: boolean;
-  /** Trade Desk Phase 2 — overlay the selected position's entry marker
-   *  and theta-adjusted breakeven lines on the chart. */
-  position?: PositionOverlay | null;
-  /** Draggable SL/TP brackets for the active OPEN position (null = none). */
+  /** All open positions on the charted symbol — each renders an entry
+   *  marker + theta-adjusted breakeven lines (BE colored by its own P&L
+   *  sign). The header/store track which one is "selected" for brackets. */
+  positions?: PositionOverlay[];
+  /** Draggable SL/TP brackets for the SELECTED open position (null = none). */
   brackets?: BracketOverlay | null;
 }
 
@@ -86,7 +96,7 @@ interface Props {
  * 1D timeframe renders as a line (intraday price path reads cleaner
  * than 1-min candles); multi-day timeframes render as candles.
  */
-export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, position, brackets }: Props) {
+export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positions, brackets }: Props) {
   const [internalTimeframe, setInternalTimeframe] = useState<ChartTimeframe>(
     DEFAULT_CHART_TIMEFRAME,
   );
@@ -162,12 +172,12 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
               bars={data.bars}
               annotations={annotationData ?? EMPTY_ANNOTATIONS}
               timeframe={timeframe}
-              position={position ?? null}
+              positions={positions ?? EMPTY_POSITIONS}
               brackets={brackets ?? null}
               quotePrice={quotePrice}
               marketOpen={marketOpen}
             />
-            <ChartLegend hasActivePosition={position != null} />
+            <ChartLegend hasActivePosition={(positions?.length ?? 0) > 0} />
           </>
         )}
       </div>
@@ -194,12 +204,15 @@ const EMPTY_ANNOTATIONS: ChartAnnotations = {
   earnings_date: null,
 };
 
+// Stable empty array so a no-position render doesn't churn the overlay effect.
+const EMPTY_POSITIONS: PositionOverlay[] = [];
+
 interface ChartProps {
   symbol: string;
   bars: BarPoint[];
   annotations: ChartAnnotations;
   timeframe: ChartTimeframe;
-  position: PositionOverlay | null;
+  positions: PositionOverlay[];
   brackets: BracketOverlay | null;
   /** Latest (delayed) quote from the shared header price query. */
   quotePrice?: number | null;
@@ -212,7 +225,7 @@ function LightweightChart({
   bars,
   annotations,
   timeframe,
-  position,
+  positions,
   brackets,
   quotePrice = null,
   marketOpen = false,
@@ -248,14 +261,14 @@ function LightweightChart({
   // render. The refs avoid putting position/bars in the bars-effect
   // deps, which would otherwise tear down the candle series on every
   // scrubber tick.
-  const positionRef = useRef<PositionOverlay | null>(position);
-  positionRef.current = position;
+  const positionsRef = useRef<PositionOverlay[]>(positions);
+  positionsRef.current = positions;
   const barsRef = useRef<BarPoint[]>(bars);
   barsRef.current = bars;
 
   function attachPositionOverlay(
     series: ISeriesApi<"Candlestick">,
-    p: PositionOverlay | null,
+    list: PositionOverlay[],
     barsList: BarPoint[],
   ): void {
     // Tear down any prior overlay attached to this series. After a
@@ -273,48 +286,56 @@ function LightweightChart({
     if (markersRef.current) {
       markersRef.current.setMarkers([]);
     }
-    if (!p) return;
+    if (!list.length) return;
 
-    // Entry marker — clamped to the chart's visible time range so a
-    // weeks-old entry that falls outside a 5D view still shows at the
-    // left edge instead of vanishing off-screen.
-    const entryT = toTime(p.entryDate);
-    const firstBarT = barsList.length > 0 ? toTime(barsList[0].t) : entryT;
+    // Visible range for clamping old entry markers to the left edge.
+    const firstBarT = barsList.length > 0 ? (toTime(barsList[0].t) as number) : null;
     const lastBarT =
-      barsList.length > 0 ? toTime(barsList[barsList.length - 1].t) : entryT;
-    const clampedT = (Math.min(
-      Math.max(entryT as number, firstBarT as number),
-      lastBarT as number,
-    ) as unknown) as UTCTimestamp;
+      barsList.length > 0 ? (toTime(barsList[barsList.length - 1].t) as number) : null;
 
-    const markers: SeriesMarker<Time>[] = [
-      {
+    const markers: SeriesMarker<Time>[] = [];
+    for (const p of list) {
+      // Entry marker (magenta = "my position") — clamped into the visible
+      // range so a weeks-old entry still shows at the left edge.
+      const entryT = toTime(p.entryDate) as number;
+      const clampedT = (
+        firstBarT != null && lastBarT != null
+          ? Math.min(Math.max(entryT, firstBarT), lastBarT)
+          : entryT
+      ) as unknown as UTCTimestamp;
+      markers.push({
         time: clampedT,
         position: "belowBar",
         color: POSITION_COLOR,
         shape: "arrowUp",
         text: `ENTRY · ${p.strategyLabel}`,
         size: 1,
-      },
-    ];
+      });
+
+      // Breakeven lines — colored by THIS position's P&L sign so the line
+      // itself reads green (in profit) / red (in loss).
+      const beColor = p.uplPositive === false ? userBearish : userBullish;
+      const beTitle = p.uplLabel ? `BE ${p.uplLabel}` : "BE";
+      for (const be of p.breakevensToday) {
+        positionLinesRef.current.push(
+          series.createPriceLine({
+            price: be,
+            color: beColor,
+            lineStyle: LineStyle.Solid,
+            lineWidth: 2,
+            axisLabelVisible: true,
+            title: beTitle,
+          }),
+        );
+      }
+    }
+
+    // The markers plugin requires ascending time order across all positions.
+    markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (markersRef.current == null) {
       markersRef.current = createSeriesMarkers(series, markers);
     } else {
       markersRef.current.setMarkers(markers);
-    }
-
-    const beTitle = p.uplLabel ? `BE ${p.uplLabel}` : "BE";
-    for (const be of p.breakevensToday) {
-      positionLinesRef.current.push(
-        series.createPriceLine({
-          price: be,
-          color: POSITION_COLOR,
-          lineStyle: LineStyle.Solid,
-          lineWidth: 2,
-          axisLabelVisible: true,
-          title: beTitle,
-        }),
-      );
     }
   }
 
@@ -486,7 +507,10 @@ function LightweightChart({
     // would tear down the candle series on every move. Without this
     // call the BE disappears on every timeframe click — see
     // VERIFY_BE_REPORT.md's condition 5.
-    attachPositionOverlay(candles, positionRef.current, barsRef.current);
+    attachPositionOverlay(candles, positionsRef.current, barsRef.current);
+    // attachPositionOverlay is an in-component helper closing over the candle
+    // colors (already in deps); the overlay is re-attached from refs here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bars, annotations, timeframe, userBullish, userBearish]);
 
   // Market-structure annotation overlay — toggle-aware.
@@ -514,9 +538,9 @@ function LightweightChart({
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
-    attachPositionOverlay(series, position, barsRef.current);
+    attachPositionOverlay(series, positions, barsRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [position]);
+  }, [positions]);
 
   // Synthetic in-progress candle — REUSES the 5s header quote so the
   // last candle ticks between bar boundaries. Declared AFTER the bars
@@ -592,7 +616,9 @@ function LightweightChart({
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
-      <ChartDrawingLayer chartRef={chartRef} seriesRef={seriesRef} symbol={symbol} />
+      <Suspense fallback={null}>
+        <ChartDrawingLayer chartRef={chartRef} seriesRef={seriesRef} symbol={symbol} />
+      </Suspense>
       {brackets && (
         <PositionBracketsLayer chartRef={chartRef} seriesRef={seriesRef} brackets={brackets} />
       )}

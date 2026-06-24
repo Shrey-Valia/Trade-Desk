@@ -206,20 +206,18 @@ function MetricPills() {
       ),
     [positionAnalytics],
   );
-  const todayRpl = useMemo(() => {
-    if (!tradesData?.trades) return 0;
-    const todayIso = new Date().toISOString().slice(0, 10);
-    return tradesData.trades.reduce((sum, t) => {
-      if (!t.is_paper) return sum;
-      if (t.tier && t.tier !== activeTier) return sum;
-      if (t.status !== "closed") return sum;
-      if (!t.exit_date) return sum;
-      if (!t.exit_date.startsWith(todayIso)) return sum;
-      return sum + (t.realized_pnl ?? 0);
-    }, 0);
-  }, [tradesData, activeTier]);
-
+  // Daily RPL comes straight from the backend (signed realized within the
+  // current 5pm-PT trading day) so it matches the DLL / settlement window —
+  // not a calendar-day client sum.
+  const rpl = account?.today_realized ?? 0;
+  const eod = account?.eod_balance ?? 0;
+  // BAL is the live balance. Kept as balance + URPL (robust: the backend
+  // balance is always present), which equals EOD + RPL + URPL by construction
+  // (balance == eod_balance + today_realized). The tooltip shows that split.
   const bal = (account?.balance ?? 0) + upl;
+  const balTitle = `Balance = EOD ${formatDollar(eod)} + RPL ${formatSigned(
+    rpl,
+  )} + URPL ${formatSigned(upl)}`;
   const trailing =
     account?.tiers.find((t) => t.key === activeTier)?.trailing_distance ?? 1;
   // Combine engine verdict — floors tested CONTINUOUSLY against live net
@@ -232,25 +230,6 @@ function MetricPills() {
     combine.status === "failed"
       ? "text-bearish font-medium"
       : mllToneClass(combine.balanceLive, combine.mllFloor, trailing);
-  // Profit-target pole — how close to PASSING.
-  const tgtTone = combine.passed
-    ? "text-bullish font-medium"
-    : combine.passBlockedReason
-      ? "text-warning"
-      : combine.targetProximity >= 1
-        ? "text-bullish"
-        : combine.targetProximity >= 0.5
-          ? "text-fg-primary"
-          : "text-fg-secondary";
-  const passBadge = combine.passed
-    ? "PASSED"
-    : combine.targetMet && !combine.minDaysMet
-      ? "MIN DAYS"
-      : combine.targetMet && !combine.consistencyOk
-        ? "CONSIST"
-        : combine.targetMet
-          ? "TARGET"
-          : null;
 
   // DLL budget — the backend resolves the active combine's budget (the
   // user's per-tier Settings override clamped to the band, else the tier
@@ -266,7 +245,7 @@ function MetricPills() {
 
   return (
     <>
-      <MetricPill label="BAL" value={formatDollar(bal)} />
+      <MetricPill label="BAL" value={formatDollar(bal)} title={balTitle} />
       <MetricPill
         label="MLL"
         value={formatDollar(mll)}
@@ -298,42 +277,23 @@ function MetricPills() {
           </span>
         ) : null}
       </MetricPill>
+      {/* Daily P&L in place of the old TGT tile: realized (today, 5pm-PT
+          window) + live unrealized across all open positions. BAL = EOD +
+          RPL + URPL, so these two plus the EOD baseline reconcile to BAL. */}
       <MetricPill
-        label="TGT"
-        value={formatDollar(combine.realizedProfit)}
-        valueClass={tgtTone}
+        label="RP&L"
+        value={formatSigned(rpl)}
+        signed={rpl}
         className="hidden min-[1280px]:flex"
-        title={`Profit target ${formatDollar(combine.profitTarget)} (6%). Realized ${formatDollar(
-          combine.realizedProfit,
-        )}${combine.targetMet ? " — target MET" : ""}. Min ${combine.minTradingDays} trading days (traded ${combine.daysTraded}). Consistency: largest day ${Math.round(
-          combine.largestDayPct,
-        )}% of profit${combine.consistencyOk ? " (ok)" : " — exceeds 50%"}.${
-          combine.passBlockedReason ? " " + combine.passBlockedReason : ""
-        }`}
-      >
-        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 11 }}>
-          / ${Math.round(combine.profitTarget / 1000)}K · D{combine.daysTraded}/
-          {combine.minTradingDays}
-        </span>
-        {passBadge && (
-          <span
-            className={`ml-1 inline-flex items-center px-1 border uppercase tracking-label-up rounded-btn ${
-              combine.passed
-                ? "border-bullish text-bullish"
-                : passBadge === "TARGET"
-                  ? "border-bullish text-bullish"
-                  : "border-warning text-warning"
-            }`}
-            style={{ fontSize: 11, height: 14 }}
-            title={
-              combine.passBlockedReason ??
-              (combine.passed ? "Combine PASSED." : "Profit target reached.")
-            }
-          >
-            {passBadge}
-          </span>
-        )}
-      </MetricPill>
+        title="Realized P&L today — closed trades in the current 5pm-PT trading day."
+      />
+      <MetricPill
+        label="UP&L"
+        value={formatSigned(upl)}
+        signed={upl}
+        className="hidden min-[1280px]:flex"
+        title="Unrealized P&L — live, summed across all open positions on this tier."
+      />
       <MetricPill
         label="DLL"
         value={formatDllUsage(dllUsed, dllBudget)}
@@ -354,22 +314,6 @@ function MetricPills() {
           </span>
         )}
       </MetricPill>
-      {/* Progressive disclosure so the header never clips: BAL/MLL/DLL/MKT
-          are always shown; TGT joins at ≥1280px; RP&L/UP&L (fully derivable
-          from the bottom strip's TODAY column + the position panel) only
-          appear at ≥1560px, where there's real room for all seven. */}
-      <MetricPill
-        label="RP&L"
-        value={formatSigned(todayRpl)}
-        signed={todayRpl}
-        className="hidden min-[1560px]:flex"
-      />
-      <MetricPill
-        label="UP&L"
-        value={formatSigned(upl)}
-        signed={upl}
-        className="hidden min-[1560px]:flex"
-      />
       <MarketPill />
     </>
   );

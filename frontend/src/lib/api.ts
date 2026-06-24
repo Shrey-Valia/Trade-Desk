@@ -89,7 +89,13 @@ async function request<S extends z.ZodTypeAny>(
     } catch {
       /* non-JSON body */
     }
-    throw new Error(detail);
+    // Carry the HTTP status on the error so the query layer can branch on it
+    // (e.g. never retry a 4xx — the 0DTE 409, off-hours 404s, auth 401s are
+    // terminal answers). Message is unchanged, so existing `.message` readers
+    // (RightChain's "No 0DTE for" check, toast handlers) keep working.
+    const err = new Error(detail) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   const json = await res.json();
   return schema.parse(json);

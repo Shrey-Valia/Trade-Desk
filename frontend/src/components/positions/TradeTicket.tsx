@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import { useAccountState } from "@/hooks/useAccountState";
+import { useTrades } from "@/hooks/useTrades";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
@@ -51,10 +52,31 @@ export function TradeTicket() {
   // equity (server-enforced too). Default high until account state loads so
   // the UI never wrongly blocks; clamp the selection down if it exceeds.
   const { data: accountState } = useAccountState();
+  const { data: tradesData } = useTrades();
   const maxContracts = accountState?.max_contracts ?? 99;
+  const activeTier = accountState?.active_tier ?? "50K";
+  // Contracts already open/working on this tier. The scaling cap limits TOTAL
+  // simultaneous size, so the ticket's remaining capacity is the scaling max
+  // minus what's already on — otherwise multiple max-size orders stack past
+  // the cap (the server now rejects that aggregate too).
+  const openContracts = useMemo(() => {
+    const ts = tradesData?.trades ?? [];
+    return ts
+      .filter(
+        (t) =>
+          (t.status === "open" || t.status === "working") &&
+          (t.tier ?? "50K") === activeTier,
+      )
+      .reduce(
+        (sum, t) =>
+          sum + (t.legs.length ? Math.max(...t.legs.map((l) => l.contracts ?? 1)) : 1),
+        0,
+      );
+  }, [tradesData, activeTier]);
+  const remaining = Math.max(0, maxContracts - openContracts);
   useEffect(() => {
-    if (contracts > maxContracts) setContracts(maxContracts);
-  }, [contracts, maxContracts, setContracts]);
+    if (contracts > remaining) setContracts(Math.max(1, remaining));
+  }, [contracts, remaining, setContracts]);
 
   // Combine engine soft-gate: a DAY LOCK (DLL hit today) or a FAILED
   // account blocks further opens — UX only; the backend open path is not
@@ -82,7 +104,12 @@ export function TradeTicket() {
   const effectiveOrderType = isLeg ? orderType : "market";
   const needsLimit = effectiveOrderType !== "market";
   const limitOk = !needsLimit || (limitPrice != null && limitPrice > 0);
-  const canFire = hasSelection && marketOpen && !pending && !locked && limitOk;
+  // At the scaling cap: no remaining capacity, or the chosen size would push
+  // total open past the cap. Blocks the BUY (server enforces this too).
+  const atCap = remaining <= 0 || contracts > remaining;
+  const atCapReason = `Scaling plan: ${openContracts}/${maxContracts} contracts open — close a position to scale up.`;
+  const canFire =
+    hasSelection && marketOpen && !pending && !locked && limitOk && !atCap;
 
   // Synchronous double-click guard. The button's disabled prop tracks
   // mutation.isPending after react renders — but two synchronous clicks
@@ -154,6 +181,7 @@ export function TradeTicket() {
       <Header />
       {passed && <PassedBanner />}
       {locked && <LockBanner reason={lockReason} />}
+      {!locked && atCap && <LockBanner reason={atCapReason} />}
       <Summary selection={selection} contracts={contracts} />
       {isLeg && (
         <OrderTypeRow
@@ -166,7 +194,9 @@ export function TradeTicket() {
       <QuantityRow
         contracts={contracts}
         setContracts={setContracts}
-        maxContracts={maxContracts}
+        cap={remaining}
+        scalingMax={maxContracts}
+        openContracts={openContracts}
       />
       <DllRiskHint selection={selection} contracts={contracts} />
       <Actions
@@ -440,15 +470,22 @@ function OrderTypeRow({
 function QuantityRow({
   contracts,
   setContracts,
-  maxContracts,
+  cap,
+  scalingMax,
+  openContracts,
 }: {
   contracts: number;
   setContracts: (n: number) => void;
-  maxContracts: number;
+  /** Remaining capacity = scalingMax − openContracts (the effective per-order limit). */
+  cap: number;
+  /** Scaling-plan max position size (for the label). */
+  scalingMax: number;
+  /** Contracts already open/working (for the label). */
+  openContracts: number;
 }) {
   // Topstep preset ladder: − [VALUE] +  |  [1] [3] [5] [10] [15]
   const presets = [1, 3, 5, 10, 15];
-  const atMax = contracts >= maxContracts;
+  const atMax = contracts >= cap;
   return (
     <div className="flex flex-col gap-0.5 px-3 pb-1 shrink-0">
       <div className="flex items-center gap-3 tabular-nums">
@@ -470,7 +507,7 @@ function QuantityRow({
           <StepperButton
             aria-label="Increase quantity"
             disabled={atMax}
-            onClick={() => setContracts(Math.min(maxContracts, contracts + 1))}
+            onClick={() => setContracts(Math.min(cap, contracts + 1))}
           >
             +
           </StepperButton>
@@ -478,7 +515,7 @@ function QuantityRow({
         <div className="flex" style={{ gap: 4 }}>
           {presets.map((n) => {
             const active = contracts === n;
-            const blocked = n > maxContracts;
+            const blocked = n > cap;
             return (
               <button
                 key={n}
@@ -486,7 +523,11 @@ function QuantityRow({
                 disabled={blocked}
                 onClick={() => setContracts(n)}
                 aria-pressed={active}
-                title={blocked ? `Scaling plan: max ${maxContracts} contracts` : undefined}
+                title={
+                  blocked
+                    ? `Scaling plan: ${openContracts}/${scalingMax} open — ${cap} contract${cap === 1 ? "" : "s"} left`
+                    : undefined
+                }
                 className={[
                   "tabular-nums transition-colors duration-100 font-medium",
                   "flex items-center justify-center select-none",
@@ -507,9 +548,10 @@ function QuantityRow({
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
         style={{ fontSize: 11 }}
-        title="Scaling plan — max position size grows with built equity; re-evaluates at the 5pm-PT settlement."
+        title="Scaling plan — max TOTAL open size grows with built equity; re-evaluates at the 5pm-PT settlement."
       >
-        scaling · max {maxContracts} {maxContracts === 1 ? "contract" : "contracts"}
+        scaling · {openContracts}/{scalingMax} open ·{" "}
+        {cap} {cap === 1 ? "contract" : "contracts"} left
       </span>
     </div>
   );

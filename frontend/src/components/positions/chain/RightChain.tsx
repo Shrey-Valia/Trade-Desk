@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { useChainTable } from "@/hooks/useChainTable";
+import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTradeTicket } from "@/stores/tradeTicket";
 import type { ChainStrikeRow } from "@/types/zerodte";
@@ -29,6 +30,8 @@ import type { ChainStrikeRow } from "@/types/zerodte";
  */
 interface Props {
   symbol: string | null;
+  /** Switch the charted symbol — used by the no-0DTE empty-state chips. */
+  onPickSymbol: (sym: string) => void;
 }
 
 // Topstep DOM-style ladder — taller rows (20px), wider center strike
@@ -39,7 +42,7 @@ const STRIKE_W = 88;
 const PUT_W = 168;
 const GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
 
-export function RightChain({ symbol }: Props) {
+export function RightChain({ symbol, onPickSymbol }: Props) {
   // Pull 5 strikes above + 5 below ATM ⇒ ~11 rows visible without
   // scrolling. The previous redesign asked for 16; the simplification
   // pass dropped that to reduce the right column's visual weight.
@@ -50,7 +53,16 @@ export function RightChain({ symbol }: Props) {
   const marketOpen = marketStatus?.status === "open";
 
   const bodyRef = useRef<HTMLDivElement>(null);
-  const atmStrike = data?.atm_strike ?? null;
+  const { data: universe } = useZeroDteUniverse();
+
+  const chainErrMsg = isError ? (error as Error)?.message ?? "" : "";
+  const noZeroDteToday = chainErrMsg.startsWith("No 0DTE for");
+  // With symbol-scoped placeholderData (useChainTable) `data` is already null
+  // on a fresh symbol's error; guard explicitly so rows/header never render
+  // from a stale or errored payload for the CURRENT symbol (also covers the
+  // same-symbol refetch-error case, where stale data lingers).
+  const showChain = !!data && !isError;
+  const atmStrike = showChain ? data?.atm_strike ?? null : null;
 
   // Auto-scroll ATM row to center on symbol change.
   useEffect(() => {
@@ -61,8 +73,6 @@ export function RightChain({ symbol }: Props) {
     if (row) row.scrollIntoView({ block: "center", behavior: "auto" });
   }, [atmStrike, symbol]);
 
-  const chainErrMsg = isError ? (error as Error)?.message ?? "" : "";
-  const noZeroDteToday = chainErrMsg.startsWith("No 0DTE for");
   // Cells are clickable to PREVIEW a contract (payoff/greeks in the detail
   // panel) whenever a chain exists — even with the market closed. Trading
   // (BUY/SELL) stays gated in the ticket; selecting is view-only.
@@ -116,13 +126,13 @@ export function RightChain({ symbol }: Props) {
     <section className="flex flex-col bg-tier-0">
       <Header
         symbol={data?.underlying ?? symbol ?? "—"}
-        expiry={data?.expiry ?? null}
-        spot={data?.spot ?? null}
-        atm={data?.atm_strike ?? null}
-        iv={data?.iv_used ?? null}
+        expiry={showChain ? data?.expiry ?? null : null}
+        spot={showChain ? data?.spot ?? null : null}
+        atm={showChain ? data?.atm_strike ?? null : null}
+        iv={showChain ? data?.iv_used ?? null : null}
       />
       <ColumnHeader />
-      {!marketOpen && data && (
+      {!marketOpen && showChain && (
         <div
           className="px-3 py-1 border-b border-hairline bg-tier-1 text-warning text-center shrink-0"
           style={{ fontSize: 12 }}
@@ -141,12 +151,17 @@ export function RightChain({ symbol }: Props) {
           <EmptyMessage>Loading {symbol} chain…</EmptyMessage>
         )}
         {noZeroDteToday && (
-          <EmptyMessage tone="warning">{chainErrMsg}</EmptyMessage>
+          <NoZeroDteEmpty
+            symbol={symbol}
+            options={(universe?.symbols ?? []).filter((s) => s !== symbol)}
+            loadingOptions={!universe}
+            onPick={onPickSymbol}
+          />
         )}
         {isError && !noZeroDteToday && (
           <EmptyMessage tone="bearish">{chainErrMsg}</EmptyMessage>
         )}
-        {data && data.rows.length > 0 && (
+        {showChain && data && data.rows.length > 0 && (
           <div className="flex flex-col items-center">
             {data.rows.map((row, idx) => {
               const selStrike =
@@ -472,5 +487,58 @@ function EmptyMessage({
     <div className={`flex-1 flex items-center justify-center text-tiny ${cls} px-4 py-6 text-center`}>
       {children}
     </div>
+  );
+}
+
+/**
+ * Strict-0DTE empty state. Instead of a dead "Loading…" spinner (or a raw
+ * 409 echo), tell the user this symbol has no same-day expiry and give them
+ * one-click chips to switch the chart to a tradeable 0DTE symbol. Works even
+ * while holding a position — PositionsPage no longer re-locks the symbol.
+ */
+function NoZeroDteEmpty({
+  symbol,
+  options,
+  loadingOptions,
+  onPick,
+}: {
+  symbol: string | null;
+  options: string[];
+  loadingOptions: boolean;
+  onPick: (sym: string) => void;
+}) {
+  return (
+    <EmptyMessage tone="warning">
+      <div className="flex flex-col items-center gap-2">
+        <span>No 0DTE expiry for {symbol ?? "—"} today.</span>
+        {options.length > 0 ? (
+          <>
+            <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+              Trade a same-day-expiry symbol:
+            </span>
+            <div className="flex flex-wrap items-center justify-center gap-1.5">
+              {options.map((sym) => (
+                <button
+                  key={sym}
+                  type="button"
+                  onClick={() => onPick(sym)}
+                  className="inline-flex items-center border border-amber text-amber px-2 py-0.5 uppercase tracking-label-up rounded-btn hover:bg-tier-2"
+                  style={{ fontSize: 12 }}
+                  title={`Switch chart to ${sym}`}
+                >
+                  {sym}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          !loadingOptions && (
+            <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+              No 0DTE-eligible symbols available right now.
+            </span>
+          )
+        )}
+      </div>
+    </EmptyMessage>
   );
 }

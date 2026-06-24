@@ -105,13 +105,13 @@ def test_mirror_clamps_to_follower_cap_and_tags(auth_client, session_factory):
 
     with session_factory() as s:
         lead_c = s.get(Combine, lead["id"])
-        trade = _lead_trade(s, lead_c, contracts=5)
+        trade = _lead_trade(s, lead_c, contracts=10)
         result = mirror_open(s, lead_c, trade)
 
         assert sorted(result.mirrored) == sorted([f2["id"], f3["id"]])
         for fid in (f2["id"], f3["id"]):
             mt = s.execute(select(Trade).where(Trade.combine_id == fid)).scalars().one()
-            assert mt.legs[0]["contracts"] == 2  # 50K cap → clamped from 5
+            assert mt.legs[0]["contracts"] == 5  # 50K cap → clamped from 10
             assert "copy" in mt.tags
             assert mt.copied_from_trade_id == trade.id
             assert "copied from Lead" in (mt.notes or "")
@@ -125,7 +125,7 @@ def test_mirror_applies_multiplier(auth_client, session_factory):
 
     with session_factory() as s:
         lead_c = s.get(Combine, lead["id"])
-        trade = _lead_trade(s, lead_c, contracts=2)  # within the 50K cap of 2
+        trade = _lead_trade(s, lead_c, contracts=2)  # within the 50K cap of 5
         mirror_open(s, lead_c, trade)
 
         half = s.execute(select(Trade).where(Trade.combine_id == f2["id"])).scalars().one()

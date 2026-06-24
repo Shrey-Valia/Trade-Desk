@@ -30,6 +30,13 @@ export const AccountStateSchema = z.object({
   realized_pnl: z.number(),
   /** starting_balance + realized_pnl. Unrealized is added client-side. */
   balance: z.number(),
+  /** Signed realized P&L within the current 5pm-PT trading day — the daily RPL.
+   *  Header shows BAL = eod_balance + today_realized + URPL. Default 0 for
+   *  back-compat with any payload that predates the field. */
+  today_realized: z.number().default(0),
+  /** Balance carried into today (starting + realized BEFORE today's window) —
+   *  the EOD baseline for the daily P&L decomposition. */
+  eod_balance: z.number().default(0),
   /** Running (monotonic) HWM. */
   high_water_mark: z.number(),
   /** Settled HWM — basis of the fixed-intraday MLL floor. */

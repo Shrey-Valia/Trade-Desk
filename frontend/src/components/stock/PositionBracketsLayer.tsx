@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { IChartApi, ISeriesApi } from "lightweight-charts";
 
 import { colors } from "@/lib/design";
+import { isDrawingInteracting, useDrawingTool } from "@/stores/drawingTool";
 
 export interface BracketOverlay {
   tradeId: number;
@@ -142,6 +143,11 @@ export function PositionBracketsLayer({ chartRef, seriesRef, brackets }: Props) 
 
   const pnlAt = (x: number) => interpolate(brackets.prices, brackets.payoffToday, x);
 
+  // While a drawing tool is armed (or a drawing is selected), the grab strips
+  // yield so a draw gesture starting on the SL/TP band reaches the chart's
+  // drawing engine instead of starting a bracket drag.
+  const drawingActive = useDrawingTool(isDrawingInteracting);
+
   return (
     <div ref={rootRef} className="absolute inset-0" style={{ pointerEvents: "none", zIndex: 8 }}>
       {displayed("sl") != null && (
@@ -153,6 +159,7 @@ export function PositionBracketsLayer({ chartRef, seriesRef, brackets }: Props) 
           pnl={pnlAt(displayed("sl") as number)}
           onPointerDown={startDrag("sl")}
           onClear={clear("sl")}
+          grabDisabled={drawingActive}
         />
       )}
       {displayed("tp") != null && (
@@ -164,6 +171,7 @@ export function PositionBracketsLayer({ chartRef, seriesRef, brackets }: Props) 
           pnl={pnlAt(displayed("tp") as number)}
           onPointerDown={startDrag("tp")}
           onClear={clear("tp")}
+          grabDisabled={drawingActive}
         />
       )}
       <div className="absolute right-2 top-2 flex gap-1" style={{ pointerEvents: "auto", zIndex: 20 }}>
@@ -186,6 +194,7 @@ function BracketRow({
   pnl,
   onPointerDown,
   onClear,
+  grabDisabled,
 }: {
   rowRef: React.Ref<HTMLDivElement>;
   label: string;
@@ -194,6 +203,7 @@ function BracketRow({
   pnl: number | null;
   onPointerDown: (e: React.PointerEvent) => void;
   onClear: () => void;
+  grabDisabled: boolean;
 }) {
   const pnlText = pnl == null ? "" : `${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(0)}`;
   return (
@@ -207,7 +217,12 @@ function BracketRow({
       <div
         onPointerDown={onPointerDown}
         className="absolute left-0 right-0"
-        style={{ top: -6, height: 12, cursor: "ns-resize", pointerEvents: "auto" }}
+        style={{
+          top: -6,
+          height: 12,
+          cursor: "ns-resize",
+          pointerEvents: grabDisabled ? "none" : "auto",
+        }}
         role="slider"
         aria-label={`${label} bracket at ${price.toFixed(2)}`}
         aria-valuenow={price}

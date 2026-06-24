@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from calculations.black_scholes import bs_greeks
@@ -430,6 +431,30 @@ def _require_market_open() -> None:
         )
 
 
+def _open_contracts_for_combine(session: Session, combine_id: int) -> int:
+    """Total contracts across the combine's currently-OPEN and WORKING
+    positions. The scaling cap limits simultaneous open size, so a new order
+    is checked against this aggregate — not just its own size. Without this a
+    trader could stack multiple max-size orders past the cap (e.g. four 1-lots
+    when the cap is 2). Working (resting) orders count too, so you can't queue
+    past the cap and have them fill later."""
+    rows = (
+        session.execute(
+            select(Trade).where(
+                Trade.combine_id == combine_id,
+                Trade.status.in_(("open", "working")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    total = 0
+    for t in rows:
+        legs = t.legs or []
+        total += max((int(leg.get("contracts", 1)) for leg in legs), default=1)
+    return total
+
+
 def _require_tradeable(
     session: Session, combine: Combine, contracts: int | None = None
 ) -> None:
@@ -453,16 +478,20 @@ def _require_tradeable(
             status_code=403,
             detail="Daily loss limit hit — no further trading today. The day-lock lifts at the 5pm-PT settlement.",
         )
-    if contracts is not None and contracts > snap.max_contracts:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Scaling plan: max {snap.max_contracts} contract"
-                f"{'s' if snap.max_contracts != 1 else ''} at your current "
-                f"balance (requested {contracts}). Build equity to scale up — "
-                "the limit re-evaluates at the 5pm-PT settlement."
-            ),
-        )
+    if contracts is not None:
+        open_now = _open_contracts_for_combine(session, combine.id)
+        if open_now + contracts > snap.max_contracts:
+            plural = "s" if snap.max_contracts != 1 else ""
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Scaling plan: max {snap.max_contracts} contract{plural} open "
+                    f"at once at your current balance — you already have {open_now} "
+                    f"open and requested {contracts}. Close a position or build "
+                    "equity to scale up; the limit re-evaluates at the 5pm-PT "
+                    "settlement."
+                ),
+            )
 
 
 # SL/TP brackets must sit at least this far from the current underlying —

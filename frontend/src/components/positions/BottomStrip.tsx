@@ -1,17 +1,24 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQueries,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import { LiveFeed } from "@/components/positions/LiveFeed";
+import { useAccountState } from "@/hooks/useAccountState";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
-import { updateTrade } from "@/lib/api";
+import { fetchTradeAnalytics, updateTrade } from "@/lib/api";
 import { TOOLTIPS } from "@/lib/tooltips";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useSelectedTicker } from "@/stores/selectedTicker";
+import { toast } from "@/stores/toast";
 import { isZeroDteTrade, STRATEGY_LABELS, type Trade, type TradeAnalytics } from "@/types/journal";
 
 /**
@@ -30,7 +37,7 @@ export function BottomStrip() {
   const elapsedHours = useActivePosition((s) => s.elapsedHours);
 
   const { data: tradesData } = useTrades();
-  const trades = tradesData?.trades ?? [];
+  const trades = useMemo(() => tradesData?.trades ?? [], [tradesData]);
   const activeTrade = useMemo(
     () => trades.find((t) => t.id === activeTradeId) ?? null,
     [trades, activeTradeId],
@@ -53,6 +60,37 @@ export function BottomStrip() {
     elapsedHours: null,
   });
   const liveAnalytics = liveAnalyticsQuery.data ?? null;
+
+  // All open positions on the active tier — drives the multi-position
+  // selector so EVERY open contract is visible, not just the selected one.
+  // One live analytics query each; the key matches the header's per-position
+  // queries, so they're shared from cache (no extra network).
+  const { data: account } = useAccountState();
+  const activeTier = account?.active_tier ?? "50K";
+  const openPositions = useMemo(
+    () => trades.filter((t) => t.status === "open" && (t.tier ?? "50K") === activeTier),
+    [trades, activeTier],
+  );
+  const openAnalytics = useQueries({
+    queries: openPositions.map((t) => {
+      const intraday = isZeroDteTrade(t);
+      return {
+        queryKey: ["trade-analytics", t.id, null, intraday ? "intraday" : "day", null],
+        queryFn: () => fetchTradeAnalytics(t.id, { dteOverride: null, elapsedHours: null }),
+        staleTime: intraday ? 3_000 : 10_000,
+        refetchInterval: intraday ? 5_000 : (false as const),
+        placeholderData: keepPreviousData,
+      };
+    }),
+  });
+  const openList = useMemo(
+    () =>
+      openPositions.map((t, i) => ({
+        trade: t,
+        upl: openAnalytics[i]?.data?.unrealized_pnl ?? null,
+      })),
+    [openPositions, openAnalytics],
+  );
 
   // No active position → pre-execution strip: KEY LEVELS inline + a TODAY
   // summary row, PLUS the live activity FEED (combine lifecycle events +
@@ -82,6 +120,8 @@ export function BottomStrip() {
           trade={activeTrade}
           analytics={analytics}
           liveAnalytics={liveAnalytics}
+          openList={openList}
+          activeTradeId={activeTradeId}
         />
       </Column>
       <Column>
@@ -339,12 +379,19 @@ function OpenPositionCol({
   trade,
   analytics,
   liveAnalytics,
+  openList,
+  activeTradeId,
 }: {
   trade: Trade | null;
   /** Scrubbed analytics — drives the what-if greeks / BE only. */
   analytics: TradeAnalytics | null;
   /** Live, scrubber-independent analytics — drives the UP&L + close. */
   liveAnalytics: TradeAnalytics | null;
+  /** Every open position on the active tier + its live UP&L, for the
+   *  selector list (shown when more than one is open). */
+  openList: { trade: Trade; upl: number | null }[];
+  /** The currently-selected position id (highlighted in the list). */
+  activeTradeId: number | null;
 }) {
   const queryClient = useQueryClient();
   const setActiveTradeId = useActivePosition((s) => s.setTradeId);
@@ -371,6 +418,7 @@ function OpenPositionCol({
       queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       setActiveTradeId(null);
     },
+    onError: (e) => toast.error((e as Error)?.message || "Could not close position"),
   });
 
   return (
@@ -379,6 +427,44 @@ function OpenPositionCol({
         left="Open position"
         right={trade ? `DTE ${analytics?.current_dte_days ?? "—"}` : ""}
       />
+      {/* Selector list — shown when more than one position is open, so every
+          open contract is visible and the header's URPL reconciles with what
+          you see. Click a row to drive the detail + chart selection. */}
+      {openList.length > 1 && (
+        <div className="px-3 pt-1 flex flex-col gap-px max-h-[68px] overflow-y-auto shrink-0">
+          {openList.map(({ trade: t, upl }) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setActiveTradeId(t.id)}
+              className={`flex items-center justify-between gap-2 px-1 py-0.5 text-tiny border tabular-nums ${
+                t.id === activeTradeId
+                  ? "border-amber bg-tier-2 text-fg-primary"
+                  : "border-transparent text-fg-secondary hover:bg-tier-2"
+              }`}
+              style={{ borderRadius: 0 }}
+              title={`${t.symbol} ${STRATEGY_LABELS[t.strategy] ?? t.strategy} · ${totalContracts(t)} contract${totalContracts(t) === 1 ? "" : "s"}`}
+            >
+              <span className="truncate">
+                {t.symbol} · {totalContracts(t)}c
+              </span>
+              <span
+                className={
+                  upl == null
+                    ? "text-fg-tertiary"
+                    : upl > 0
+                      ? "text-bullish"
+                      : upl < 0
+                        ? "text-bearish"
+                        : "text-fg-secondary"
+                }
+              >
+                {upl == null ? "—" : formatSignedDollar(upl)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       {!trade && (
         <Empty>No open position. Pick a strike in the chain ↑</Empty>
       )}
