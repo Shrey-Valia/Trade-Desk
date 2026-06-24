@@ -16,7 +16,7 @@ from calculations.strategies import STRATEGY_TYPES
 
 TradeStatus = Literal["working", "open", "closed", "cancelled"]
 OrderType = Literal["market", "limit", "stop"]
-CloseReason = Literal["manual", "stop_loss", "take_profit", "expiry"]
+CloseReason = Literal["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"]
 LegSide = Literal["call", "put"]
 LegAction = Literal["buy", "sell"]
 

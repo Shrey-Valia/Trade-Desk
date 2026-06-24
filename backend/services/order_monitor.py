@@ -11,18 +11,27 @@ unit-testable without any network or scheduler:
   - `market_open()`          → bool gate
   - `now`                    → wall clock
 
-Two responsibilities each tick:
+Three responsibilities each tick:
 
   1. WORKING limit/stop orders → fill when the option mark crosses the
      trigger (limit fills AT the limit; stop fills at the current mark).
+     Stop-limit rests as a limit once the stop arms. Trailing stops track a
+     favorable-mark high-water and recompute the trigger every tick.
      If the owning combine isn't tradeable (failed / day-locked), the order
      is cancelled instead of filled.
   2. OPEN positions with brackets → close when the UNDERLYING crosses a set
      level. Trigger direction is derived from entry_underlying_price (a level
      above entry triggers on the way up, below triggers on the way down).
      Closing books realized P&L the same way the manual CLOSE button does
-     (analytics unrealized − exit-side commission); OCO is implicit since the
-     position is gone.
+     (analytics unrealized − exit-side commission). When the closed leg
+     belongs to an `oco_group`, its still-open siblings on the same combine
+     are cancelled/closed so the bracket pair is one-cancels-the-other.
+  3. AUTO-LIQUIDATION — per combine, the live balance (realized balance +
+     open-position URPL) is tested against the MLL floor and the live DLL
+     day-budget. A breach FORCE-CLOSES every open position on that combine
+     (same booking path) and marks the combine `outcome = "failed"`. This is
+     the hard-enforcement analog of a prop firm flattening you at the floor —
+     fully deterministic, no randomness.
 """
 
 from __future__ import annotations
@@ -199,13 +208,142 @@ def run_order_monitor(
             except Exception:  # noqa: BLE001 — isolate one bad trade from the rest
                 session.rollback()
                 log.exception("order_monitor: trade %s failed", trade.id)
+
+        # HARD RISK ENFORCEMENT — auto-liquidate combines whose LIVE balance
+        # (realized balance + open URPL) has fallen to/through the MLL floor,
+        # or whose live DLL day-budget is exhausted, while positions are open.
+        liquidated = _auto_liquidate(session, now, spot_for, unrealized_for, spot_cache)
+
         log.info(
-            "order_monitor: filled=%d closed=%d cancelled=%d of %d candidates",
-            filled, closed, cancelled, len(trades),
+            "order_monitor: filled=%d closed=%d cancelled=%d liquidated=%d of %d candidates",
+            filled, closed, cancelled, liquidated, len(trades),
         )
-        return {"filled": filled, "closed": closed, "cancelled": cancelled, "total": len(trades)}
+        return {
+            "filled": filled,
+            "closed": closed,
+            "cancelled": cancelled,
+            "liquidated": liquidated,
+            "total": len(trades),
+        }
     finally:
         session.close()
+
+
+def _auto_liquidate(
+    session, now: datetime, spot_for, unrealized_for, spot_cache: dict[str, float | None]
+) -> int:
+    """Force-close every open position on any combine that has breached its
+    risk floor THIS tick, then mark the combine `outcome = "failed"`.
+
+    Breach test, per combine with ≥1 open position:
+      live_balance = snap.balance + URPL  ≤  snap.mll   (MLL floor)
+        OR
+      live_dll_used = snap.dll_used + open-loss  ≥  snap.dll_budget   (DLL exhausted)
+
+    where URPL is the summed unrealized P&L of the combine's open positions and
+    open-loss is the loss-only portion of that URPL (gains don't count against
+    the DLL). snap.balance is the realized live balance (start + realized) and
+    snap.mll the fixed-intraday floor — both from the same combine engine the
+    rest of the app reads. Fully deterministic.
+
+    Each force-close books realized P&L exactly like a bracket close
+    (`unrealized − exit commission`) with close_reason "liquidation", then
+    `mirror_close` cascades to any follower copies. Returns positions closed.
+    """
+    from models.combine import Combine
+    from services.combine_state import combine_snapshot
+    from services.copy_trade import mirror_close
+
+    combine_ids = (
+        session.execute(
+            select(Trade.combine_id)
+            .where(Trade.status == "open", Trade.combine_id.is_not(None))
+            .distinct()
+        )
+        .scalars()
+        .all()
+    )
+    if not combine_ids:
+        return 0
+
+    liquidated = 0
+    for combine_id in combine_ids:
+        combine = session.get(Combine, combine_id)
+        if combine is None or combine.status == "archived":
+            continue
+        try:
+            # Re-query open positions PER COMBINE so a prior combine's
+            # mirror_close cascade (which may have already flattened a follower
+            # copy here) is reflected — never double-book a closed trade.
+            positions = (
+                session.execute(
+                    select(Trade).where(
+                        Trade.combine_id == combine_id, Trade.status == "open"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not positions:
+                continue
+
+            # Resolve each position's live spot + unrealized once (cached).
+            urpl = 0.0
+            marks: dict[int, tuple[float, float]] = {}  # trade.id -> (spot, unreal)
+            usable = True
+            for t in positions:
+                if t.symbol not in spot_cache:
+                    spot_cache[t.symbol] = spot_for(t.symbol)
+                spot = spot_cache[t.symbol]
+                if spot is None:
+                    usable = False
+                    break
+                unreal = unrealized_for(t, spot)
+                marks[t.id] = (spot, unreal)
+                urpl += unreal
+            if not usable:
+                # Can't price the book this tick — don't liquidate on partial info.
+                continue
+
+            snap = combine_snapshot(session, combine)
+            live_balance = snap.balance + urpl
+            open_loss = max(0.0, -urpl)
+            live_dll_used = snap.dll_used + open_loss
+
+            mll_breach = live_balance <= snap.mll
+            dll_breach = snap.dll_budget > 0 and live_dll_used >= snap.dll_budget
+            if not (mll_breach or dll_breach):
+                continue
+
+            reason_note = (
+                "MLL floor breached" if mll_breach else "daily loss limit exhausted"
+            )
+            for t in positions:
+                spot, _unreal = marks[t.id]
+                _book_close(t, spot, now, unrealized_for, "liquidation")
+                t.notes = (t.notes or "") + f" · auto-liquidated ({reason_note})"
+                session.flush()
+                mirror_close(session, t)
+                liquidated += 1
+
+            # Mark the combine FAILED (terminal). The combine engine also
+            # fails on a realized-only MLL breach; doing it here makes the
+            # auto-flatten and the fail atomic in the same tick.
+            if combine.outcome == "active":
+                combine.outcome = "failed"
+                from services.combine_state import record_event
+
+                record_event(
+                    session,
+                    combine,
+                    "failed",
+                    f"Auto-liquidated — {reason_note}.",
+                )
+            session.commit()
+        except Exception:  # noqa: BLE001 — isolate one combine from the rest
+            session.rollback()
+            log.exception("order_monitor: auto-liquidation for combine %s failed", combine_id)
+    return liquidated
 
 
 def _process_working(session, trade: Trade, spot: float, now: datetime, option_mark) -> str | None:
@@ -246,6 +384,19 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     return "filled"
 
 
+def _book_close(trade: Trade, spot: float, now: datetime, unrealized_for, reason: str) -> None:
+    """Book a close on `trade` exactly the way the manual CLOSE button does:
+    realized = analytics unrealized − exit-side commission. Mutates the trade
+    in place; the caller owns the commit and any copy-trade cascade."""
+    unrealized = unrealized_for(trade, spot)
+    realized = unrealized - _commission_side(trade)
+    trade.status = "closed"
+    trade.close_reason = reason
+    trade.exit_date = now
+    trade.exit_underlying_price = spot
+    trade.realized_pnl = round(realized, 2)
+
+
 def _process_open(session, trade: Trade, spot: float, now: datetime, unrealized_for) -> bool:
     """Close an open position if a bracket triggered. Returns True if closed."""
     entry_u = trade.entry_underlying_price
@@ -257,11 +408,5 @@ def _process_open(session, trade: Trade, spot: float, now: datetime, unrealized_
     if reason is None:
         return False
 
-    unrealized = unrealized_for(trade, spot)
-    realized = unrealized - _commission_side(trade)
-    trade.status = "closed"
-    trade.close_reason = reason
-    trade.exit_date = now
-    trade.exit_underlying_price = spot
-    trade.realized_pnl = round(realized, 2)
+    _book_close(trade, spot, now, unrealized_for, reason)
     return True

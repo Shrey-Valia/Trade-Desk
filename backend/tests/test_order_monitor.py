@@ -219,3 +219,189 @@ def test_idempotent_second_pass_is_noop(auth_client, session_factory):
     s = session_factory()
     assert s.get(Trade, tid).status == "closed"
     s.close()
+
+
+# --- auto-liquidation at MLL / DLL ------------------------------------------
+#
+# 50K tier: starting 50,000 · trailing 2,000 → MLL floor 48,000 · DLL 1,500.
+# Open positions carry no brackets so ONLY the liquidation pass can act on
+# them — isolating the headline behavior from the bracket path.
+
+
+def test_auto_liquidates_when_urpl_breaches_mll(auth_client, session_factory):
+    """Realized balance is at start (50,000); a −2,600 open URPL drops the
+    LIVE balance to 47,400 ≤ 48,000 floor → force-close + combine FAILED."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open")  # no brackets
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: 99.0,
+        unrealized_for=lambda t, s: -2_600.0,
+    )
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed"
+    assert t.close_reason == "liquidation"
+    # −2,600 unrealized − 0.65 exit commission booked as realized.
+    assert t.realized_pnl == -2_600.65
+    assert "auto-liquidated" in (t.notes or "")
+    assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
+def test_no_liquidation_when_live_balance_above_mll(auth_client, session_factory):
+    """A −1,000 open URPL leaves live balance 49,000 > 48,000 floor, and DLL
+    used 1,000 < 1,500 budget → nothing is touched."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open")
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: 99.5,
+        unrealized_for=lambda t, s: -1_000.0,
+    )
+    assert summary["liquidated"] == 0
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    assert s.get(Combine, c["id"]).outcome == "active"
+    s.close()
+
+
+def test_auto_liquidates_when_open_loss_exhausts_dll(auth_client, session_factory):
+    """No realized loss, but a −1,500 open loss exhausts the 1,500 DLL budget
+    while balance 48,500 stays above the 48,000 MLL floor → DLL-path liquidation."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open")
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: 99.0,
+        unrealized_for=lambda t, s: -1_500.0,
+    )
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed" and t.close_reason == "liquidation"
+    assert "daily loss limit" in (t.notes or "")
+    assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
+def test_auto_liquidation_closes_all_positions_on_combine(auth_client, session_factory):
+    """Aggregate URPL across MULTIPLE open positions drives the breach; ALL of
+    them are flattened in one tick. Two −1,400 positions = −2,800 live → 47,200."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    t1 = _seed(session_factory, c["id"], status="open")
+    t2 = _seed(session_factory, c["id"], status="open")
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: 99.0,
+        unrealized_for=lambda t, s: -1_400.0,
+    )
+    assert summary["liquidated"] == 2
+    s = session_factory()
+    assert s.get(Trade, t1).status == "closed"
+    assert s.get(Trade, t2).status == "closed"
+    assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
+def test_auto_liquidation_idempotent_second_pass(auth_client, session_factory):
+    """After a liquidation, a second identical tick finds no OPEN positions →
+    no further liquidations and the combine stays failed."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    _seed(session_factory, c["id"], status="open")
+    first = _run(session_factory, spot_for=lambda sym: 99.0, unrealized_for=lambda t, s: -2_600.0)
+    second = _run(session_factory, spot_for=lambda sym: 99.0, unrealized_for=lambda t, s: -2_600.0)
+    assert first["liquidated"] == 1 and second["liquidated"] == 0
+    s = session_factory()
+    assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
+def test_auto_liquidation_skips_when_spot_unavailable(auth_client, session_factory):
+    """A cold feed (spot None) must NOT liquidate on partial information."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open")
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: None,
+        unrealized_for=lambda t, s: -9_999.0,
+    )
+    assert summary["liquidated"] == 0
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    assert s.get(Combine, c["id"]).outcome == "active"
+    s.close()
+
+
+def test_auto_liquidation_cascades_to_follower_copies(auth_client, session_factory):
+    """A lead-combine liquidation books a close that cascades via mirror_close
+    to the follower's still-open copy."""
+    from models.combine import Combine
+    from sqlalchemy import select as _select
+
+    lead = make_combine(auth_client, "50K", name="Lead")
+    follower = make_combine(auth_client, "50K", name="Follower")
+    res = auth_client.put(
+        "/api/combines/copy-config",
+        json={
+            "lead_combine_id": lead["id"],
+            "followers": [{"combine_id": follower["id"], "multiplier": 1.0}],
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    # Open on the lead through the real endpoint path so the copy is mirrored.
+    from services.copy_trade import mirror_open
+
+    s = session_factory()
+    lead_c = s.get(Combine, lead["id"])
+    lead_trade = Trade(
+        symbol="SPY",
+        strategy="long_call",
+        entry_date=datetime.now(timezone.utc),
+        entry_underlying_price=100.0,
+        net_debit_credit=0.0,
+        status="open",
+        is_paper=True,
+        tier="50K",
+        combine_id=lead["id"],
+    )
+    lead_trade.legs = [
+        {"side": "call", "action": "buy", "strike": 100.0,
+         "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 1.0}
+    ]
+    s.add(lead_trade)
+    s.commit()
+    mirror_open(s, lead_c, lead_trade)
+    lead_id = lead_trade.id
+    s.close()
+
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: 99.0,
+        unrealized_for=lambda t, s: -2_600.0,
+    )
+    assert summary["liquidated"] >= 1
+    s = session_factory()
+    copy = s.execute(
+        _select(Trade).where(Trade.copied_from_trade_id == lead_id)
+    ).scalars().one()
+    # The follower copy is flattened either by the lead's mirror_close cascade
+    # ("copy") or by the follower combine's own MLL breach ("liquidation") —
+    # ordering decides which fires first. Either way it must end up closed.
+    assert copy.status == "closed"
+    assert copy.close_reason in ("copy", "liquidation")
+    s.close()

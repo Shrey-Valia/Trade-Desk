@@ -151,3 +151,93 @@ def test_dll_override_rejects_unknown_tier(auth_client):
         "/api/account/dll-overrides", json={"overrides": {"999K": 1000}}
     )
     assert res.status_code == 422
+
+
+# --- hard auto-liquidation (order monitor) ----------------------------------
+
+
+def _seed_open_position(session, combine_id: int) -> int:
+    """A bracket-less OPEN position — only the liquidation pass can act on it."""
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    t = Trade(
+        symbol="SPY",
+        strategy="long_call",
+        entry_date=now,
+        entry_underlying_price=100.0,
+        net_debit_credit=0.0,
+        status="open",
+        is_paper=True,
+        notes="seed",
+        tier="50K",
+        combine_id=combine_id,
+    )
+    t.legs = [
+        {"side": "call", "action": "buy", "strike": 100.0,
+         "expiry": today, "contracts": 1, "entry_price": 1.0}
+    ]
+    session.add(t)
+    session.commit()
+    tid = t.id
+    session.close()
+    return tid
+
+
+def test_auto_liquidation_force_closes_and_fails_on_mll_breach(auth_client, session_factory):
+    """The headline: a live-balance MLL breach (driven by open-position URPL)
+    force-closes every open position on the combine and marks it FAILED."""
+    from services.order_monitor import run_order_monitor
+
+    c = make_combine(auth_client, "50K")
+    session = session_factory()
+    tid = _seed_open_position(session, c["id"])
+
+    # 50K floor = 48,000. Realized balance is 50,000; a −2,600 open URPL drops
+    # the LIVE balance to 47,400 ≤ 48,000 → breach.
+    summary = run_order_monitor(
+        session_factory=session_factory,
+        market_open=lambda: True,
+        spot_for=lambda sym: 99.0,
+        unrealized_for=lambda t, s: -2_600.0,
+    )
+    assert summary["liquidated"] == 1
+
+    session = session_factory()
+    trade = session.get(Trade, tid)
+    assert trade.status == "closed"
+    assert trade.close_reason == "liquidation"
+    combine = session.get(Combine, c["id"])
+    assert combine.outcome == "failed"
+    events = (
+        session.execute(
+            select(CombineEvent).where(
+                CombineEvent.combine_id == c["id"], CombineEvent.type == "failed"
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(events) >= 1
+    session.close()
+
+
+def test_auto_liquidation_leaves_healthy_combine_open(auth_client, session_factory):
+    """A small open loss that stays above MLL and under DLL → nothing closes."""
+    from services.order_monitor import run_order_monitor
+
+    c = make_combine(auth_client, "50K")
+    session = session_factory()
+    tid = _seed_open_position(session, c["id"])
+
+    summary = run_order_monitor(
+        session_factory=session_factory,
+        market_open=lambda: True,
+        spot_for=lambda sym: 100.0,
+        unrealized_for=lambda t, s: -200.0,
+    )
+    assert summary["liquidated"] == 0
+
+    session = session_factory()
+    assert session.get(Trade, tid).status == "open"
+    assert session.get(Combine, c["id"]).outcome == "active"
+    session.close()

@@ -37,7 +37,10 @@ export const TradeOutSchema = z.object({
   limit_price: z.number().nullable().optional(),
   stop_loss: z.number().nullable().optional(),
   take_profit: z.number().nullable().optional(),
-  close_reason: z.enum(["manual", "stop_loss", "take_profit", "expiry"]).nullable().optional(),
+  close_reason: z
+    .enum(["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"])
+    .nullable()
+    .optional(),
   // Phase 2 metadata.
   tags: z.array(z.string()).default([]),
   mistake_tags: z.array(z.string()).default([]),
