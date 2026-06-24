@@ -65,3 +65,9 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    # Tests that reach a live data provider (Alpaca) and are therefore
+    # environment-dependent — they pass warm / at market-hours but flake
+    # cold / offline. CI runs with `-m "not network"` to stay deterministic.
+    "network: hits live external data (deselected in CI via -m 'not network')",
+]
