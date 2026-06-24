@@ -88,6 +88,19 @@ class CircuitBreaker:
     def is_open(self) -> bool:
         return not self.allow()
 
+    def retry_after(self) -> float:
+        """Seconds until the breaker would permit a probe again.
+
+        0 when closed or already half-open (a call may proceed now).
+        Used to populate the HTTP `Retry-After` header on the degraded
+        503 response so the frontend can back off for exactly the
+        cooldown window instead of guessing."""
+        with self._lock:
+            if self._opened_at is None:
+                return 0.0
+            remaining = self.cooldown - (self._clock() - self._opened_at)
+            return max(0.0, remaining)
+
 
 _breakers: dict[str, CircuitBreaker] = {}
 _registry_lock = threading.Lock()
@@ -108,6 +121,19 @@ def reset_breakers() -> None:
     """Test helper — clear the registry."""
     with _registry_lock:
         _breakers.clear()
+
+
+def breaker_retry_after(name: str, *, default: float = 30.0) -> int:
+    """Suggested `Retry-After` (whole seconds) for the named breaker.
+
+    Returns the breaker's remaining cooldown rounded UP, or `default`
+    when the breaker doesn't exist yet (a degraded response can be
+    raised by a path that never created the breaker). Always >= 1 so the
+    header is never "retry immediately", which would just re-trip."""
+    with _registry_lock:
+        b = _breakers.get(name)
+    remaining = b.retry_after() if b is not None else default
+    return max(1, int(remaining + 0.999))
 
 
 def _is_rate_limited(exc: Exception) -> bool:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from services.rate_limit import RateLimiter, auth_limiter
+import pytest
+
+from services.rate_limit import RateLimiter, TokenBucket, auth_limiter
 
 
 class FakeClock:
@@ -56,6 +58,60 @@ def test_reset_clears_counters():
     assert not rl.hit("k")[0]
     rl.reset()
     assert rl.hit("k")[0]
+
+
+# -- TokenBucket (Alpaca call-spacing throttle) ------------------------------
+
+
+class FakeSleeper:
+    """Records requested sleeps and ADVANCES the fake clock by that much,
+    so token refill behaves as if real time passed — without real sleeping."""
+
+    def __init__(self, clock: "FakeClock") -> None:
+        self.clock = clock
+        self.slept: list[float] = []
+
+    def __call__(self, secs: float) -> None:
+        self.slept.append(secs)
+        self.clock.advance(secs)
+
+
+def test_token_bucket_lets_burst_through_up_to_capacity():
+    clk = FakeClock()
+    sleeper = FakeSleeper(clk)
+    tb = TokenBucket(rate=5.0, capacity=3.0, clock=clk, sleep=sleeper)
+    # 3 tokens banked → first 3 takes are immediate (no sleep).
+    assert tb.take() == 0.0
+    assert tb.take() == 0.0
+    assert tb.take() == 0.0
+    assert sleeper.slept == []
+
+
+def test_token_bucket_spaces_calls_once_drained():
+    clk = FakeClock()
+    sleeper = FakeSleeper(clk)
+    tb = TokenBucket(rate=5.0, capacity=1.0, clock=clk, sleep=sleeper)
+    assert tb.take() == 0.0          # consumes the one banked token
+    waited = tb.take()               # must wait 1/5s for the next token
+    assert waited == pytest.approx(0.2, abs=1e-9)
+    assert sleeper.slept == [pytest.approx(0.2, abs=1e-9)]
+
+
+def test_token_bucket_refills_over_time():
+    clk = FakeClock()
+    sleeper = FakeSleeper(clk)
+    tb = TokenBucket(rate=10.0, capacity=2.0, clock=clk, sleep=sleeper)
+    tb.take()
+    tb.take()                        # bucket drained
+    clk.advance(1.0)                 # 1s → +10 tokens, capped at capacity=2
+    assert tb.take() == 0.0
+    assert tb.take() == 0.0          # both refilled tokens available immediately
+    assert tb.take() > 0.0           # third must wait again
+
+
+def test_token_bucket_rejects_non_positive_rate():
+    with pytest.raises(ValueError):
+        TokenBucket(rate=0.0, capacity=1.0)
 
 
 def test_signin_throttled_returns_429(api_client, monkeypatch):

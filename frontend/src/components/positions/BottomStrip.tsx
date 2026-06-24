@@ -7,7 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 
-import { LiveFeed } from "@/components/positions/LiveFeed";
+import { BottomNewsFeedTabs } from "@/components/positions/BottomNewsFeedTabs";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
@@ -105,7 +105,7 @@ export function BottomStrip() {
         <KeyLevelsInline symbol={symbol} />
         <TodayInline trades={trades} />
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-t border-hairline">
-          <LiveFeed />
+          <BottomNewsFeedTabs symbol={symbol} />
         </div>
       </div>
     );
@@ -134,7 +134,7 @@ export function BottomStrip() {
         <TodayCol trades={trades} activeTradeId={activeTradeId} />
       </Column>
       <Column>
-        <LiveFeed />
+        <BottomNewsFeedTabs symbol={symbol} />
       </Column>
     </div>
   );
