@@ -22,6 +22,10 @@ export const ChartAnnotationsSchema = z.object({
   max_pain: z.number().nullable(),
   gamma_flip: z.number().nullable(),
   earnings_date: z.string().nullable(),
+  // WS-B: auto support/resistance from swing structure. Default [] so an
+  // older /bars envelope (no S/R fields) still parses.
+  support_levels: z.array(z.number()).default([]),
+  resistance_levels: z.array(z.number()).default([]),
 });
 
 export const ChartResponseSchema = z.object({
