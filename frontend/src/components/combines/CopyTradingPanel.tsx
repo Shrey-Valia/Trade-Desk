@@ -1,5 +1,21 @@
+import { useEffect, useState } from "react";
+
 import { UIButton } from "@/components/ui/UIButton";
 import { useCombines, useUpdateCopyConfig } from "@/hooks/useCombines";
+
+/** Copy multiplier bounds — must match the backend FollowerConfig schema
+ *  (routers/combines.py: ge=0.1, le=10.0). */
+const MULT_MIN = 0.1;
+const MULT_MAX = 10.0;
+
+/** Clamp a free-typed multiplier into the accepted range, rounded to a
+ *  sane 0.01 step. Returns null for un-parseable input so the caller can
+ *  hold the previous committed value. */
+function parseMultiplier(raw: string): number | null {
+  const n = Number(raw);
+  if (!raw.trim() || Number.isNaN(n)) return null;
+  return Math.min(MULT_MAX, Math.max(MULT_MIN, Math.round(n * 100) / 100));
+}
 
 /**
  * Copy-trading controls: pick one LEAD combine and toggle which others
@@ -113,6 +129,7 @@ export function CopyTradingPanel() {
                         {on && (
                           <MultiplierPicker
                             value={mult}
+                            cap={c.max_contracts}
                             onChange={(m) => setMultiplier(c.id, m)}
                           />
                         )}
@@ -133,28 +150,76 @@ export function CopyTradingPanel() {
   );
 }
 
-/** Per-follower size multiplier — 0.5× / 1× / 2× of the lead's contracts. */
+/**
+ * Per-follower size multiplier — a free numeric input (0.1×–10.0×) applied
+ * to the lead's contract count before clamping to this follower's scaling
+ * cap. Commits the clamped value on blur / Enter so transient keystrokes
+ * (e.g. an empty field mid-edit) don't fire a mutation; the helper line
+ * shows the resulting clamped contract count for a 1-contract lead position
+ * so the user sees the cap bite (`mult × N` capped at `cap`).
+ */
 function MultiplierPicker({
   value,
+  cap,
   onChange,
 }: {
   value: number;
+  cap: number;
   onChange: (m: number) => void;
 }) {
+  const [draft, setDraft] = useState(String(value));
+  // Re-sync the field when the committed value changes from elsewhere
+  // (toggle off→on resets to 1, another tab edits it, etc.).
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const commit = () => {
+    const parsed = parseMultiplier(draft);
+    if (parsed == null) {
+      setDraft(String(value)); // revert un-parseable input
+      return;
+    }
+    setDraft(String(parsed));
+    if (parsed !== value) onChange(parsed);
+  };
+
+  // What a 1-contract lead leg resolves to on this follower: round the
+  // scaled size (min 1 for an enabled follower) then clamp to the cap.
+  const previewMult = parseMultiplier(draft) ?? value;
+  const resolved = Math.min(cap, Math.max(1, Math.round(1 * previewMult)));
+
   return (
-    <div className="flex" style={{ gap: 4 }}>
-      {[0.5, 1, 2].map((m) => (
-        <UIButton
-          key={m}
-          size="sm"
-          active={value === m}
-          onClick={() => onChange(m)}
-          aria-pressed={value === m}
-          className="min-w-[40px] tabular-nums"
-        >
-          {m}×
-        </UIButton>
-      ))}
+    <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex items-center">
+        <input
+          type="number"
+          inputMode="decimal"
+          min={MULT_MIN}
+          max={MULT_MAX}
+          step={0.1}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          aria-label="Size multiplier"
+          className="h-7 w-14 px-1.5 text-right tabular-nums bg-tier-0 border border-hairline text-fg-primary focus:border-amber focus:outline-none"
+          style={{ borderRadius: 4, fontSize: 12 }}
+        />
+        <span className="text-fg-tertiary-2 pl-0.5" style={{ fontSize: 11 }}>
+          ×
+        </span>
+      </div>
+      <span
+        className="text-fg-tertiary-2 tabular-nums whitespace-nowrap"
+        style={{ fontSize: 11 }}
+        title={`Per lead contract → ${resolved} (capped at ${cap})`}
+      >
+        →&nbsp;{resolved}/c
+      </span>
     </div>
   );
 }
