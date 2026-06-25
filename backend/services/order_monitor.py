@@ -504,8 +504,15 @@ def _breaches_floor(
     if realized_base + open_urpl <= snap.mll:
         return True
     if dll_active and snap.dll_budget > 0:
+        # Only the OPEN book's loss should TRIGGER a DLL liquidation. If the
+        # already-REALIZED day-loss (snap.dll_used, fixed for the pass) alone
+        # meets the budget, the combine is day-LOCKED — the soft-gate blocks new
+        # opens, but force-closing the existing open book (which may be WINNERS,
+        # and whose closure can't reduce the realized day-loss) is wrong. So the
+        # DLL only fires while the realized portion is still under budget and the
+        # open loss pushes it over.
         live_dll_used = snap.dll_used + max(0.0, -open_urpl)
-        if live_dll_used >= snap.dll_budget:
+        if snap.dll_used < snap.dll_budget and live_dll_used >= snap.dll_budget:
             return True
     return False
 

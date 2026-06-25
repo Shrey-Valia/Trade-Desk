@@ -442,6 +442,9 @@ function OpenPositionCol({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
       queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+      // The remaining position now holds fewer contracts — refetch its analytics
+      // so UPL / greeks / the CLOSE "realize" amount reflect the smaller size.
+      if (trade) queryClient.invalidateQueries({ queryKey: ["trade-analytics", trade.id] });
       setCloseQty(null); // reset to "full" for the now-smaller remaining position
     },
     onError: (e) => toast.error((e as Error)?.message || "Could not scale out"),

@@ -167,8 +167,20 @@ def support_resistance(
     resistance = [lv for lv in levels if lv.price > last_close]
 
     def top(levels_in: list[Level]) -> list[float]:
+        # Dedupe by rounded price (a high-cluster and a low-cluster can land at
+        # the same price on the same side of the last close) — keep the highest-
+        # scoring, then cap to max_levels so they render as ONE line.
         ranked = sorted(levels_in, key=lambda lv: lv.score, reverse=True)
-        chosen = ranked[:max_levels]
-        return sorted(round(lv.price, 2) for lv in chosen)
+        seen: set[float] = set()
+        chosen: list[float] = []
+        for lv in ranked:
+            p = round(lv.price, 2)
+            if p in seen:
+                continue
+            seen.add(p)
+            chosen.append(p)
+            if len(chosen) >= max_levels:
+                break
+        return sorted(chosen)
 
     return top(support), top(resistance)

@@ -387,6 +387,51 @@ def test_partial_cascade_closes_followers_proportionally(auth_client, session_fa
         assert copy.realized_pnl == 200.0
 
 
+def test_partial_cascade_books_per_slice_not_accumulated_total(auth_client, session_factory):
+    """Two sequential scale-outs book EACH slice's P&L proportionally to the
+    follower — not the lead's running accumulated realized total. Regression: the
+    cascade read lead_trade.realized_pnl (accumulated), so the 2nd scale-out
+    re-booked the lead's whole history onto the follower (over-inflating P&L)."""
+    lead = make_combine(auth_client, "50K", name="Lead")
+    f1 = make_combine(auth_client, "100K", name="Mirror")  # 1.0× → matches lead size
+    _set_config(auth_client, lead["id"], [(f1["id"], 1.0)])
+
+    with session_factory() as s:
+        lead_c = s.get(Combine, lead["id"])
+        trade = _lead_trade(s, lead_c, contracts=4)  # follower → 4 (×1.0)
+        mirror_open(s, lead_c, trade)
+        lead_id = trade.id
+
+        # Scale-out #1: close 1 of 4, slice +100. Lead realized total → 100.
+        legs = trade.legs
+        legs[0]["contracts"] = 3
+        trade.legs = legs
+        trade.realized_pnl = 100.0
+        s.add(trade)
+        s.commit()
+        mirror_close(s, trade, closed_qty=1, slice_pnl=100.0)
+        copy = s.execute(
+            select(Trade).where(Trade.copied_from_trade_id == lead_id)
+        ).scalars().one()
+        assert copy.legs[0]["contracts"] == 3
+        assert copy.realized_pnl == 100.0  # 100 × (1/1)
+
+        # Scale-out #2: close 1 more, slice +120. Lead realized ACCUMULATES → 220.
+        legs = trade.legs
+        legs[0]["contracts"] = 2
+        trade.legs = legs
+        trade.realized_pnl = 220.0  # running total, NOT this slice
+        s.add(trade)
+        s.commit()
+        mirror_close(s, trade, closed_qty=1, slice_pnl=120.0)
+        copy = s.execute(
+            select(Trade).where(Trade.copied_from_trade_id == lead_id)
+        ).scalars().one()
+        assert copy.legs[0]["contracts"] == 2
+        # Per-slice: 100 + 120 = 220 (NOT 100 + 220 = 320 from the accumulated total).
+        assert copy.realized_pnl == 220.0
+
+
 def test_partial_cascade_full_unwind_closes_follower(auth_client, session_factory):
     """Cascading partials that exhaust the follower's contracts close it."""
     lead = make_combine(auth_client, "50K", name="Lead")

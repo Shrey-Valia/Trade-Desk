@@ -218,7 +218,10 @@ def scale_out_trade(
     if trade.status != "open":
         raise HTTPException(status_code=409, detail="can only scale out an OPEN position")
     legs = trade.legs
-    held = max((int(leg.get("contracts", 1) or 1) for leg in legs), default=1)
+    # Guard on the SMALLEST leg so reducing every leg by qty can't drive any leg
+    # negative (imbalanced multi-leg positions are representable). For the common
+    # balanced case (straddle / single leg) min == max, so this is unchanged.
+    held = min((int(leg.get("contracts", 1) or 1) for leg in legs), default=1)
     if payload.qty >= held:
         raise HTTPException(
             status_code=400,
@@ -238,8 +241,10 @@ def scale_out_trade(
     session.refresh(trade)
     # Copy-trade: cascade the partial close proportionally to follower copies.
     # The lead's legs are ALREADY reduced here — mirror_close derives the lead's
-    # original size as (post-reduction contracts + closed_qty).
-    mirror_close(session, trade, closed_qty=payload.qty)
+    # original size as (post-reduction contracts + closed_qty). Pass the per-slice
+    # P&L explicitly (trade.realized_pnl is the running accumulated total, which
+    # would over-book followers on the 2nd+ scale-out).
+    mirror_close(session, trade, closed_qty=payload.qty, slice_pnl=payload.realized_pnl)
     return _to_out(trade)
 
 

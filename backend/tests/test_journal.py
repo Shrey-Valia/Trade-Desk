@@ -200,6 +200,29 @@ def test_scale_out_reduces_contracts_and_accumulates_realized(client):
     assert r3.status_code == 400
 
 
+def test_scale_out_imbalanced_legs_guards_on_smallest_leg(client):
+    """Scale-out guards on the SMALLEST leg so reducing every leg by qty can't
+    drive any leg negative on an imbalanced multi-leg position."""
+    legs = [
+        {"side": "call", "action": "buy", "strike": 230,
+         "expiry": _future_expiry(), "contracts": 4, "entry_price": 6.20},
+        {"side": "put", "action": "buy", "strike": 230,
+         "expiry": _future_expiry(), "contracts": 2, "entry_price": 5.80},
+    ]
+    tid = client.post("/api/journal/trades", json=_trade_payload(legs=legs)).json()["id"]
+    # qty 3 would drive the 2-contract leg to -1 → rejected (held = min leg = 2).
+    r = client.post(
+        f"/api/journal/trades/{tid}/scale-out", json={"qty": 3, "realized_pnl": 50.0}
+    )
+    assert r.status_code == 400
+    # qty 1 is fine → 4→3, 2→1 (no leg goes negative).
+    r2 = client.post(
+        f"/api/journal/trades/{tid}/scale-out", json={"qty": 1, "realized_pnl": 50.0}
+    )
+    assert r2.status_code == 200
+    assert sorted(leg["contracts"] for leg in r2.json()["legs"]) == [1, 3]
+
+
 def test_delete_removes_trade(client):
     tid = client.post("/api/journal/trades", json=_trade_payload()).json()["id"]
     assert client.delete(f"/api/journal/trades/{tid}").status_code == 204
