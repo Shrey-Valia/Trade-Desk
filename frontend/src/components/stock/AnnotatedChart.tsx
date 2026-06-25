@@ -251,6 +251,8 @@ const EMPTY_ANNOTATIONS: ChartAnnotations = {
   max_pain: null,
   gamma_flip: null,
   earnings_date: null,
+  support_levels: [],
+  resistance_levels: [],
 };
 
 // Stable empty array so a no-position render doesn't churn the overlay effect.
@@ -297,9 +299,12 @@ function LightweightChart({
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const annotationLinesRef = useRef<IPriceLine[]>([]);
   const positionLinesRef = useRef<IPriceLine[]>([]);
-  // WS1: one LineSeries per enabled indicator, keyed by indicator key so
-  // the effect can diff add/remove without rebuilding everything.
-  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
+  // WS1: one series per enabled indicator COMPONENT, keyed by its series
+  // key so the effect can diff add/remove without rebuilding everything.
+  // WS-B: a component can be a LineSeries or (macd_hist) a HistogramSeries.
+  const indicatorSeriesRef = useRef<
+    Map<string, ISeriesApi<"Line"> | ISeriesApi<"Histogram">>
+  >(new Map());
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   // Synthetic in-progress candle: the current slot timestamp + running
   // open/high/low so quote ticks update one bar in place (close = quote).
@@ -617,22 +622,36 @@ function LightweightChart({
     // Add / update the enabled series.
     for (const s of indicatorSeries) {
       const color = INDICATOR_COLORS[s.key] ?? colors.accentCyan;
+      const scaleId = PANE_SCALE_ID[s.pane] ?? "right";
       let series = live.get(s.key);
+
       if (!series) {
-        series = chart.addSeries(LineSeries, {
-          color,
-          lineWidth: 2,
-          priceLineVisible: false,
-          lastValueVisible: s.pane !== "price",
-          // RSI/ATR live in their own pane via a dedicated price scale;
-          // price-pane indicators ride the main right scale.
-          priceScaleId: PANE_SCALE_ID[s.pane] ?? "right",
-          ...(s.pane === "oscillator"
-            ? { priceFormat: { type: "price" as const, precision: 0, minMove: 1 } }
-            : {}),
-        });
-        // Squeeze the oscillator/volatility panes into the lower band so
-        // they don't overlap the candles; pin RSI to a fixed 0–100 range.
+        // WS-B: macd_hist renders as a HistogramSeries (signed bars);
+        // every other component is a LineSeries.
+        if (s.kind === "histogram") {
+          series = chart.addSeries(HistogramSeries, {
+            color,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            priceScaleId: scaleId,
+          });
+        } else {
+          series = chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: s.pane !== "price",
+            // RSI/Stoch/ATR/MACD live in their own pane via a dedicated
+            // price scale; price-pane indicators ride the main right scale.
+            priceScaleId: scaleId,
+            ...(s.pane === "oscillator"
+              ? { priceFormat: { type: "price" as const, precision: 0, minMove: 1 } }
+              : {}),
+          });
+        }
+
+        // Squeeze the oscillator/volatility/macd panes into the lower band
+        // so they don't overlap the candles; pin RSI/Stoch to 0–100.
         if (s.pane === "oscillator") {
           series.priceScale().applyOptions({
             scaleMargins: { top: 0.78, bottom: 0.0 },
@@ -647,24 +666,53 @@ function LightweightChart({
           series.priceScale().applyOptions({
             scaleMargins: { top: 0.85, bottom: 0.0 },
           });
+        } else if (s.pane === "macd") {
+          // MACD is zero-centred and auto-scaled; pin it to its own lower
+          // band so the line/signal/histogram share one pane.
+          series.priceScale().applyOptions({
+            scaleMargins: { top: 0.78, bottom: 0.0 },
+          });
         }
         live.set(s.key, series);
       } else {
         series.applyOptions({ color });
       }
 
-      series.setData(
-        bars
-          .map((b, i) => {
-            const v = s.values[i];
-            return v == null ? null : { time: toTime(b.t), value: v };
-          })
-          .filter((p): p is { time: UTCTimestamp; value: number } => p !== null),
-      );
+      if (s.kind === "histogram") {
+        // Color each histogram bar by sign: bullish above zero, bearish
+        // below, so MACD momentum reads at a glance.
+        (series as ISeriesApi<"Histogram">).setData(
+          bars
+            .map((b, i) => {
+              const v = s.values[i];
+              return v == null
+                ? null
+                : {
+                    time: toTime(b.t),
+                    value: v,
+                    color: v >= 0 ? `${userBullish}99` : `${userBearish}99`,
+                  };
+            })
+            .filter(
+              (p): p is { time: UTCTimestamp; value: number; color: string } =>
+                p !== null,
+            ),
+        );
+      } else {
+        (series as ISeriesApi<"Line">).setData(
+          bars
+            .map((b, i) => {
+              const v = s.values[i];
+              return v == null ? null : { time: toTime(b.t), value: v };
+            })
+            .filter((p): p is { time: UTCTimestamp; value: number } => p !== null),
+        );
+      }
     }
     // Depend on `bars` so a timeframe switch / bars refetch re-aligns the
     // overlay data; `indicatorSeries` covers toggle changes.
-  }, [indicatorSeries, bars]);
+    // userBullish/userBearish color the macd histogram bars.
+  }, [indicatorSeries, bars, userBullish, userBearish]);
   // ===================== end WS1 indicator overlays =====================
 
   // Market-structure annotation overlay — toggle-aware.
@@ -824,6 +872,16 @@ function buildPriceLines(
   addLine(a.max_pain, colors.accentCyan, "MP");
   addLine(a.gamma_flip, colors.accentCyan, "GF");
 
+  // WS-B: auto support/resistance — support green (price floor), resistance
+  // red (price ceiling), matching the PW/CW color convention. Same dotted
+  // dimmed price-line style; gated behind the same annotations toggle.
+  for (const s of a.support_levels ?? []) {
+    addLine(s, colors.bullish, "S");
+  }
+  for (const r of a.resistance_levels ?? []) {
+    addLine(r, colors.bearish, "R");
+  }
+
   return lines;
 }
 
@@ -853,16 +911,31 @@ const INDICATOR_COLORS: Record<string, string> = {
   vwap: colors.fgSecondary,
   rsi14: colors.accentCyan,
   atr14: colors.warning,
+  // WS-B (round 2): Bollinger bands — mid amber, envelope dimmer cyan so
+  // the channel reads as a pair around the SMA midline.
+  bb_upper: colors.accentCyan,
+  bb_mid: colors.accentAmber,
+  bb_lower: colors.accentCyan,
+  // MACD: line cyan, signal amber, histogram tertiary (colored per-bar
+  // by sign in the effect below).
+  macd_line: colors.accentCyan,
+  macd_signal: colors.accentAmber,
+  macd_hist: colors.fgTertiary,
+  // Stochastic: %K cyan, %D amber (mirrors RSI's oscillator palette).
+  stoch_k: colors.accentCyan,
+  stoch_d: colors.accentAmber,
 };
 
 // WS1: which price scale each pane binds to. "price" rides the main
-// right scale (overlaid on candles); the oscillator/volatility panes get
-// their own hidden scales so RSI's 0–100 range and ATR's absolute range
-// don't distort the price axis.
+// right scale (overlaid on candles); the oscillator/volatility/macd panes
+// get their own hidden scales so RSI/Stoch's 0–100 range, ATR's absolute
+// range, and MACD's zero-centred range don't distort the price axis.
+// WS-B: MACD gets its own pane; Stochastic shares the oscillator scale.
 const PANE_SCALE_ID: Record<string, string> = {
   price: "right",
   oscillator: "rsi",
   volatility: "atr",
+  macd: "macd",
 };
 
 /** Compose a #RRGGBBAA from #RRGGBB + 0..1 opacity. Falls back to the

@@ -9,7 +9,16 @@ from dataclasses import dataclass
 
 import pytest
 
-from calculations.technicals import atr, ema, rsi, sma, vwap
+from calculations.technicals import (
+    atr,
+    bollinger,
+    ema,
+    macd,
+    rsi,
+    sma,
+    stochastic,
+    vwap,
+)
 
 
 @dataclass
@@ -195,3 +204,134 @@ def test_atr_wilder_smoothing_step():
 
 def test_atr_insufficient_data_all_none():
     assert atr([_Bar(high=1, low=1, close=1)], 14) == [None]
+
+
+# ---------- macd ----------
+
+
+def test_macd_linear_ramp_constant_line():
+    # On a linear ramp the two EMAs run parallel, so MACD line is flat.
+    # fast=2 seed idx1=SMA(1,2)=1.5; slow=4 seed idx3=SMA(1,2,3,4)=2.5;
+    # line idx3 = 3.5 - 2.5 = 1.0 and stays 1.0. Line is None until slow-1=3.
+    closes = [1, 2, 3, 4, 5, 6, 7, 8]
+    m = macd(closes, fast=2, slow=4, signal=2)
+    assert m["line"][:3] == [None, None, None]
+    assert m["line"][3] == pytest.approx(1.0)
+    assert m["line"][-1] == pytest.approx(1.0)
+
+
+def test_macd_signal_and_histogram_offsets():
+    # Signal EMAs the line; first defined at slow-1 + signal-1 = 3+1 = 4.
+    # With a flat line of 1.0 the signal seeds to 1.0 and the histogram
+    # (line - signal) is 0 once both are defined.
+    closes = [1, 2, 3, 4, 5, 6, 7, 8]
+    m = macd(closes, fast=2, slow=4, signal=2)
+    assert m["signal"][3] is None
+    assert m["signal"][4] == pytest.approx(1.0)
+    assert m["histogram"][3] is None
+    assert m["histogram"][4] == pytest.approx(0.0)
+
+
+def test_macd_aligned_length_and_components():
+    closes = list(range(40))
+    m = macd(closes)  # default 12/26/9
+    assert set(m) == {"line", "signal", "histogram"}
+    for comp in m.values():
+        assert len(comp) == len(closes)
+    # Default MACD line first defined at slow-1 = 25.
+    assert m["line"][24] is None
+    assert m["line"][25] is not None
+    # Signal first defined at slow-1 + signal-1 = 25 + 8 = 33.
+    assert m["signal"][32] is None
+    assert m["signal"][33] is not None
+
+
+def test_macd_invalid_windows_all_none():
+    closes = [1, 2, 3, 4, 5]
+    # fast >= slow is invalid.
+    m = macd(closes, fast=5, slow=3, signal=2)
+    assert m["line"] == [None] * 5
+    assert m["signal"] == [None] * 5
+    assert m["histogram"] == [None] * 5
+
+
+# ---------- bollinger ----------
+
+
+def test_bollinger_mid_is_sma():
+    # n=3 over [2,4,6,8]: mid = SMA(3) -> idx2=4.0, idx3=6.0.
+    b = bollinger([2, 4, 6, 8], n=3, k=2)
+    assert b["mid"][:2] == [None, None]
+    assert b["mid"][2] == pytest.approx(4.0)
+    assert b["mid"][3] == pytest.approx(6.0)
+
+
+def test_bollinger_band_width_population_sd():
+    # Window [2,4,6]: mean 4, population variance (4+0+4)/3 = 8/3,
+    # sd = sqrt(8/3) ≈ 1.63299. upper/lower = mid ± 2σ.
+    b = bollinger([2, 4, 6, 8], n=3, k=2)
+    sd = (8 / 3) ** 0.5
+    assert b["upper"][2] == pytest.approx(4.0 + 2 * sd)
+    assert b["lower"][2] == pytest.approx(4.0 - 2 * sd)
+
+
+def test_bollinger_flat_series_zero_width():
+    # Constant closes -> zero variance -> all three bands coincide.
+    b = bollinger([5, 5, 5, 5], n=2, k=2)
+    assert b["mid"][1] == pytest.approx(5.0)
+    assert b["upper"][1] == pytest.approx(5.0)
+    assert b["lower"][1] == pytest.approx(5.0)
+
+
+def test_bollinger_insufficient_data_all_none():
+    b = bollinger([1, 2], n=5)
+    assert b == {"upper": [None, None], "mid": [None, None], "lower": [None, None]}
+
+
+# ---------- stochastic ----------
+
+
+def test_stochastic_percent_k():
+    # k=3. idx2 window bars0-2: hh=14, ll=8, close=13 -> 100*5/6 ≈ 83.33.
+    # idx3 window bars1-3: hh=14, ll=9, close=12 -> 60. idx4: hh=15, ll=10,
+    # close=14 -> 80.
+    bars = [
+        _Bar(high=10, low=8, close=9),
+        _Bar(high=12, low=9, close=11),
+        _Bar(high=14, low=10, close=13),
+        _Bar(high=13, low=11, close=12),
+        _Bar(high=15, low=12, close=14),
+    ]
+    s = stochastic(bars, k=3, d=2)
+    assert s["k"][:2] == [None, None]
+    assert s["k"][2] == pytest.approx(100 * 5 / 6)
+    assert s["k"][3] == pytest.approx(60.0)
+    assert s["k"][4] == pytest.approx(80.0)
+
+
+def test_stochastic_percent_d_is_sma_of_k():
+    # %D = SMA(2) of %K, first defined at idx (k-1)+(d-1) = 2+1 = 3.
+    bars = [
+        _Bar(high=10, low=8, close=9),
+        _Bar(high=12, low=9, close=11),
+        _Bar(high=14, low=10, close=13),
+        _Bar(high=13, low=11, close=12),
+        _Bar(high=15, low=12, close=14),
+    ]
+    s = stochastic(bars, k=3, d=2)
+    assert s["d"][2] is None
+    assert s["d"][3] == pytest.approx((100 * 5 / 6 + 60.0) / 2)
+    assert s["d"][4] == pytest.approx((60.0 + 80.0) / 2)
+
+
+def test_stochastic_flat_window_is_neutral_50():
+    # A window where high == low (no range) maps %K to 50, not a crash.
+    bars = [_Bar(high=5, low=5, close=5) for _ in range(3)]
+    s = stochastic(bars, k=3, d=2)
+    assert s["k"][2] == pytest.approx(50.0)
+
+
+def test_stochastic_insufficient_data_all_none():
+    bars = [_Bar(high=2, low=1, close=1.5)]
+    s = stochastic(bars, k=14, d=3)
+    assert s == {"k": [None], "d": [None]}

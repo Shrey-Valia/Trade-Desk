@@ -158,3 +158,139 @@ def atr(bars: Sequence[Bar], n: int = 14) -> list[float | None]:
         prev_atr = (prev_atr * (n - 1) + trs[k]) / n
         out[k + 1] = prev_atr
     return out
+
+
+def _ema_full(closes: Sequence[float], n: int) -> list[float | None]:
+    """EMA with an SMA seed (same as :func:`ema`) but exposed for reuse by
+    MACD, which needs to chain two EMAs and an EMA-of-an-EMA. Identical
+    math to ``ema``; kept separate only so MACD's intent reads clearly."""
+    return ema(closes, n)
+
+
+def macd(
+    closes: Sequence[float],
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> dict[str, list[float | None]]:
+    """Moving Average Convergence/Divergence (Appel).
+
+    Returns three per-bar series aligned 1:1 with ``closes``:
+      - ``line``      = EMA(fast) − EMA(slow)
+      - ``signal``    = EMA(signal) of the MACD line
+      - ``histogram`` = line − signal
+
+    The MACD line is ``None`` until both underlying EMAs are defined
+    (index ``slow-1``). The signal line seeds its own EMA from the SMA of
+    the first ``signal`` *defined* MACD values, so it first appears at
+    index ``slow-1 + signal-1`` (= ``slow + signal - 2``); the histogram
+    appears with the signal. Invalid windows (non-positive, fast ≥ slow,
+    or not enough data) yield all-``None`` series of the input length.
+    """
+    length = len(closes)
+    none_line: list[float | None] = [None] * length
+    if fast <= 0 or slow <= 0 or signal <= 0 or fast >= slow:
+        return {"line": none_line[:], "signal": none_line[:], "histogram": none_line[:]}
+
+    fast_ema = _ema_full(closes, fast)
+    slow_ema = _ema_full(closes, slow)
+
+    line: list[float | None] = [None] * length
+    for i in range(length):
+        f = fast_ema[i]
+        s = slow_ema[i]
+        if f is not None and s is not None:
+            line[i] = f - s
+
+    # EMA the MACD line over its *defined* region. The line is contiguous
+    # from the first non-None (index slow-1) onward, so we EMA that
+    # contiguous tail and map results back to absolute indices.
+    defined_idx = [i for i, v in enumerate(line) if v is not None]
+    sig: list[float | None] = [None] * length
+    hist: list[float | None] = [None] * length
+    if len(defined_idx) >= signal:
+        start = defined_idx[0]
+        tail = [line[i] for i in defined_idx]  # contiguous, all floats
+        sig_tail = ema([float(v) for v in tail], signal)  # type: ignore[arg-type]
+        for offset, sv in enumerate(sig_tail):
+            if sv is None:
+                continue
+            abs_i = start + offset
+            sig[abs_i] = sv
+            li = line[abs_i]
+            if li is not None:
+                hist[abs_i] = li - sv
+
+    return {"line": line, "signal": sig, "histogram": hist}
+
+
+def bollinger(
+    closes: Sequence[float], n: int = 20, k: float = 2.0
+) -> dict[str, list[float | None]]:
+    """Bollinger Bands — an SMA midline with bands ``k`` population standard
+    deviations above/below.
+
+    Returns three per-bar series aligned 1:1 with ``closes``:
+      - ``mid``   = SMA(n)
+      - ``upper`` = mid + k·σ
+      - ``lower`` = mid − k·σ
+
+    σ is the *population* standard deviation over the same trailing ``n``
+    closes that feed the midline (TradingView convention). The first
+    ``n-1`` entries are ``None``. Invalid windows yield all-``None``.
+    """
+    length = len(closes)
+    mid: list[float | None] = [None] * length
+    upper: list[float | None] = [None] * length
+    lower: list[float | None] = [None] * length
+    if n <= 0 or length < n:
+        return {"upper": upper, "mid": mid, "lower": lower}
+
+    for i in range(n - 1, length):
+        window = closes[i - n + 1 : i + 1]
+        m = sum(window) / n
+        var = sum((x - m) ** 2 for x in window) / n  # population variance
+        sd = var**0.5
+        mid[i] = m
+        upper[i] = m + k * sd
+        lower[i] = m - k * sd
+    return {"upper": upper, "mid": mid, "lower": lower}
+
+
+def stochastic(
+    bars: Sequence[Bar], k: int = 14, d: int = 3
+) -> dict[str, list[float | None]]:
+    """Stochastic oscillator (%K / %D), 0–100.
+
+    %K_i = 100·(close_i − lowest_low) / (highest_high − lowest_low) over
+    the trailing ``k`` bars; %D is the ``d``-period SMA of %K. A flat
+    window (high == low) yields %K = 50 (neutral) rather than a divide-by-
+    zero. %K first appears at index ``k-1``; %D at index ``k-1 + d-1``.
+    Invalid windows yield all-``None`` series of the input length.
+    """
+    length = len(bars)
+    pk: list[float | None] = [None] * length
+    pd: list[float | None] = [None] * length
+    if k <= 0 or d <= 0 or length < k:
+        return {"k": pk, "d": pd}
+
+    for i in range(k - 1, length):
+        window = bars[i - k + 1 : i + 1]
+        hh = max(b.high for b in window)
+        ll = min(b.low for b in window)
+        rng = hh - ll
+        if rng == 0:
+            pk[i] = 50.0
+        else:
+            pk[i] = 100.0 * (bars[i].close - ll) / rng
+
+    # %D = SMA(d) of the *defined* %K tail (contiguous from index k-1).
+    defined = [v for v in pk if v is not None]
+    if len(defined) >= d:
+        start = k - 1
+        d_tail = sma([float(v) for v in defined], d)  # type: ignore[arg-type]
+        for offset, dv in enumerate(d_tail):
+            if dv is not None:
+                pd[start + offset] = dv
+
+    return {"k": pk, "d": pd}

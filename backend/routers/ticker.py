@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -27,7 +28,17 @@ from calculations.iv_metrics import iv_percentile, vrp
 from calculations.pc_ratio import pc_ratio
 from calculations.realized_vol import realized_vol
 from calculations.skew import skew_25d
-from calculations.technicals import atr, ema, rsi, sma, vwap
+from calculations.levels import support_resistance
+from calculations.technicals import (
+    atr,
+    bollinger,
+    ema,
+    macd,
+    rsi,
+    sma,
+    stochastic,
+    vwap,
+)
 from calculations.types import ContractRow
 from database import SessionLocal
 from models.options_snapshot import OptionsSnapshot
@@ -161,6 +172,16 @@ def get_ticker_detail(symbol: str) -> TickerDetailOut:
 # -- Phase 3: chart + metrics -----------------------------------------------
 
 
+@dataclass(frozen=True)
+class _LevelBar:
+    """Adapter exposing BarPoint's h/l/c under the high/low/close names the
+    support_resistance level detector reads (structural Bar protocol)."""
+
+    high: float
+    low: float
+    close: float
+
+
 def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
     """Bars-only fetch. Separated so the bars path doesn't block on the
     options-chain fetch that drives annotations — see split below.
@@ -218,10 +239,12 @@ def get_ticker_bars(symbol: str, timeframe: str = "5m") -> ChartResponse:
 
 # -- Phase: technical indicator overlays ------------------------------------
 
-# Supported indicator keys. Each maps to a (label, pane, builder) where
-# builder(closes, bars) -> list[float | None] aligned to the bars. Window
-# sizes are encoded in the key (sma20 -> 20) so the toggle set is the only
-# query param the frontend sends.
+# Supported indicator *request tokens* — what the frontend sends in `set`.
+# Each maps to a (label, pane) used for SINGLE-component indicators. Window
+# sizes are encoded in the token (sma20 -> 20). Multi-component indicators
+# (macd / bb / stoch) are handled by _build_indicator directly, which emits
+# one IndicatorSeries per component (its own key, pane, and kind); their
+# request token is listed here only so the set-normalization accepts it.
 _INDICATOR_SPECS: dict[str, tuple[str, str]] = {
     "sma20": ("SMA 20", "price"),
     "sma50": ("SMA 50", "price"),
@@ -230,14 +253,57 @@ _INDICATOR_SPECS: dict[str, tuple[str, str]] = {
     "vwap": ("VWAP", "price"),
     "rsi14": ("RSI 14", "oscillator"),
     "atr14": ("ATR 14", "volatility"),
+    # Multi-component — _build_indicator expands each into several series.
+    "macd": ("MACD", "macd"),
+    "bb": ("Bollinger", "price"),
+    "stoch": ("Stochastic", "oscillator"),
 }
 
 _DEFAULT_INDICATOR_SET = "sma20,ema50,vwap,rsi14,atr14"
 
 
-def _build_indicator(key: str, closes: list[float], bars: list) -> list | None:
-    """Dispatch one indicator key to its calculation. Returns the per-bar
-    series, or None if the key is unrecognized."""
+def _build_indicator(key: str, closes: list[float], bars: list) -> list[IndicatorSeries]:
+    """Dispatch one request token to its calculation. Returns a list of
+    IndicatorSeries — one entry for single-component indicators, several
+    for multi-component ones (MACD / Bollinger / Stochastic), each with its
+    own component key, pane, and kind. Unknown tokens yield ``[]``."""
+    if key == "macd":
+        m = macd(closes)
+        return [
+            IndicatorSeries(key="macd_line", label="MACD", pane="macd", values=m["line"]),
+            IndicatorSeries(key="macd_signal", label="Signal", pane="macd", values=m["signal"]),
+            IndicatorSeries(
+                key="macd_hist",
+                label="Histogram",
+                pane="macd",
+                kind="histogram",
+                values=m["histogram"],
+            ),
+        ]
+    if key == "bb":
+        b = bollinger(closes)
+        return [
+            IndicatorSeries(key="bb_upper", label="BB Upper", pane="price", values=b["upper"]),
+            IndicatorSeries(key="bb_mid", label="BB Mid", pane="price", values=b["mid"]),
+            IndicatorSeries(key="bb_lower", label="BB Lower", pane="price", values=b["lower"]),
+        ]
+    if key == "stoch":
+        s = stochastic(bars)
+        return [
+            IndicatorSeries(key="stoch_k", label="%K", pane="oscillator", values=s["k"]),
+            IndicatorSeries(key="stoch_d", label="%D", pane="oscillator", values=s["d"]),
+        ]
+
+    values = _build_single(key, closes, bars)
+    if values is None:
+        return []
+    label, pane = _INDICATOR_SPECS[key]
+    return [IndicatorSeries(key=key, label=label, pane=pane, values=values)]
+
+
+def _build_single(key: str, closes: list[float], bars: list) -> list | None:
+    """Per-bar series for a single-component indicator, or None if the key
+    is unrecognized."""
     if key == "vwap":
         return vwap(bars)
     if key == "atr14":
@@ -300,13 +366,7 @@ def get_ticker_indicators(
 
     series: list[IndicatorSeries] = []
     for key in keys:
-        values = _build_indicator(key, closes, bars)
-        if values is None:
-            continue
-        label, pane = _INDICATOR_SPECS[key]
-        series.append(
-            IndicatorSeries(key=key, label=label, pane=pane, values=values)
-        )
+        series.extend(_build_indicator(key, closes, bars))
 
     response = IndicatorsResponse(
         symbol=symbol, timeframe=timeframe, times=times, series=series
@@ -335,6 +395,14 @@ def get_ticker_chart(symbol: str, timeframe: str = "5m") -> ChartResponse:
     chain, oi_source = _chain_with_oi_proxy(symbol)
     annotations = _compute_annotations(chain, spot)
     annotations.earnings_date = next_earnings_for(symbol)
+
+    # Auto support/resistance from the chart's own bars (no chain needed).
+    # BarPoint uses h/l/c; adapt to the high/low/close structural Bar the
+    # levels module reads.
+    level_bars = [_LevelBar(b.h, b.l, b.c) for b in bar_points]
+    support, resistance = support_resistance(level_bars)
+    annotations.support_levels = support
+    annotations.resistance_levels = resistance
 
     response = ChartResponse(
         symbol=symbol,
