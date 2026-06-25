@@ -117,6 +117,14 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             limit_price=lead_trade.limit_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            # Copy the trailing-stop CONFIG (offset) so followers trail too,
+            # but NOT trail_hwm: each follower's monitor must seed its own
+            # high-water from its own marks. Copying the lead's trail_hwm
+            # would make followers trail off the LEAD's peak — closing them on
+            # the lead's pullback regardless of their own price action.
+            trail_amount=lead_trade.trail_amount,
+            trail_pct=lead_trade.trail_pct,
+            trail_hwm=None,
             is_paper=True,
             notes=f"{lead_trade.notes or ''} · copied from {lead_combine.name}".strip(" ·"),
             tier=f.tier,
