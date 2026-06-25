@@ -252,10 +252,13 @@ function TradeRow({
           {trade.r_multiple == null ? "—" : formatRMultiple(trade.r_multiple)}
         </Td>
         <Td className="text-left">
-          <StatusChip status={trade.status} />
+          <StatusChip status={trade.status} closeReason={trade.close_reason} />
         </Td>
         <Td className="text-left">
-          <PaperChip isPaper={trade.is_paper} />
+          <div className="flex items-center gap-1.5">
+            <PaperChip isPaper={trade.is_paper} />
+            {isCopiedTrade(trade) && <CopyBadge />}
+          </div>
         </Td>
         <Td className="text-right">
           {!isClosedRow && (
@@ -463,11 +466,75 @@ function CloseForm({
   );
 }
 
-function StatusChip({ status }: { status: Trade["status"] }) {
+function StatusChip({
+  status,
+  closeReason,
+}: {
+  status: Trade["status"];
+  closeReason?: Trade["close_reason"];
+}) {
   if (status === "open") {
     return <span className="text-fg-primary">OPEN</span>;
   }
+  // Distinguish how a closed position was closed so cascaded copy closes
+  // and forced auto-liquidations are legible at a glance.
+  if (status === "closed" && closeReason === "liquidation") {
+    return (
+      <span
+        className="text-bearish uppercase tracking-label-up"
+        title="Auto-liquidated — closed by the risk engine on an MLL/DLL breach."
+      >
+        Liquidated
+      </span>
+    );
+  }
+  if (status === "closed" && closeReason === "copy") {
+    return (
+      <span
+        className="text-fg-tertiary"
+        title="Closed by the lead account's copy cascade."
+      >
+        CLOSED
+        <span className="text-cyan" style={{ fontSize: 10 }}>
+          {" "}
+          · copy
+        </span>
+      </span>
+    );
+  }
+  if (status === "cancelled") {
+    return <span className="text-fg-tertiary">CANCELLED</span>;
+  }
+  if (status === "working") {
+    return <span className="text-amber uppercase tracking-label-up">Working</span>;
+  }
   return <span className="text-fg-tertiary">CLOSED</span>;
+}
+
+/** True when this row is a copy-traded mirror of a lead account's trade.
+ *
+ * The journal trade schema does not expose `copied_from_trade_id`, but
+ * services/copy_trade tags every mirrored row with the "copy" tag (and a
+ * "copied from <lead>" note) — so the tag is the reliable, schema-exposed
+ * signal that a row is a follower copy. Closed copies additionally carry
+ * close_reason="copy". */
+function isCopiedTrade(trade: Trade): boolean {
+  return (
+    (trade.tags?.includes("copy") ?? false) || trade.close_reason === "copy"
+  );
+}
+
+/** Small badge marking a follower-copied mirror trade in the journal. */
+function CopyBadge() {
+  return (
+    <span
+      className="border-l-2 border-cyan pl-1.5 text-cyan uppercase tracking-label-up"
+      title="Copied from a lead account."
+      style={{ fontSize: 11 }}
+    >
+      Copied
+    </span>
+  );
 }
 
 function PaperChip({ isPaper }: { isPaper: boolean }) {
