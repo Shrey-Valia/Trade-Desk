@@ -51,6 +51,10 @@ export const CombineOutSchema = z.object({
   copy_follow: z.boolean().default(false),
   /** Size multiplier applied to the lead's contracts before clamping. */
   copy_multiplier: z.number().default(1),
+  /** Per-follower stop-loss override (underlying price); null = inherit lead's. */
+  copy_stop_loss: z.number().nullable().default(null),
+  /** Per-follower take-profit override (underlying price); null = inherit lead's. */
+  copy_take_profit: z.number().nullable().default(null),
   created_at: z.string(),
 });
 export type CombineOut = z.infer<typeof CombineOutSchema>;
@@ -87,6 +91,10 @@ export type CombinesOut = z.infer<typeof CombinesOutSchema>;
 export interface CopyFollowerInput {
   combine_id: number;
   multiplier: number;
+  /** Per-follower bracket overrides (underlying price); omit/null = inherit
+   *  the lead trade's stop_loss / take_profit on each mirrored open. */
+  stop_loss?: number | null;
+  take_profit?: number | null;
 }
 
 export interface CopyConfigInput {

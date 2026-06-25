@@ -80,6 +80,11 @@ class Combine(Base):
     # Size multiplier applied to the lead's contract count before clamping to
     # this follower's cap (e.g. 0.5×, 1×, 2×). Only meaningful when following.
     copy_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    # Per-follower bracket overrides (UNDERLYING price levels). When set, a
+    # mirrored open uses these instead of the lead trade's stop_loss/take_profit;
+    # None means "inherit the lead's bracket". Only meaningful when following.
+    copy_stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    copy_take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Eval restart point. A reset (after a fail) stamps this; the engine then
     # counts only trades opened at/after it toward the eval — so the eval
     # starts fresh while the trade HISTORY is preserved (rows are never deleted).

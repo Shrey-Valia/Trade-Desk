@@ -172,6 +172,10 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # and the size multiplier applied before clamping to its cap.
     ("copy_follow", "BOOLEAN NOT NULL DEFAULT 0"),
     ("copy_multiplier", "FLOAT NOT NULL DEFAULT 1.0"),
+    # Per-follower bracket overrides (underlying price levels). NULL = inherit
+    # the lead trade's stop_loss / take_profit on a mirrored open.
+    ("copy_stop_loss", "FLOAT"),
+    ("copy_take_profit", "FLOAT"),
 ]
 
 # Copy trading added a lead pointer to users; per-tier DLL overrides added the
