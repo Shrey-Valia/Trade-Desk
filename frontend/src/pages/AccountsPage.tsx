@@ -4,6 +4,7 @@ import { CombineCardsGrid } from "@/components/combines/CombineCards";
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { CopyTradingPanel } from "@/components/combines/CopyTradingPanel";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { LoadError } from "@/components/ui/LoadError";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useCombines } from "@/hooks/useCombines";
 
@@ -14,7 +15,7 @@ import { useCombines } from "@/hooks/useCombines";
  * accounts. Account switching / rename / archive happen on the cards.
  */
 export function AccountsPage() {
-  const { data, isPending } = useCombines();
+  const { data, isPending, isError, refetch } = useCombines();
   const all = data?.combines ?? [];
   const active = all.filter((c) => c.status !== "archived");
   const archived = all.filter((c) => c.status === "archived");
@@ -56,6 +57,8 @@ export function AccountsPage() {
             <div className="px-1 py-6 text-tiny text-fg-tertiary-2">
               Loading accounts…
             </div>
+          ) : isError ? (
+            <LoadError subject="your accounts" onRetry={refetch} />
           ) : all.length === 0 ? (
             <div className="px-1 py-10 text-center text-tiny text-fg-tertiary-2">
               No accounts yet — start a Trading Combine to get going.

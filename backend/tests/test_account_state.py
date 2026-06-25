@@ -40,8 +40,8 @@ def test_tiers_have_correct_starting_balance_and_initial_mll():
     assert TIERS["50K"].initial_mll == 48_000
 
     assert TIERS["100K"].starting_balance == 100_000
-    assert TIERS["100K"].trailing_distance == 4_000
-    assert TIERS["100K"].initial_mll == 96_000
+    assert TIERS["100K"].trailing_distance == 3_000
+    assert TIERS["100K"].initial_mll == 97_000
 
     assert TIERS["150K"].starting_balance == 150_000
     assert TIERS["150K"].trailing_distance == 4_500
@@ -67,15 +67,15 @@ def test_is_valid_tier():
 def test_compute_mll_at_initial_hwm():
     # HWM at starting balance → MLL = starting − trailing.
     assert compute_mll("50K", 50_000) == 48_000
-    assert compute_mll("100K", 100_000) == 96_000
+    assert compute_mll("100K", 100_000) == 97_000
     assert compute_mll("150K", 150_000) == 145_500
 
 
 def test_compute_mll_trails_up_with_hwm():
     # 50K combine, HWM walked up to 51_000 → MLL trails to 49_000.
     assert compute_mll("50K", 51_000) == 49_000
-    # 100K HWM at 102_500 → MLL 98_500.
-    assert compute_mll("100K", 102_500) == 98_500
+    # 100K HWM at 102_500 → MLL 99_500.
+    assert compute_mll("100K", 102_500) == 99_500
 
 
 def test_compute_mll_caps_at_starting_balance():
@@ -159,7 +159,7 @@ def test_balance_includes_realized_pnl_for_active_combine_only(auth_client):
     assert r2["realized_pnl"] == 1_000
     assert r2["balance"] == 101_000
     assert r2["high_water_mark"] == 101_000  # running HWM
-    assert r2["mll"] == 96_000               # fixed floor from settled 100_000
+    assert r2["mll"] == 97_000               # fixed floor from settled 100_000
 
 
 def test_mll_is_fixed_intraday_then_caps_at_starting_balance_after_settlement(

@@ -231,6 +231,16 @@ function TradeRow({
           if (target.closest("button, input")) return;
           onSelect();
         }}
+        onKeyDown={(e) => {
+          // Keyboard-operable to match role="button": Enter/Space select the
+          // row, with the same inner-control guard as onClick.
+          if (e.key !== "Enter" && e.key !== " ") return;
+          const target = e.target as HTMLElement;
+          if (target.closest("button, input")) return;
+          e.preventDefault();
+          onSelect();
+        }}
+        tabIndex={0}
         role="button"
         aria-pressed={active}
       >

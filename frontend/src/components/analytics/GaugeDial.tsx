@@ -32,7 +32,13 @@ export function GaugeDial({ label, value, sub, fraction, color }: Props) {
   return (
     <div className="flex flex-col items-center gap-1">
       <div className="relative w-full" style={{ maxWidth: 108 }}>
-        <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width="100%" style={{ display: "block" }}>
+        <svg
+          viewBox={`0 0 ${SIZE} ${SIZE}`}
+          width="100%"
+          style={{ display: "block" }}
+          role="img"
+          aria-label={`${label}: ${value}${sub ? ` (${sub})` : ""}`}
+        >
           {/* Rotate so the 270° arc is centered at the top with the gap at
               the bottom (start at 135°). */}
           <g transform={`rotate(135 ${cx} ${cy})`}>

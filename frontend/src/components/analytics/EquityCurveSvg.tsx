@@ -132,6 +132,12 @@ export function EquityCurveSvg({
       viewBox={`0 0 ${W} ${H}`}
       preserveAspectRatio="none"
       style={{ display: "block", height: "100%" }}
+      role="img"
+      aria-label={
+        baseline != null
+          ? "Account balance over time"
+          : "Cumulative profit and loss over time"
+      }
     >
       {showBand && (
         <rect

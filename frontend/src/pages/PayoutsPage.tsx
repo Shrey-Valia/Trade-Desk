@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { LoadError } from "@/components/ui/LoadError";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useActivateAccount, useCombines, useRequestPayout } from "@/hooks/useCombines";
 import { splitPct, splitTokenFromValue } from "@/lib/pricing";
@@ -15,7 +16,7 @@ import type { CombineOut } from "@/types/combine";
  * first. Simulated: requesting logs an event and moves no money.
  */
 export function PayoutsPage() {
-  const { data, isPending } = useCombines();
+  const { data, isPending, isError, refetch } = useCombines();
   const all = data?.combines ?? [];
   const funded = all.filter((c) => c.funded && c.status !== "archived");
   const totalAvailable = funded.reduce((s, c) => s + c.payout_eligible, 0);
@@ -37,6 +38,8 @@ export function PayoutsPage() {
 
           {isPending ? (
             <div className="px-1 py-6 text-tiny text-fg-tertiary-2">Loading…</div>
+          ) : isError ? (
+            <LoadError subject="your payouts" onRetry={refetch} />
           ) : funded.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">
               <EmptyState

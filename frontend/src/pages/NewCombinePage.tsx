@@ -150,7 +150,7 @@ function ChooseAccount({
 
 const FALLBACK_TIERS: TierSpec[] = [
   { key: "50K", label: "50K Combine", starting_balance: 50_000, trailing_distance: 2_000, initial_mll: 48_000, dll_amount: 1_500 },
-  { key: "100K", label: "100K Combine", starting_balance: 100_000, trailing_distance: 4_000, initial_mll: 96_000, dll_amount: 3_000 },
+  { key: "100K", label: "100K Combine", starting_balance: 100_000, trailing_distance: 3_000, initial_mll: 97_000, dll_amount: 3_000 },
   { key: "150K", label: "150K Combine", starting_balance: 150_000, trailing_distance: 4_500, initial_mll: 145_500, dll_amount: 4_500 },
 ];
 

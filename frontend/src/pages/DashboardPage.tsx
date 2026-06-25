@@ -8,6 +8,7 @@ import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { colors } from "@/lib/design";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { LoadError } from "@/components/ui/LoadError";
 import { MetricPill } from "@/components/ui/MetricPill";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useActivateAccount, useCombines } from "@/hooks/useCombines";
@@ -46,6 +47,8 @@ export function DashboardPage() {
           <div className="px-4 py-6 text-tiny text-fg-tertiary-2">
             Loading combines…
           </div>
+        ) : combines.isError ? (
+          <LoadError subject="your combines" onRetry={combines.refetch} />
         ) : !hasAny ? (
           <FirstCombineHero />
         ) : (

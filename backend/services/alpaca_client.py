@@ -217,7 +217,16 @@ def get_quotes(symbols: list[str]) -> dict[str, Quote]:
 
     client = _stock_client()
     req = StockSnapshotRequest(symbol_or_symbols=symbols)
-    raw = resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_stock_snapshot(req)))
+    try:
+        raw = resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_stock_snapshot(req)))
+    except Exception:  # noqa: BLE001
+        # Degrade like get_market_clock / get_year_bars: a rate-limit, open
+        # circuit, or feed error must not 500 every caller (indices widget,
+        # ticker detail/chart/metrics, the 0DTE chain). Every caller uses
+        # .get(sym) and handles a missing quote — a clean 503/404 or a
+        # fallback. Not cached, so recovery is immediate when Alpaca returns.
+        log.exception("alpaca snapshot fetch failed for %s", symbols)
+        return {}
 
     out: dict[str, Quote] = {}
     for symbol, snap in raw.items():

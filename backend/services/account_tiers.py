@@ -50,7 +50,8 @@ TIERS: dict[TierKey, Tier] = {
         key="100K",
         label="100K Combine",
         starting_balance=100_000.0,
-        trailing_distance=4_000.0,
+        # Topstep convention: 50K→$2k, 100K→$3k, 150K→$4.5k trailing drawdown.
+        trailing_distance=3_000.0,
         dll_amount=3_000.0,
     ),
     "150K": Tier(

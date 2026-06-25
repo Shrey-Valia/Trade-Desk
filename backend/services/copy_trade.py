@@ -28,7 +28,7 @@ from models.combine import Combine
 from models.trade import Trade
 from models.user import User
 from schemas.journal import TradeLeg, compute_net_debit_credit
-from services.account_tiers import TIERS
+from services.account_tiers import TIERS, resolve_dll_budget
 from services.combine_state import dll_used_today_for_combine
 from services.scaling_plan import max_contracts as scaling_max_contracts
 
@@ -47,9 +47,18 @@ def _follower_cap(combine: Combine) -> int:
     return scaling_max_contracts(combine.tier, settled_profit)
 
 
-def _day_locked(session: Session, combine: Combine, now: datetime) -> bool:
+def _day_locked(
+    session: Session, combine: Combine, now: datetime, dll_overrides: dict | None
+) -> bool:
+    # Gate copy trades on the SAME budget the direct open path enforces
+    # (combine_state.combine_snapshot): the owner's clamped per-tier DLL
+    # override, falling back to the tier default. Previously this used the
+    # raw tier default, so a follower who tightened their DLL kept receiving
+    # mirrored trades past their configured floor (and a loosened one locked
+    # early).
     used = dll_used_today_for_combine(session, combine.id, now, combine.eval_reset_at)
-    return used >= TIERS[combine.tier].dll_amount
+    budget = resolve_dll_budget(combine.tier, (dll_overrides or {}).get(combine.tier))
+    return used >= budget
 
 
 def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> MirrorResult:
@@ -86,7 +95,7 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
         if cap < 1:
             result.skipped.append((f.id, "no contract allowance"))
             continue
-        if _day_locked(session, f, now):
+        if _day_locked(session, f, now, user.dll_overrides):
             result.skipped.append((f.id, "daily loss limit hit"))
             continue
 
