@@ -59,6 +59,9 @@ export const AccountStateSchema = z.object({
   dll_used: z.number(),
   dll_budget: z.number(),
   dll_breached: z.boolean(),
+  /** DLL switched OFF for the active tier (Topstep dropped the DLL in 2024).
+   *  No day-lock / breach; dll_budget carries the tier default for display. */
+  dll_disabled: z.boolean().default(false),
   /** Distinct 5pm-PT trading days with ≥1 closed trade. */
   days_traded: z.number().default(0),
   /** Minimum distinct trading days required to pass. */

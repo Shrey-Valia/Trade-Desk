@@ -153,6 +153,96 @@ def test_dll_override_rejects_unknown_tier(auth_client):
     assert res.status_code == 422
 
 
+# --- DLL-off toggle ---------------------------------------------------------
+
+
+def test_dll_disable_round_trips(auth_client):
+    """Setting the disable list persists and reads back; an amount-only edit
+    (disabled omitted) leaves it untouched."""
+    res = auth_client.put(
+        "/api/account/dll-overrides", json={"overrides": {}, "disabled": ["50K"]}
+    )
+    assert res.status_code == 200
+    assert res.json()["disabled"] == ["50K"]
+    assert auth_client.get("/api/account/dll-overrides").json()["disabled"] == ["50K"]
+
+    # Amount-only edit (no `disabled` key) must NOT clear the disable set.
+    res = auth_client.put("/api/account/dll-overrides", json={"overrides": {"100K": 2000}})
+    assert res.status_code == 200
+    assert res.json()["disabled"] == ["50K"]
+
+
+def test_dll_disable_rejects_unknown_tier(auth_client):
+    res = auth_client.put(
+        "/api/account/dll-overrides", json={"overrides": {}, "disabled": ["999K"]}
+    )
+    assert res.status_code == 422
+
+
+def test_dll_off_does_not_day_lock_require_tradeable(auth_client, session_factory):
+    """With the 50K DLL switched OFF, a today-loss that would normally hit the
+    DLL no longer day-locks — _require_tradeable allows the open (MLL still
+    above its floor)."""
+    c = make_combine(auth_client, "50K")
+    res = auth_client.put(
+        "/api/account/dll-overrides", json={"overrides": {}, "disabled": ["50K"]}
+    )
+    assert res.status_code == 200
+
+    session = session_factory()
+    # -1,500 today = the 50K DLL budget → would day-lock if the DLL were on,
+    # but balance 48,500 stays above the 48,000 MLL floor.
+    _seed_closed_trade(session, c["id"], -1_500.0)
+    combine = session.get(Combine, c["id"])
+    zerodte._require_tradeable(session, combine)  # must NOT raise (DLL off)
+    session.close()
+
+
+def test_dll_off_still_fails_on_mll_breach(auth_client, session_factory):
+    """The DLL-off toggle must NOT relax the MLL floor — a realized MLL breach
+    still blocks _require_tradeable with the DLL disabled."""
+    c = make_combine(auth_client, "50K")
+    auth_client.put(
+        "/api/account/dll-overrides", json={"overrides": {}, "disabled": ["50K"]}
+    )
+    session = session_factory()
+    _seed_closed_trade(session, c["id"], -2_500.0)  # 47,500 ≤ 48,000 floor
+    combine = session.get(Combine, c["id"])
+    with pytest.raises(HTTPException) as ei:
+        zerodte._require_tradeable(session, combine)
+    assert ei.value.status_code == 403
+    assert "FAILED" in str(ei.value.detail)
+    session.close()
+
+
+def test_dll_off_skips_dll_liquidation(auth_client, session_factory):
+    """With the DLL off, a pure DLL breach (open loss exhausts the budget while
+    the MLL floor is clear) does NOT auto-liquidate — the DLL branch is
+    skipped. The MLL path is unaffected."""
+    from services.order_monitor import run_order_monitor
+
+    c = make_combine(auth_client, "50K")
+    auth_client.put(
+        "/api/account/dll-overrides", json={"overrides": {}, "disabled": ["50K"]}
+    )
+    session = session_factory()
+    tid = _seed_open_position(session, c["id"])
+
+    # -1,500 open loss = the DLL budget, but balance 48,500 > 48,000 MLL floor.
+    # With the DLL on this liquidates (DLL path); with it OFF nothing closes.
+    summary = run_order_monitor(
+        session_factory=session_factory,
+        market_open=lambda: True,
+        spot_for=lambda sym: 99.0,
+        unrealized_for=lambda t, s: -1_500.0,
+    )
+    assert summary["liquidated"] == 0
+    session = session_factory()
+    assert session.get(Trade, tid).status == "open"
+    assert session.get(Combine, c["id"]).outcome == "active"
+    session.close()
+
+
 # --- hard auto-liquidation (order monitor) ----------------------------------
 
 

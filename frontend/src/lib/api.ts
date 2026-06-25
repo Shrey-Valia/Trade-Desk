@@ -357,22 +357,36 @@ export const updateCopyConfig = (input: CopyConfigInput): Promise<CombinesOut> =
     body: JSON.stringify(input),
   });
 
-// -- DLL overrides (server-enforced) -----------------------------------------
+// -- DLL overrides + disable flags (server-enforced) -------------------------
 
-const DllOverridesSchema = z.object({ overrides: z.record(z.number()) });
+const DllOverridesSchema = z.object({
+  overrides: z.record(z.number()),
+  // Tier keys with the DLL switched OFF (the DLL-off toggle). Defaulted so an
+  // older backend response (no `disabled` key) still parses.
+  disabled: z.array(z.string()).default([]),
+});
 
-/** The user's per-tier DLL overrides ({tier: dollars}). */
-export const fetchDllOverrides = (): Promise<Record<string, number>> =>
-  request("/api/account/dll-overrides", DllOverridesSchema).then((r) => r.overrides);
+/** The user's per-tier DLL overrides + disable flags. */
+export interface DllOverridesConfig {
+  overrides: Record<string, number>;
+  disabled: string[];
+}
 
-/** Replace the user's per-tier DLL overrides (server clamps to the band). */
+export const fetchDllOverrides = (): Promise<DllOverridesConfig> =>
+  request("/api/account/dll-overrides", DllOverridesSchema);
+
+/** Replace the user's per-tier DLL overrides + disable flags. `disabled`
+ *  omitted leaves the existing disable set untouched server-side. */
 export const updateDllOverrides = (
   overrides: Record<string, number>,
-): Promise<Record<string, number>> =>
+  disabled?: string[],
+): Promise<DllOverridesConfig> =>
   mutate("/api/account/dll-overrides", DllOverridesSchema, {
     method: "PUT",
-    body: JSON.stringify({ overrides }),
-  }).then((r) => r.overrides);
+    body: JSON.stringify(
+      disabled === undefined ? { overrides } : { overrides, disabled },
+    ),
+  });
 
 // -- auth --------------------------------------------------------------------
 

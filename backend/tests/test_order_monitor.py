@@ -534,7 +534,13 @@ def test_no_liquidation_when_live_balance_above_mll(auth_client, session_factory
 
 def test_auto_liquidates_when_open_loss_exhausts_dll(auth_client, session_factory):
     """No realized loss, but a −1,500 open loss exhausts the 1,500 DLL budget
-    while balance 48,500 stays above the 48,000 MLL floor → DLL-path liquidation."""
+    while balance 48,500 stays above the 48,000 MLL floor → DLL-path liquidation.
+
+    Worst-first: a DLL breach liquidates open risk to pull the open drawdown
+    back under the daily budget, but DOES NOT fail the combine — a DLL is a
+    daily hard-stop, not a permanent floor (real Topstep day-locks, never fails,
+    on the DLL). The combine survives ACTIVE; the realized loss day-locks it at
+    the next snapshot."""
     from models.combine import Combine
 
     c = make_combine(auth_client, "50K")
@@ -549,7 +555,9 @@ def test_auto_liquidates_when_open_loss_exhausts_dll(auth_client, session_factor
     t = s.get(Trade, tid)
     assert t.status == "closed" and t.close_reason == "liquidation"
     assert "daily loss limit" in (t.notes or "")
-    assert s.get(Combine, c["id"]).outcome == "failed"
+    # DLL liquidation survives (no permanent fail); the day-lock applies once
+    # the booked loss lands in the realized DLL window.
+    assert s.get(Combine, c["id"]).outcome == "active"
     s.close()
 
 
@@ -571,6 +579,76 @@ def test_auto_liquidation_closes_all_positions_on_combine(auth_client, session_f
     assert s.get(Trade, t1).status == "closed"
     assert s.get(Trade, t2).status == "closed"
     assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
+def _leg_at(strike: float) -> list[dict]:
+    """A single-leg list at a given strike — lets an injected unrealized_for
+    return a PER-POSITION URPL by keying off the leg strike."""
+    return [{
+        "side": "call", "action": "buy", "strike": strike,
+        "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 1.0,
+    }]
+
+
+def test_worst_first_liquidation_stops_once_dll_clears(auth_client, session_factory):
+    """Worst-first: a DLL breach driven by ONE big open loser, with a winner on
+    the book. Cutting the worst loser pulls the open drawdown back under the
+    daily budget, so the WINNER stays open and the combine survives (DLL never
+    fails a combine). Proves the worst-first cut stops early — not flatten-all.
+
+    50K: DLL budget 1,500 · MLL floor 48,000. Loser −1,900 (strike 100), winner
+    +300 (strike 200). Aggregate open URPL −1,600 → live balance 48,400 (above
+    the MLL floor) but the aggregate open LOSS 1,600 ≥ 1,500 DLL → breach.
+    Cutting the −1,900 leaves remaining open URPL +300 (loss 0 < 1,500) →
+    cleared; the +300 winner survives and the combine stays active."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    loser = _seed(session_factory, c["id"], status="open", _legs=_leg_at(100.0))
+    winner = _seed(session_factory, c["id"], status="open", _legs=_leg_at(200.0))
+
+    def urpl(t, s):
+        return -1_900.0 if t.legs[0]["strike"] == 100.0 else 300.0
+
+    summary = _run(session_factory, spot_for=lambda sym: 99.0, unrealized_for=urpl)
+    # Only the worst loser is cut; the winner is left open.
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    assert s.get(Trade, loser).status == "closed"
+    assert s.get(Trade, loser).close_reason == "liquidation"
+    assert s.get(Trade, winner).status == "open"   # net-winner remainder survives
+    assert s.get(Combine, c["id"]).outcome == "active"   # DLL doesn't fail
+    s.close()
+
+
+def test_worst_first_keeps_winner_when_only_mll_marginal(auth_client, session_factory):
+    """Worst-first on a MARGINAL MLL breach with a winner present: cutting the
+    single worst loser realizes its loss but leaves a winner whose URPL keeps
+    the live balance above the floor → the combine survives and the winner
+    stays open.
+
+    50K floor 48,000. Loser −2,100 (strike 100), winner +500 (strike 200).
+    Aggregate −1,600 → live 48,400 (ABOVE the floor) but the open LOSS 2,100 ≥
+    1,500 DLL → DLL breach. Cut the −2,100: remaining open loss 0 < 1,500 →
+    cleared. Realized after the cut 47,899 < 48,000, but the +500 winner stays
+    OPEN, so the live balance (47,899 + 500 = 48,399) holds above the floor →
+    no MLL fail. The winner survives."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    loser = _seed(session_factory, c["id"], status="open", _legs=_leg_at(100.0))
+    winner = _seed(session_factory, c["id"], status="open", _legs=_leg_at(200.0))
+
+    def urpl(t, s):
+        return -2_100.0 if t.legs[0]["strike"] == 100.0 else 500.0
+
+    summary = _run(session_factory, spot_for=lambda sym: 99.0, unrealized_for=urpl)
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    assert s.get(Trade, loser).status == "closed"
+    assert s.get(Trade, winner).status == "open"
+    assert s.get(Combine, c["id"]).outcome == "active"
     s.close()
 
 

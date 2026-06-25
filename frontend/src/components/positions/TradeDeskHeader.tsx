@@ -4,6 +4,7 @@ import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
+import { usePreLiquidationWarnings } from "@/hooks/usePreLiquidationWarnings";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { useTrades } from "@/hooks/useTrades";
@@ -224,6 +225,9 @@ function MetricPills() {
   // (realized + URPL). The MLL pill is the hero ("how close to blowing
   // up"); FAILED is permanent, DAY-LOCK lifts at the 5pm-PT settlement.
   const combine = useCombineStatus();
+  // Pre-liquidation early warnings: fires sticky toasts once per threshold
+  // crossing and returns the urgency flags that pulse the MLL/DLL pills.
+  const urgency = usePreLiquidationWarnings();
   const mll = combine.mllFloor;
   const cushion = combine.mllCushion;
   const mllTone =
@@ -240,7 +244,8 @@ function MetricPills() {
   // DLL_used — see services/account_tiers, the spec). Mirrors how BAL
   // folds UPL on top of the realized-only balance.
   const dllUsed = Math.max(0, (account?.dll_used ?? 0) + Math.max(0, -upl));
-  const dllTone = dllToneClass(dllUsed, dllBudget);
+  const dllDisabled = combine.dllDisabled;
+  const dllTone = dllDisabled ? "text-fg-tertiary-2" : dllToneClass(dllUsed, dllBudget);
   const dllHit = combine.dayLocked;
 
   return (
@@ -250,6 +255,7 @@ function MetricPills() {
         label="MLL"
         value={formatDollar(mll)}
         valueClass={mllTone}
+        pulse={urgency.mllNearFloor}
         title={`Fixed-intraday MLL floor — how close to blowing up. Live cushion ${
           cushion >= 0 ? "+" : "−"
         }$${Math.round(Math.abs(cushion)).toLocaleString()} (balance incl. open URPL vs the floor). Re-baselines up only at the 5pm-PT settlement.`}
@@ -296,15 +302,26 @@ function MetricPills() {
       />
       <MetricPill
         label="DLL"
-        value={formatDllUsage(dllUsed, dllBudget)}
+        value={dllDisabled ? "off" : formatDllUsage(dllUsed, dllBudget)}
         valueClass={dllTone}
+        pulse={!dllDisabled && urgency.dllNearLimit}
         title={
-          dllHit
-            ? "Daily loss limit hit — DAY LOCK: no further trading today (account survives). Lifts at the 5pm-PT settlement."
-            : "Daily loss limit (live, incl. open URPL) — resets at the 5pm-PT settlement."
+          dllDisabled
+            ? "Daily loss limit switched OFF for this tier (Settings → Risk). Only the MLL floor binds — matching Topstep, which dropped the DLL in 2024."
+            : dllHit
+              ? "Daily loss limit hit — DAY LOCK: no further trading today (account survives). Lifts at the 5pm-PT settlement."
+              : "Daily loss limit (live, incl. open URPL) — resets at the 5pm-PT settlement."
         }
       >
-        {dllHit && (
+        {dllDisabled ? (
+          <span
+            className="ml-1 inline-flex items-center px-1 border border-tier-3 text-fg-tertiary-2 uppercase tracking-label-up rounded-btn"
+            style={{ fontSize: 11, height: 14 }}
+            title="Daily loss limit disabled for this tier."
+          >
+            OFF
+          </span>
+        ) : dllHit ? (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
             style={{ fontSize: 11, height: 14 }}
@@ -312,7 +329,7 @@ function MetricPills() {
           >
             DAY LOCK
           </span>
-        )}
+        ) : null}
       </MetricPill>
       <MarketPill />
     </>
@@ -348,6 +365,9 @@ interface MetricPillProps {
   /** Extra classes on the pill shell — used to priority-hide the
    * derivable pills (RP&L/UP&L) at narrow widths. */
   className?: string;
+  /** When true, the pill border pulses bearish-red — the pre-liquidation
+   * urgency state (MLL cushion <15% / DLL >80%). */
+  pulse?: boolean;
   children?: React.ReactNode;
 }
 
@@ -358,6 +378,7 @@ function MetricPill({
   valueClass: valueClassOverride,
   title,
   className,
+  pulse,
   children,
 }: MetricPillProps) {
   const valueClass =
@@ -371,8 +392,15 @@ function MetricPill({
       : "text-fg-primary");
   return (
     <div
-      className={`bg-tier-2 border border-tier-3 rounded-btn px-2 py-1 flex-col leading-tight shrink-0 ${className ?? "flex"}`}
-      style={{ height: 44, minWidth: 72 }}
+      className={`bg-tier-2 border border-tier-3 rounded-btn px-2 py-1 flex-col leading-tight shrink-0 ${
+        pulse ? "td-pulse-warn" : ""
+      } ${className ?? "flex"}`}
+      style={
+        pulse
+          ? // Drive the keyframe's border/shadow to bearish-red for danger.
+            ({ height: 44, minWidth: 72, ["--td-pulse-color" as string]: "#E5484D" } as React.CSSProperties)
+          : { height: 44, minWidth: 72 }
+      }
       title={title}
     >
       <span

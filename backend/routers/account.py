@@ -101,6 +101,15 @@ class AccountStateOut(BaseModel):
     )
     dll_budget: float
     dll_breached: bool
+    dll_disabled: bool = Field(
+        default=False,
+        description=(
+            "True when the owner has switched the Daily Loss Limit OFF for the"
+            " active tier (Topstep dropped the DLL in 2024). No day-lock / DLL"
+            " breach applies; dll_budget then carries the tier DEFAULT amount as"
+            " a display reference, not an enforced limit."
+        ),
+    )
     # -- PASS / profit-target progress (realized-based) ------------------------
     days_traded: int = Field(
         ..., description="Distinct 5pm-PT trading days with ≥1 closed trade."
@@ -175,6 +184,7 @@ def get_account_state(
         dll_used=snap.dll_used,
         dll_budget=snap.dll_budget,
         dll_breached=snap.dll_breached,
+        dll_disabled=snap.dll_disabled,
         days_traded=snap.days_traded,
         min_trading_days=snap.min_trading_days,
         largest_day_profit=snap.largest_day_profit,
@@ -211,19 +221,29 @@ class DllOverridesOut(BaseModel):
     overrides: dict[str, float] = Field(
         default_factory=dict, description="User's per-tier DLL overrides (dollars)."
     )
+    disabled: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tier keys with the Daily Loss Limit switched OFF (the DLL-off"
+            " toggle). The MLL floor still binds for these tiers."
+        ),
+    )
 
 
 class DllOverridesIn(BaseModel):
     overrides: dict[str, float]
+    # Tier keys to switch the DLL OFF for. Omitted (None) leaves the existing
+    # disabled set untouched, so a pure amount-edit doesn't clear it.
+    disabled: list[str] | None = None
 
 
 @router.get("/dll-overrides", response_model=DllOverridesOut)
 def get_dll_overrides(
     user: User = Depends(get_current_user),
 ) -> DllOverridesOut:
-    """The user's per-tier DLL overrides (available with zero combines, so the
-    Settings editor works before any account is purchased)."""
-    return DllOverridesOut(overrides=user.dll_overrides)
+    """The user's per-tier DLL overrides + disable flags (available with zero
+    combines, so the Settings editor works before any account is purchased)."""
+    return DllOverridesOut(overrides=user.dll_overrides, disabled=user.dll_disabled)
 
 
 @router.put("/dll-overrides", response_model=DllOverridesOut)
@@ -232,18 +252,25 @@ def set_dll_overrides(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> DllOverridesOut:
-    """Set per-tier DLL overrides. Each value is clamped to the
-    1-10%-of-starting-balance band; unknown tiers are rejected. These are
-    ENFORCED on the open path (combine_state resolves the budget from them)."""
+    """Set per-tier DLL overrides + the DLL-off disable flags. Override values
+    are clamped to the 1-10%-of-starting-balance band; unknown tiers are
+    rejected. Both are ENFORCED server-side (combine_state resolves the budget
+    + suppresses the day-lock for disabled tiers; the auto-liquidation gate
+    skips the DLL branch for them too)."""
     cleaned: dict[str, float] = {}
     for tier_key, amount in payload.overrides.items():
         if tier_key not in TIERS:
             raise HTTPException(422, f"unknown tier {tier_key}")
         cleaned[tier_key] = resolve_dll_budget(tier_key, amount)  # type: ignore[arg-type]
     user.dll_overrides = cleaned
+    if payload.disabled is not None:
+        for tier_key in payload.disabled:
+            if tier_key not in TIERS:
+                raise HTTPException(422, f"unknown tier {tier_key}")
+        user.dll_disabled = list(payload.disabled)
     session.add(user)
     session.commit()
-    return DllOverridesOut(overrides=cleaned)
+    return DllOverridesOut(overrides=cleaned, disabled=user.dll_disabled)
 
 
 def _active_combine_or_404(session: Session, user: User) -> Combine:
