@@ -149,12 +149,42 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
     return result
 
 
-def mirror_close(session: Session, lead_trade: Trade) -> int:
+def _leg_contracts(trade: Trade) -> int:
+    legs = trade.legs or []
+    return int(legs[0].get("contracts", 0)) if legs else 0
+
+
+def _set_leg_contracts(trade: Trade, contracts: int) -> None:
+    """Reduce every leg's contract count to `contracts`, preserving the rest
+    of each leg dict. Mirrors the per-leg scaling done at mirror time."""
+    legs = trade.legs or []
+    for leg in legs:
+        leg["contracts"] = contracts
+    trade.legs = legs
+
+
+def mirror_close(
+    session: Session, lead_trade: Trade, *, closed_qty: int | None = None
+) -> int:
     """Cascade a lead trade's close to its still-open follower copies.
 
-    Linked via Trade.copied_from_trade_id. Each follower's realized P&L is the
-    lead's scaled by the contract ratio (followers may hold fewer contracts
-    after the multiplier + cap clamp). Returns how many were closed."""
+    Linked via Trade.copied_from_trade_id. Two modes:
+
+    * ``closed_qty is None`` (default) — FULL close. Each follower copy is
+      closed outright; its realized P&L is the lead's scaled by the contract
+      ratio (followers may hold fewer contracts after the multiplier + cap
+      clamp). This is the historical behaviour other callers
+      (zerodte.py / order_monitor.py / journal full-close) rely on.
+
+    * ``closed_qty`` set — PROPORTIONAL PARTIAL close (the WS-A scale-out
+      seam). The lead reduced its leg contracts by ``closed_qty`` and
+      accumulated realized on that slice; each follower closes
+      ``clamp(round(follower_contracts * closed_qty / lead_original), 1,
+      follower_contracts)`` of its own contracts, reducing its legs and
+      ACCUMULATING realized on the booked slice, and stays open until its
+      contracts reach 0 (then closes). Mirrors WS-A's lead-side contract.
+
+    Returns how many follower copies were touched."""
     followers = session.execute(
         select(Trade).where(
             Trade.copied_from_trade_id == lead_trade.id,
@@ -164,24 +194,80 @@ def mirror_close(session: Session, lead_trade: Trade) -> int:
     if not followers:
         return 0
 
-    lead_legs = lead_trade.legs or []
-    lead_contracts = int(lead_legs[0].get("contracts", 0)) if lead_legs else 0
+    if closed_qty is None:
+        _cascade_full_close(lead_trade, followers)
+    else:
+        _cascade_partial_close(lead_trade, followers, closed_qty)
 
     for f in followers:
-        f_legs = f.legs or []
-        f_contracts = int(f_legs[0].get("contracts", 0)) if f_legs else 0
-        ratio = (f_contracts / lead_contracts) if lead_contracts else 1.0
+        session.add(f)
+    session.commit()
+    log.info(
+        "copy-trade: lead trade %s cascaded close (closed_qty=%s) to %d follower copies",
+        lead_trade.id,
+        closed_qty,
+        len(followers),
+    )
+    return len(followers)
+
+
+def _cascade_full_close(lead_trade: Trade, followers: list[Trade]) -> None:
+    lead_contracts = _leg_contracts(lead_trade)
+    for f in followers:
+        ratio = (_leg_contracts(f) / lead_contracts) if lead_contracts else 1.0
         f.status = "closed"
         f.exit_date = lead_trade.exit_date
         f.exit_underlying_price = lead_trade.exit_underlying_price
         if lead_trade.realized_pnl is not None:
             f.realized_pnl = round(lead_trade.realized_pnl * ratio, 2)
         f.close_reason = "copy"
-        session.add(f)
 
-    session.commit()
-    log.info("copy-trade: lead trade %s closed %d follower copies", lead_trade.id, len(followers))
-    return len(followers)
+
+def _cascade_partial_close(
+    lead_trade: Trade, followers: list[Trade], closed_qty: int
+) -> None:
+    closed_qty = max(0, int(closed_qty))
+    if closed_qty <= 0:
+        return
+    # WS-A reduced the lead's legs by closed_qty before calling us, so the
+    # ORIGINAL lead size is the current (reduced) size plus what just closed.
+    lead_original = _leg_contracts(lead_trade) + closed_qty
+    if lead_original <= 0:
+        return
+    # Realized booked on the lead's just-closed slice (the engine accumulates
+    # onto realized_pnl; for a single partial that equals this slice's P&L).
+    lead_slice_pnl = lead_trade.realized_pnl
+
+    for f in followers:
+        f_contracts = _leg_contracts(f)
+        if f_contracts <= 0:
+            continue
+        # Proportional follower slice, at least 1 contract, never more than it
+        # currently holds.
+        f_close = min(
+            f_contracts,
+            max(1, round(f_contracts * closed_qty / lead_original)),
+        )
+        remaining = f_contracts - f_close
+
+        # Accumulate realized on the follower's closed slice. Scale the lead's
+        # just-closed-slice P&L by the follower/lead closed-contract ratio so
+        # the per-contract realized stays consistent across the cascade.
+        if lead_slice_pnl is not None:
+            slice_pnl = round(lead_slice_pnl * (f_close / closed_qty), 2)
+            f.realized_pnl = round((f.realized_pnl or 0.0) + slice_pnl, 2)
+
+        if remaining <= 0:
+            # Fully unwound — close the follower copy.
+            _set_leg_contracts(f, 0)
+            f.status = "closed"
+            f.exit_date = lead_trade.exit_date
+            f.exit_underlying_price = lead_trade.exit_underlying_price
+            f.close_reason = "copy"
+        else:
+            # Still open with fewer contracts; keep status, record the level.
+            _set_leg_contracts(f, remaining)
+            f.exit_underlying_price = lead_trade.exit_underlying_price
 
 
 def mirror_cancel(session: Session, lead_trade: Trade) -> int:
