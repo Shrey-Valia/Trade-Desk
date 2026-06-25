@@ -783,6 +783,11 @@ def _to_out(trade: Trade) -> TradeOut:
         tier=trade.tier,
         order_type=trade.order_type,  # type: ignore[arg-type]
         limit_price=trade.limit_price,
+        stop_price=trade.stop_price,
+        trail_amount=trade.trail_amount,
+        trail_pct=trade.trail_pct,
+        trail_hwm=trade.trail_hwm,
+        oco_group=trade.oco_group,
         stop_loss=trade.stop_loss,
         take_profit=trade.take_profit,
         close_reason=trade.close_reason,  # type: ignore[arg-type]

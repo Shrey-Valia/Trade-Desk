@@ -63,6 +63,12 @@ class CombineSnapshot:
     starting_balance: float
     realized_pnl: float
     balance: float
+    # Realized P&L within the current 5pm-PT trading day (signed) — the
+    # daily RPL the header shows. eod_balance is the balance carried into
+    # today (starting + realized BEFORE today's window), so the header can
+    # render BAL = eod_balance + RPL(today) + URPL and have it reconcile.
+    today_realized: float
+    eod_balance: float
     hwm: float
     settled_hwm: float
     mll: float
@@ -149,6 +155,21 @@ def dll_used_today_for_combine(
     return max(0.0, -today_realized)
 
 
+def realized_today_for_combine(
+    session: Session, combine_id: int, now: datetime, since: datetime | None = None
+) -> float:
+    """Signed realized P&L within the current 5pm-PT trading-day window
+    [trading_day_start, now] — the daily RPL shown in the header.
+    (dll_used_today_for_combine is the clamped loss-only view of the same
+    window; this is the signed value for display + the EOD decomposition.)"""
+    day_start = trading_day_start(now)
+    total = 0.0
+    for exit_dt, pnl in _closed_exits(session, combine_id, since):
+        if exit_dt >= day_start:
+            total += pnl
+    return total
+
+
 def realized_by_trading_day(
     session: Session, combine_id: int, since: datetime | None = None
 ) -> dict[datetime, float]:
@@ -224,6 +245,10 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     # DLL — today's realized loss within the current 5pm-PT trading day,
     # tested against the user's per-tier override (clamped) or the tier default.
     dll_used = dll_used_today_for_combine(session, combine.id, now, since)
+    # Daily RPL (signed) + the balance carried into today, so the header can
+    # show BAL = eod_balance + RPL(today) + URPL transparently.
+    today_realized = realized_today_for_combine(session, combine.id, now, since)
+    eod_balance = compute_balance(tier.starting_balance, realized - today_realized, 0.0)
     owner = session.get(User, combine.user_id)
     dll_override = owner.dll_overrides.get(combine.tier) if owner else None
     dll_budget = resolve_dll_budget(combine.tier, dll_override)  # type: ignore[arg-type]
@@ -284,6 +309,8 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         starting_balance=tier.starting_balance,
         realized_pnl=realized,
         balance=balance,
+        today_realized=today_realized,
+        eod_balance=eod_balance,
         hwm=new_hwm,
         settled_hwm=combine.settled_hwm,
         mll=mll,

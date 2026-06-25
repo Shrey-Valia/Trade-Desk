@@ -17,6 +17,11 @@ export function useChainTable(symbol: string | null, strikes: number = 15) {
     enabled: !!symbol,
     staleTime: 5_000,
     refetchInterval: 10_000,
-    placeholderData: (prev) => prev,
+    // Keep the previous data only when it belongs to the SAME symbol — a
+    // smooth 10s same-symbol refetch shouldn't flicker, but on a symbol
+    // SWITCH we must drop the prior chain so the new symbol's error/empty
+    // state can't render the old symbol's rows. queryKey index 3 is `symbol`.
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey?.[3] === symbol ? prev : undefined,
   });
 }

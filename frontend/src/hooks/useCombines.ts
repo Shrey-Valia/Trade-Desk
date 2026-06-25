@@ -64,6 +64,7 @@ export function useRenameCombine() {
       qc.invalidateQueries({ queryKey: COMBINES_KEY });
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }
 
@@ -163,5 +164,6 @@ export function useActivateCombine() {
       // the old tier switch.
       clearActive();
     },
+    onError: (e) => toast.error(errMsg(e)),
   });
 }

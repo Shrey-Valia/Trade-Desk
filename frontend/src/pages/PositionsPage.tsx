@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { keepPreviousData, useQueries } from "@tanstack/react-query";
 
+import { fetchTradeAnalytics } from "@/lib/api";
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
 import type { BracketOverlay } from "@/components/stock/PositionBracketsLayer";
 import { BottomStrip } from "@/components/positions/BottomStrip";
@@ -82,7 +84,7 @@ export function PositionsPage() {
   const activeTier = account?.active_tier ?? "50K";
   const { data: tradesData } = useTrades();
   const setBracketsMutation = useSetBrackets();
-  const trades = tradesData?.trades ?? [];
+  const trades = useMemo(() => tradesData?.trades ?? [], [tradesData]);
   // Filter active-trade resolution by the current tier — a trade
   // opened on tier A must not surface as the active position on
   // tier B's screen. Paired with useActivateCombine clearing the
@@ -103,12 +105,22 @@ export function PositionsPage() {
   // the same intraday position; the entry marker is clamped into the
   // visible band regardless.
 
-  // When the user opens a position on a symbol that isn't the currently
-  // selected ticker (e.g. they searched AAPL but clicked 0DTE on SPY by
-  // accident), keep the chart in sync with the trade's symbol. This
-  // mirrors what TradeList does on row clicks.
+  // Follow the chart to a trade's symbol ONLY when the selection identity
+  // changes — i.e. the user selected a different position (TradeList /
+  // OpenPositions click) or opened a new one (the open mutation sets
+  // activeTradeId). We must NOT re-fire when the user manually changes the
+  // symbol while the SAME position stays selected — that was the "dead
+  // terminal" trap (pick SPY with a TSLA position active → snapped back).
+  const lastSyncedTradeIdRef = useRef<number | null>(null);
   useEffect(() => {
-    if (activeTrade && activeTrade.symbol !== symbol) {
+    if (!activeTrade) {
+      // Deselected → reset so re-selecting the SAME trade later re-syncs.
+      lastSyncedTradeIdRef.current = null;
+      return;
+    }
+    if (lastSyncedTradeIdRef.current === activeTrade.id) return;
+    lastSyncedTradeIdRef.current = activeTrade.id;
+    if (activeTrade.symbol !== symbol) {
       setSymbol(activeTrade.symbol);
     }
   }, [activeTrade, symbol, setSymbol]);
@@ -145,6 +157,48 @@ export function PositionsPage() {
     didAutoSelectRef.current = true;
   }, [tradesData, account, trades, activeTier, activeTradeId, setActiveTradeId]);
 
+  // Orphan-leg recovery. Closing the active position (BottomStrip CLOSE)
+  // sets activeTradeId = null. The once-per-mount auto-select above won't
+  // re-fire, so without this the OPEN POSITION panel vanishes even when a
+  // sibling leg of a straddle is still live — the user thinks the position
+  // is gone while it keeps bleeding. We re-select a survivor ONLY when the
+  // selection went null because its trade was CLOSED/removed, never on a
+  // deliberate toggle-deselect (the store's toggle() clears tradeId when you
+  // click the active row again).
+  //
+  // The trade is told apart from the deselect by asking whether the
+  // previously-active id is still an OPEN trade: if it is, the user toggled
+  // it off on purpose (or it merely moved behind a combine switch) — respect
+  // that. If it's gone/closed, it was a close → re-point to the most-recent
+  // surviving open trade on the active tier.
+  //
+  // Race note: the close flow (BottomStrip onSuccess) clears the selection
+  // SYNCHRONOUSLY but refetches the trade list ASYNCHRONOUSLY, so there is a
+  // render where activeTradeId is null while `trades` still shows the closed
+  // trade as open. We therefore advance prevActiveIdRef ONLY while a trade is
+  // actually selected — never on the null transition — so the previous id
+  // survives that intermediate render and is still known once the refetch
+  // lands and reveals the trade as closed.
+  const prevActiveIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (activeTradeId != null) {
+      prevActiveIdRef.current = activeTradeId; // track the live selection
+      return;
+    }
+    if (!tradesData || !account) return;
+    const prev = prevActiveIdRef.current;
+    if (prev == null) return; // nothing was selected
+    const prevTrade = trades.find((t) => t.id === prev);
+    if (prevTrade && prevTrade.status === "open") return; // deselect/off-tier — respect it
+    // Previously-active trade is closed/removed → orphan-leg recovery. Clear
+    // the ref first so a "no survivor" close doesn't keep re-evaluating.
+    prevActiveIdRef.current = null;
+    const survivor = trades
+      .filter((t) => t.status === "open" && (t.tier ?? "50K") === activeTier)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    if (survivor) setActiveTradeId(survivor.id);
+  }, [tradesData, account, trades, activeTier, activeTradeId, setActiveTradeId]);
+
   const analyticsQuery = useTradeAnalytics(activeTradeId, scrubberDte, {
     intraday: isIntraday,
     elapsedHours,
@@ -160,36 +214,69 @@ export function PositionsPage() {
     setSymbol(defaultTicker || "SPY");
   }, [hasHydrated, symbol, setSymbol, defaultTicker]);
 
-  // Build the chart overlay from the analytics payload. The overlay
-  // only renders when the active trade's symbol matches the chart's
-  // selected symbol — TradeList auto-switches the chart on row click,
-  // so this is the steady state after a click.
-  const chartOverlay: PositionOverlay | null = useMemo(() => {
-    if (!activeTrade || !analyticsQuery.data) return null;
-    if (activeTrade.symbol !== symbol) return null;
-    const a = analyticsQuery.data;
-    // Scrubber label: days for multi-day; hours for 0DTE.
-    let scrubberLabel: string | undefined;
-    if (isIntraday) {
-      const eff = elapsedHours ?? estimateLiveElapsedHours(activeTrade);
-      if (eff > 0.01) scrubberLabel = `+${eff.toFixed(1)}h`;
-    } else {
-      const tPlus = a.current_dte_days - a.scrubber_dte_days;
-      if (tPlus > 0) scrubberLabel = `T+${tPlus}d`;
-    }
-    const upl = a.unrealized_pnl;
-    const uplLabel = formatSignedDollar(upl);
-    return {
-      tradeId: activeTrade.id,
-      entryDate: activeTrade.entry_date,
-      entryPrice: activeTrade.entry_underlying_price,
-      strategyLabel: STRATEGY_LABELS[activeTrade.strategy] ?? activeTrade.strategy,
-      breakevensToday: a.breakevens_today,
-      breakevensExpiration: a.breakevens_expiration,
-      scrubberLabel,
-      uplLabel,
-    };
-  }, [activeTrade, analyticsQuery.data, symbol, isIntraday, elapsedHours]);
+  // All open positions on the charted symbol + active tier. Each draws its
+  // own entry marker + sign-colored breakeven lines, so the chart shows
+  // EVERY open contract (not just the selected one) and the header's URPL
+  // reconciles with what's on screen. One live analytics query per position;
+  // the query key matches useTradeAnalytics so the selected position's query
+  // is shared from cache, not duplicated.
+  const openOnSymbol = useMemo(
+    () =>
+      trades.filter(
+        (t) =>
+          t.status === "open" &&
+          (t.tier ?? "50K") === activeTier &&
+          t.symbol === symbol,
+      ),
+    [trades, activeTier, symbol],
+  );
+  const openAnalytics = useQueries({
+    queries: openOnSymbol.map((t) => {
+      const intraday = isZeroDteTrade(t);
+      return {
+        queryKey: ["trade-analytics", t.id, null, intraday ? "intraday" : "day", null],
+        queryFn: () => fetchTradeAnalytics(t.id, { dteOverride: null, elapsedHours: null }),
+        staleTime: intraday ? 3_000 : 10_000,
+        refetchInterval: intraday ? 5_000 : (false as const),
+        placeholderData: keepPreviousData,
+      };
+    }),
+  });
+  const chartOverlays: PositionOverlay[] = useMemo(() => {
+    const out: PositionOverlay[] = [];
+    openOnSymbol.forEach((t, i) => {
+      // The SELECTED position uses scrubber-aware analytics so its BE follows
+      // the theta scrubber; the others use their own live analytics.
+      const a =
+        t.id === activeTradeId && analyticsQuery.data
+          ? analyticsQuery.data
+          : openAnalytics[i]?.data;
+      if (!a) return;
+      let scrubberLabel: string | undefined;
+      if (t.id === activeTradeId) {
+        if (isIntraday) {
+          const eff = elapsedHours ?? estimateLiveElapsedHours(t);
+          if (eff > 0.01) scrubberLabel = `+${eff.toFixed(1)}h`;
+        } else {
+          const tPlus = a.current_dte_days - a.scrubber_dte_days;
+          if (tPlus > 0) scrubberLabel = `T+${tPlus}d`;
+        }
+      }
+      const upl = a.unrealized_pnl;
+      out.push({
+        tradeId: t.id,
+        entryDate: t.entry_date,
+        entryPrice: t.entry_underlying_price,
+        strategyLabel: STRATEGY_LABELS[t.strategy] ?? t.strategy,
+        breakevensToday: a.breakevens_today,
+        breakevensExpiration: a.breakevens_expiration,
+        scrubberLabel,
+        uplLabel: formatSignedDollar(upl),
+        uplPositive: upl >= 0,
+      });
+    });
+    return out;
+  }, [openOnSymbol, openAnalytics, activeTradeId, analyticsQuery.data, isIntraday, elapsedHours]);
 
   // Draggable SL/TP brackets — only for an OPEN position on the charted
   // symbol. Reads the committed levels off the trade row; drag-release /
@@ -229,7 +316,7 @@ export function PositionsPage() {
               symbol={symbol}
               controlledTimeframe={{ value: timeframe, onChange: setTimeframe }}
               hideHeader
-              position={chartOverlay}
+              positions={chartOverlays}
               brackets={bracketsOverlay}
             />
           ) : (
@@ -242,7 +329,7 @@ export function PositionsPage() {
           className="border-t md:border-t-0 md:border-l border-hairline shrink-0 flex flex-col min-h-0 bg-tier-0 w-full md:w-[452px] md:min-w-[452px]"
         >
           {/* Upper-right: option chain (natural height, no flex-grow). */}
-          <RightChain symbol={symbol} />
+          <RightChain symbol={symbol} onPickSymbol={setSymbol} />
           {/* Lower-right: trade ticket sits flush under the chain. */}
           <div className="border-t border-hairline bg-tier-0 shrink-0">
             <TradeTicket />

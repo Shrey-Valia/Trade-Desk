@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import { useAccountState } from "@/hooks/useAccountState";
+import { useTrades } from "@/hooks/useTrades";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
-import { useTradeTicket, type TicketSelection } from "@/stores/tradeTicket";
+import {
+  useTradeTicket,
+  type TicketSelection,
+  type TicketOrderType,
+} from "@/stores/tradeTicket";
 
 /**
  * Lower-right TRADE TICKET (184px tall).
@@ -40,6 +45,10 @@ export function TradeTicket() {
   const setOrderType = useTradeTicket((s) => s.setOrderType);
   const limitPrice = useTradeTicket((s) => s.limitPrice);
   const setLimitPrice = useTradeTicket((s) => s.setLimitPrice);
+  const stopPrice = useTradeTicket((s) => s.stopPrice);
+  const setStopPrice = useTradeTicket((s) => s.setStopPrice);
+  const trailAmount = useTradeTicket((s) => s.trailAmount);
+  const setTrailAmount = useTradeTicket((s) => s.setTrailAmount);
   const clear = useTradeTicket((s) => s.clear);
 
   const legMutation = useOpenZeroDteLeg();
@@ -51,10 +60,31 @@ export function TradeTicket() {
   // equity (server-enforced too). Default high until account state loads so
   // the UI never wrongly blocks; clamp the selection down if it exceeds.
   const { data: accountState } = useAccountState();
+  const { data: tradesData } = useTrades();
   const maxContracts = accountState?.max_contracts ?? 99;
+  const activeTier = accountState?.active_tier ?? "50K";
+  // Contracts already open/working on this tier. The scaling cap limits TOTAL
+  // simultaneous size, so the ticket's remaining capacity is the scaling max
+  // minus what's already on — otherwise multiple max-size orders stack past
+  // the cap (the server now rejects that aggregate too).
+  const openContracts = useMemo(() => {
+    const ts = tradesData?.trades ?? [];
+    return ts
+      .filter(
+        (t) =>
+          (t.status === "open" || t.status === "working") &&
+          (t.tier ?? "50K") === activeTier,
+      )
+      .reduce(
+        (sum, t) =>
+          sum + (t.legs.length ? Math.max(...t.legs.map((l) => l.contracts ?? 1)) : 1),
+        0,
+      );
+  }, [tradesData, activeTier]);
+  const remaining = Math.max(0, maxContracts - openContracts);
   useEffect(() => {
-    if (contracts > maxContracts) setContracts(maxContracts);
-  }, [contracts, maxContracts, setContracts]);
+    if (contracts > remaining) setContracts(Math.max(1, remaining));
+  }, [contracts, remaining, setContracts]);
 
   // Combine engine soft-gate: a DAY LOCK (DLL hit today) or a FAILED
   // account blocks further opens — UX only; the backend open path is not
@@ -81,8 +111,16 @@ export function TradeTicket() {
   const isLeg = selection?.kind === "leg";
   const effectiveOrderType = isLeg ? orderType : "market";
   const needsLimit = effectiveOrderType !== "market";
+  const needsStop = effectiveOrderType === "stop_limit";
   const limitOk = !needsLimit || (limitPrice != null && limitPrice > 0);
-  const canFire = hasSelection && marketOpen && !pending && !locked && limitOk;
+  // At the scaling cap: no remaining capacity, or the chosen size would push
+  // total open past the cap. Blocks the BUY (server enforces this too).
+  const atCap = remaining <= 0 || contracts > remaining;
+  const atCapReason = `Scaling plan: ${openContracts}/${maxContracts} contracts open — close a position to scale up.`;
+  // Stop-limit needs a valid stop (arm) price in addition to the limit price.
+  const stopOk = !needsStop || (stopPrice != null && stopPrice > 0);
+  const canFire =
+    hasSelection && marketOpen && !pending && !locked && limitOk && stopOk && !atCap;
 
   // Synchronous double-click guard. The button's disabled prop tracks
   // mutation.isPending after react renders — but two synchronous clicks
@@ -122,6 +160,8 @@ export function TradeTicket() {
         contracts,
         order_type: effectiveOrderType,
         limit_price: needsLimit ? limitPrice : null,
+        stop_price: needsStop ? stopPrice : null,
+        trail_amount: trailAmount && trailAmount > 0 ? trailAmount : null,
       },
       {
         onSuccess: () => clear(),
@@ -154,6 +194,7 @@ export function TradeTicket() {
       <Header />
       {passed && <PassedBanner />}
       {locked && <LockBanner reason={lockReason} />}
+      {!locked && atCap && <LockBanner reason={atCapReason} />}
       <Summary selection={selection} contracts={contracts} />
       {isLeg && (
         <OrderTypeRow
@@ -161,12 +202,19 @@ export function TradeTicket() {
           setOrderType={setOrderType}
           limitPrice={limitPrice}
           setLimitPrice={setLimitPrice}
+          stopPrice={stopPrice}
+          setStopPrice={setStopPrice}
         />
+      )}
+      {isLeg && (
+        <TrailStopRow trailAmount={trailAmount} setTrailAmount={setTrailAmount} />
       )}
       <QuantityRow
         contracts={contracts}
         setContracts={setContracts}
-        maxContracts={maxContracts}
+        cap={remaining}
+        scalingMax={maxContracts}
+        openContracts={openContracts}
       />
       <DllRiskHint selection={selection} contracts={contracts} />
       <Actions
@@ -371,84 +419,183 @@ function DllRiskHint({
 }
 
 /**
- * Order-type selector (Market | Limit | Stop) + a limit-price input that
- * appears for limit/stop. The price is the OPTION premium the order fills
- * against — a working order rests until the monitor sees the mark cross it.
+ * Order-type selector (Market | Limit | Stop | Stop-limit) + the option-premium
+ * price input(s) that apply. A working order rests until the monitor sees the
+ * mark cross the trigger:
+ *   - limit / stop → one trigger (limit @ / stop @)
+ *   - stop_limit   → arms @ stopPrice, then rests as a limit @ limitPrice
  */
 function OrderTypeRow({
   orderType,
   setOrderType,
   limitPrice,
   setLimitPrice,
+  stopPrice,
+  setStopPrice,
 }: {
-  orderType: "market" | "limit" | "stop";
-  setOrderType: (t: "market" | "limit" | "stop") => void;
+  orderType: TicketOrderType;
+  setOrderType: (t: TicketOrderType) => void;
   limitPrice: number | null;
   setLimitPrice: (p: number | null) => void;
+  stopPrice: number | null;
+  setStopPrice: (p: number | null) => void;
 }) {
-  const types: Array<"market" | "limit" | "stop"> = ["market", "limit", "stop"];
+  const types: Array<{ key: TicketOrderType; label: string }> = [
+    { key: "market", label: "market" },
+    { key: "limit", label: "limit" },
+    { key: "stop", label: "stop" },
+    { key: "stop_limit", label: "stop lim" },
+  ];
+  const isStopLimit = orderType === "stop_limit";
   return (
-    <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0">
-      <div className="flex" style={{ gap: 4 }}>
-        {types.map((t) => {
-          const active = orderType === t;
-          return (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setOrderType(t)}
-              aria-pressed={active}
-              className={[
-                "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
-                active
-                  ? "bg-tier-3 border border-amber text-amber"
-                  : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
-              ].join(" ")}
-              style={{ height: 24, fontSize: 11 }}
-            >
-              {t}
-            </button>
-          );
-        })}
-      </div>
-      {orderType !== "market" && (
-        <label className="flex items-center gap-1 ml-auto" style={{ fontSize: 12 }}>
-          <span className="uppercase tracking-label-up text-fg-tertiary-2">
-            {orderType === "stop" ? "stop @" : "limit @"}
-          </span>
-          <input
-            type="number"
-            inputMode="decimal"
-            min={0}
-            step={0.01}
-            value={limitPrice ?? ""}
-            onChange={(e) => {
-              const v = parseFloat(e.target.value);
-              setLimitPrice(Number.isFinite(v) ? v : null);
-            }}
-            placeholder="0.00"
-            aria-label="Limit price (option premium)"
-            className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
-            style={{ width: 64, height: 24, fontSize: 12 }}
+    <div className="flex flex-col gap-1 px-3 pb-1 tabular-nums shrink-0">
+      <div className="flex items-center gap-2">
+        <div className="flex" style={{ gap: 4 }}>
+          {types.map((t) => {
+            const active = orderType === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setOrderType(t.key)}
+                aria-pressed={active}
+                className={[
+                  "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+                  active
+                    ? "bg-tier-3 border border-amber text-amber"
+                    : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                ].join(" ")}
+                style={{ height: 24, fontSize: 11 }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+        {orderType !== "market" && !isStopLimit && (
+          <PriceInput
+            label={orderType === "stop" ? "stop @" : "limit @"}
+            value={limitPrice}
+            onChange={setLimitPrice}
+            ariaLabel="Limit price (option premium)"
           />
-        </label>
+        )}
+      </div>
+      {isStopLimit && (
+        <div className="flex items-center gap-2 ml-auto">
+          <PriceInput
+            label="arms @"
+            value={stopPrice}
+            onChange={setStopPrice}
+            ariaLabel="Stop arm price (option premium)"
+          />
+          <PriceInput
+            label="limit @"
+            value={limitPrice}
+            onChange={setLimitPrice}
+            ariaLabel="Resting limit price (option premium)"
+          />
+        </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Optional trailing-stop EXIT — a checkbox that, when on, reveals a $/share
+ * "trail" input. Attaches a trailing stop to the position at open: the monitor
+ * trails the favorable option mark and stops the position out when the mark
+ * retraces past (high-water − trail). Off (null) by default.
+ */
+function TrailStopRow({
+  trailAmount,
+  setTrailAmount,
+}: {
+  trailAmount: number | null;
+  setTrailAmount: (a: number | null) => void;
+}) {
+  const on = trailAmount != null;
+  return (
+    <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0" style={{ fontSize: 12 }}>
+      <button
+        type="button"
+        onClick={() => setTrailAmount(on ? null : 0.1)}
+        aria-pressed={on}
+        className={[
+          "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+          on
+            ? "bg-tier-3 border border-amber text-amber"
+            : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+        ].join(" ")}
+        style={{ height: 24, fontSize: 11 }}
+        title="Attach a trailing stop: the position exits when the option mark retraces this far from its favorable high-water."
+      >
+        trail stop
+      </button>
+      {on && (
+        <PriceInput
+          label="trail $"
+          value={trailAmount}
+          onChange={(v) => setTrailAmount(v != null && v > 0 ? v : null)}
+          ariaLabel="Trailing stop distance ($/share)"
+        />
+      )}
+    </div>
+  );
+}
+
+function PriceInput({
+  label,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (p: number | null) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <label className="flex items-center gap-1" style={{ fontSize: 12 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2">{label}</span>
+      <input
+        type="number"
+        inputMode="decimal"
+        min={0}
+        step={0.01}
+        value={value ?? ""}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value);
+          onChange(Number.isFinite(v) ? v : null);
+        }}
+        placeholder="0.00"
+        aria-label={ariaLabel}
+        className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+        style={{ width: 64, height: 24, fontSize: 12 }}
+      />
+    </label>
   );
 }
 
 function QuantityRow({
   contracts,
   setContracts,
-  maxContracts,
+  cap,
+  scalingMax,
+  openContracts,
 }: {
   contracts: number;
   setContracts: (n: number) => void;
-  maxContracts: number;
+  /** Remaining capacity = scalingMax − openContracts (the effective per-order limit). */
+  cap: number;
+  /** Scaling-plan max position size (for the label). */
+  scalingMax: number;
+  /** Contracts already open/working (for the label). */
+  openContracts: number;
 }) {
   // Topstep preset ladder: − [VALUE] +  |  [1] [3] [5] [10] [15]
   const presets = [1, 3, 5, 10, 15];
-  const atMax = contracts >= maxContracts;
+  const atMax = contracts >= cap;
   return (
     <div className="flex flex-col gap-0.5 px-3 pb-1 shrink-0">
       <div className="flex items-center gap-3 tabular-nums">
@@ -470,7 +617,7 @@ function QuantityRow({
           <StepperButton
             aria-label="Increase quantity"
             disabled={atMax}
-            onClick={() => setContracts(Math.min(maxContracts, contracts + 1))}
+            onClick={() => setContracts(Math.min(cap, contracts + 1))}
           >
             +
           </StepperButton>
@@ -478,7 +625,7 @@ function QuantityRow({
         <div className="flex" style={{ gap: 4 }}>
           {presets.map((n) => {
             const active = contracts === n;
-            const blocked = n > maxContracts;
+            const blocked = n > cap;
             return (
               <button
                 key={n}
@@ -486,7 +633,11 @@ function QuantityRow({
                 disabled={blocked}
                 onClick={() => setContracts(n)}
                 aria-pressed={active}
-                title={blocked ? `Scaling plan: max ${maxContracts} contracts` : undefined}
+                title={
+                  blocked
+                    ? `Scaling plan: ${openContracts}/${scalingMax} open — ${cap} contract${cap === 1 ? "" : "s"} left`
+                    : undefined
+                }
                 className={[
                   "tabular-nums transition-colors duration-100 font-medium",
                   "flex items-center justify-center select-none",
@@ -507,9 +658,10 @@ function QuantityRow({
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
         style={{ fontSize: 11 }}
-        title="Scaling plan — max position size grows with built equity; re-evaluates at the 5pm-PT settlement."
+        title="Scaling plan — max TOTAL open size grows with built equity; re-evaluates at the 5pm-PT settlement."
       >
-        scaling · max {maxContracts} {maxContracts === 1 ? "contract" : "contracts"}
+        scaling · {openContracts}/{scalingMax} open ·{" "}
+        {cap} {cap === 1 ? "contract" : "contracts"} left
       </span>
     </div>
   );

@@ -1,17 +1,25 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQueries,
+  useQueryClient,
+} from "@tanstack/react-query";
 
-import { LiveFeed } from "@/components/positions/LiveFeed";
+import { BottomNewsFeedTabs } from "@/components/positions/BottomNewsFeedTabs";
+import { useAccountState } from "@/hooks/useAccountState";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
-import { updateTrade } from "@/lib/api";
+import { fetchTradeAnalytics, updateTrade } from "@/lib/api";
+import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useSelectedTicker } from "@/stores/selectedTicker";
+import { toast } from "@/stores/toast";
 import { isZeroDteTrade, STRATEGY_LABELS, type Trade, type TradeAnalytics } from "@/types/journal";
 
 /**
@@ -30,7 +38,7 @@ export function BottomStrip() {
   const elapsedHours = useActivePosition((s) => s.elapsedHours);
 
   const { data: tradesData } = useTrades();
-  const trades = tradesData?.trades ?? [];
+  const trades = useMemo(() => tradesData?.trades ?? [], [tradesData]);
   const activeTrade = useMemo(
     () => trades.find((t) => t.id === activeTradeId) ?? null,
     [trades, activeTradeId],
@@ -54,6 +62,37 @@ export function BottomStrip() {
   });
   const liveAnalytics = liveAnalyticsQuery.data ?? null;
 
+  // All open positions on the active tier — drives the multi-position
+  // selector so EVERY open contract is visible, not just the selected one.
+  // One live analytics query each; the key matches the header's per-position
+  // queries, so they're shared from cache (no extra network).
+  const { data: account } = useAccountState();
+  const activeTier = account?.active_tier ?? "50K";
+  const openPositions = useMemo(
+    () => trades.filter((t) => t.status === "open" && (t.tier ?? "50K") === activeTier),
+    [trades, activeTier],
+  );
+  const openAnalytics = useQueries({
+    queries: openPositions.map((t) => {
+      const intraday = isZeroDteTrade(t);
+      return {
+        queryKey: ["trade-analytics", t.id, null, intraday ? "intraday" : "day", null],
+        queryFn: () => fetchTradeAnalytics(t.id, { dteOverride: null, elapsedHours: null }),
+        staleTime: intraday ? 3_000 : 10_000,
+        refetchInterval: intraday ? 5_000 : (false as const),
+        placeholderData: keepPreviousData,
+      };
+    }),
+  });
+  const openList = useMemo(
+    () =>
+      openPositions.map((t, i) => ({
+        trade: t,
+        upl: openAnalytics[i]?.data?.unrealized_pnl ?? null,
+      })),
+    [openPositions, openAnalytics],
+  );
+
   // No active position → pre-execution strip: KEY LEVELS inline + a TODAY
   // summary row, PLUS the live activity FEED (combine lifecycle events +
   // the user's own opens/closes). OPEN POSITION and THETA SCRUBBER stay
@@ -67,7 +106,7 @@ export function BottomStrip() {
         <KeyLevelsInline symbol={symbol} />
         <TodayInline trades={trades} />
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-t border-hairline">
-          <LiveFeed />
+          <BottomNewsFeedTabs symbol={symbol} />
         </div>
       </div>
     );
@@ -82,6 +121,8 @@ export function BottomStrip() {
           trade={activeTrade}
           analytics={analytics}
           liveAnalytics={liveAnalytics}
+          openList={openList}
+          activeTradeId={activeTradeId}
         />
       </Column>
       <Column>
@@ -94,7 +135,7 @@ export function BottomStrip() {
         <TodayCol trades={trades} activeTradeId={activeTradeId} />
       </Column>
       <Column>
-        <LiveFeed />
+        <BottomNewsFeedTabs symbol={symbol} />
       </Column>
     </div>
   );
@@ -339,12 +380,19 @@ function OpenPositionCol({
   trade,
   analytics,
   liveAnalytics,
+  openList,
+  activeTradeId,
 }: {
   trade: Trade | null;
   /** Scrubbed analytics — drives the what-if greeks / BE only. */
   analytics: TradeAnalytics | null;
   /** Live, scrubber-independent analytics — drives the UP&L + close. */
   liveAnalytics: TradeAnalytics | null;
+  /** Every open position on the active tier + its live UP&L, for the
+   *  selector list (shown when more than one is open). */
+  openList: { trade: Trade; upl: number | null }[];
+  /** The currently-selected position id (highlighted in the list). */
+  activeTradeId: number | null;
 }) {
   const queryClient = useQueryClient();
   const setActiveTradeId = useActivePosition((s) => s.setTradeId);
@@ -371,6 +419,7 @@ function OpenPositionCol({
       queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       setActiveTradeId(null);
     },
+    onError: (e) => toast.error((e as Error)?.message || "Could not close position"),
   });
 
   return (
@@ -379,6 +428,44 @@ function OpenPositionCol({
         left="Open position"
         right={trade ? `DTE ${analytics?.current_dte_days ?? "—"}` : ""}
       />
+      {/* Selector list — shown when more than one position is open, so every
+          open contract is visible and the header's URPL reconciles with what
+          you see. Click a row to drive the detail + chart selection. */}
+      {openList.length > 1 && (
+        <div className="px-3 pt-1 flex flex-col gap-px max-h-[68px] overflow-y-auto shrink-0">
+          {openList.map(({ trade: t, upl }) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setActiveTradeId(t.id)}
+              className={`flex items-center justify-between gap-2 px-1 py-0.5 text-tiny border tabular-nums ${
+                t.id === activeTradeId
+                  ? "border-amber bg-tier-2 text-fg-primary"
+                  : "border-transparent text-fg-secondary hover:bg-tier-2"
+              }`}
+              style={{ borderRadius: 0 }}
+              title={`${t.symbol} ${STRATEGY_LABELS[t.strategy] ?? t.strategy} · ${totalContracts(t)} contract${totalContracts(t) === 1 ? "" : "s"}`}
+            >
+              <span className="truncate">
+                {t.symbol} · {totalContracts(t)}c
+              </span>
+              <span
+                className={
+                  upl == null
+                    ? "text-fg-tertiary"
+                    : upl > 0
+                      ? "text-bullish"
+                      : upl < 0
+                        ? "text-bearish"
+                        : "text-fg-secondary"
+                }
+              >
+                {upl == null ? "—" : formatSignedDollar(upl)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       {!trade && (
         <Empty>No open position. Pick a strike in the chain ↑</Empty>
       )}
@@ -433,16 +520,108 @@ function OpenPositionCol({
               <RiskRow analytics={analytics} />
             </>
           )}
-          <div className="mt-auto pt-2">
+          <div className="mt-auto pt-2 flex flex-col gap-1.5">
             <CloseButton
               disabled={!liveAnalytics || close.isPending}
               upl={liveUpl}
               onClick={() => close.mutate()}
             />
+            <BulkActions />
           </div>
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Flatten-all / Reverse-all — combine-wide bulk actions. FLATTEN closes every
+ * open position on the active combine; REVERSE flattens then re-opens the
+ * opposite side of each. Both invalidate the trade + account queries so the
+ * strip, header and chart reflect the new state immediately.
+ */
+function BulkActions() {
+  const queryClient = useQueryClient();
+  const setActiveTradeId = useActivePosition((s) => s.setTradeId);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+    queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+  };
+
+  const flatten = useMutation({
+    mutationFn: flattenPositions,
+    onSuccess: (r) => {
+      invalidate();
+      setActiveTradeId(null);
+      toast.success(
+        `Flattened ${r.closed.length} position${r.closed.length === 1 ? "" : "s"} · ` +
+          `${formatSignedDollar(r.realized)} realized`,
+      );
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Could not flatten"),
+  });
+
+  const reverse = useMutation({
+    mutationFn: reversePositions,
+    onSuccess: (r) => {
+      invalidate();
+      setActiveTradeId(r.opened[0] ?? null);
+      toast.success(
+        `Reversed ${r.closed.length} → ${r.opened.length} position` +
+          `${r.opened.length === 1 ? "" : "s"}`,
+      );
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Could not reverse"),
+  });
+
+  const pending = flatten.isPending || reverse.isPending;
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <BulkButton
+        label="FLATTEN ALL"
+        title="Close every open position on this combine at the live mark."
+        disabled={pending}
+        onClick={() => flatten.mutate()}
+      />
+      <BulkButton
+        label="REVERSE ALL"
+        title="Flatten every position, then re-open the opposite side of each."
+        disabled={pending}
+        onClick={() => reverse.mutate()}
+      />
+    </div>
+  );
+}
+
+function BulkButton({
+  label,
+  title,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  title: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={[
+        "w-full h-7 rounded-btn font-semibold tabular-nums uppercase",
+        "transition-colors duration-100 border",
+        disabled
+          ? "bg-tier-1 text-fg-disabled border-tier-2 cursor-not-allowed"
+          : "bg-tier-1 text-fg-secondary border-tier-3 hover:bg-tier-2 hover:text-fg-primary",
+      ].join(" ")}
+      style={{ fontSize: 11, letterSpacing: "0.04em" }}
+    >
+      {label}
+    </button>
   );
 }
 

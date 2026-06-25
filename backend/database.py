@@ -105,11 +105,22 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("combine_id", "INTEGER"),
     # Limit/stop orders + SL/TP brackets. order_type defaults to 'market'
     # so existing rows read as immediate fills; the rest are nullable.
-    ("order_type", "VARCHAR(8) NOT NULL DEFAULT 'market'"),
+    # (order_type was originally VARCHAR(8); SQLite ignores the length so the
+    # widening to fit 'stop_limit' needs no ALTER — only the model metadata.)
+    ("order_type", "VARCHAR(16) NOT NULL DEFAULT 'market'"),
     ("limit_price", "FLOAT"),
+    # stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
+    ("stop_price", "FLOAT"),
+    # Trailing stop (EXIT): trails the favorable option mark by trail_amount
+    # ($/share) or trail_pct; trail_hwm is the monitor-maintained high-water.
+    ("trail_amount", "FLOAT"),
+    ("trail_pct", "FLOAT"),
+    ("trail_hwm", "FLOAT"),
     ("stop_loss", "FLOAT"),
     ("take_profit", "FLOAT"),
-    ("close_reason", "VARCHAR(12)"),
+    # OCO grouping: one fill/close cancels still-working siblings in the group.
+    ("oco_group", "VARCHAR(36)"),
+    ("close_reason", "VARCHAR(16)"),
     # Copy trading: the lead trade a mirrored row was copied from.
     ("copied_from_trade_id", "INTEGER"),
 ]
@@ -223,6 +234,9 @@ def _create_missing_indexes() -> None:
     with engine.connect() as conn:
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_trades_combine_id ON trades(combine_id)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_trades_oco_group ON trades(oco_group)")
         )
         conn.commit()
 

@@ -3,7 +3,7 @@ import { z } from "zod";
 export const TradeStatusSchema = z.enum(["working", "open", "closed", "cancelled"]);
 export type TradeStatus = z.infer<typeof TradeStatusSchema>;
 
-export const OrderTypeSchema = z.enum(["market", "limit", "stop"]);
+export const OrderTypeSchema = z.enum(["market", "limit", "stop", "stop_limit"]);
 export type OrderType = z.infer<typeof OrderTypeSchema>;
 
 export const TradeLegSchema = z.object({
@@ -35,9 +35,21 @@ export const TradeOutSchema = z.object({
   // Limit/stop orders + SL/TP brackets.
   order_type: OrderTypeSchema.default("market"),
   limit_price: z.number().nullable().optional(),
+  // stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
+  stop_price: z.number().nullable().optional(),
+  // Trailing stop (EXIT): trails the favorable option mark; trail_hwm is the
+  // monitor-maintained high-water.
+  trail_amount: z.number().nullable().optional(),
+  trail_pct: z.number().nullable().optional(),
+  trail_hwm: z.number().nullable().optional(),
+  // OCO group id pairing sibling working orders (one fill cancels the other).
+  oco_group: z.string().nullable().optional(),
   stop_loss: z.number().nullable().optional(),
   take_profit: z.number().nullable().optional(),
-  close_reason: z.enum(["manual", "stop_loss", "take_profit", "expiry"]).nullable().optional(),
+  close_reason: z
+    .enum(["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"])
+    .nullable()
+    .optional(),
   // Phase 2 metadata.
   tags: z.array(z.string()).default([]),
   mistake_tags: z.array(z.string()).default([]),

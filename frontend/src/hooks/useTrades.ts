@@ -34,6 +34,7 @@ export function useCreateTrade() {
   return useMutation({
     mutationFn: (input: TradeInput) => createTrade(input),
     onSuccess: () => qc.invalidateQueries({ queryKey: TRADES_KEY }),
+    onError: (e) => toast.error((e as Error)?.message || "Could not log trade"),
   });
 }
 
@@ -43,6 +44,7 @@ export function useUpdateTrade() {
     mutationFn: (args: { id: number; patch: TradeUpdateInput }) =>
       updateTrade(args.id, args.patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: TRADES_KEY }),
+    onError: (e) => toast.error((e as Error)?.message || "Could not save changes"),
   });
 }
 
@@ -51,6 +53,7 @@ export function useDeleteTrade() {
   return useMutation({
     mutationFn: (id: number) => deleteTrade(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: TRADES_KEY }),
+    onError: (e) => toast.error((e as Error)?.message || "Could not delete trade"),
   });
 }
 

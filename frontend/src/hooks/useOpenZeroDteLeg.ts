@@ -19,10 +19,21 @@ export function useOpenZeroDteLeg() {
       // header BAL/MLL/RP&L update immediately instead of lagging.
       queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       if (trade.status === "working") {
-        // A resting limit/stop order — not yet a position, so don't make
-        // it the active chart position; it shows in the working-orders list.
-        const kind = trade.order_type === "stop" ? "Stop" : "Limit";
-        toast.success(`${kind} order placed — ${trade.symbol}.`);
+        // A resting limit/stop/stop-limit order — not yet a position, so don't
+        // make it the active chart position; it shows in the Pending Orders list.
+        // Use a warning toast (amber) with explicit "WORKING / not filled"
+        // wording so it never reads as an immediate fill, and a longer TTL.
+        const kind =
+          trade.order_type === "stop"
+            ? "Stop"
+            : trade.order_type === "stop_limit"
+              ? "Stop-limit"
+              : "Limit";
+        const at = trade.limit_price != null ? ` @ $${trade.limit_price.toFixed(2)}` : "";
+        toast.warning(
+          `${trade.symbol} ${kind} order WORKING${at} — NOT filled yet. It rests until the mark crosses the trigger (see Pending Orders).`,
+          8_000,
+        );
       } else {
         setActiveTradeId(trade.id);
         toast.success(`Position opened — ${trade.symbol}.`);

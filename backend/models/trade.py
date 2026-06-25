@@ -68,15 +68,30 @@ class Trade(Base):
     # --- Limit/stop orders + SL/TP brackets (order monitor) ---------------
     # `status` carries the order lifecycle: working (limit/stop placed, not
     # yet filled) → open → closed; or cancelled (working order pulled).
-    # order_type describes the ENTRY. limit_price is the OPTION-premium
-    # trigger for a limit/stop entry. stop_loss / take_profit are UNDERLYING
-    # price levels (the draggable chart brackets) checked by the monitor;
-    # close_reason records what closed the position (manual/stop/target/expiry).
-    order_type: Mapped[str] = mapped_column(String(8), nullable=False, default="market")
+    # order_type describes the ENTRY (market/limit/stop/stop_limit). For a
+    # plain limit/stop the OPTION-premium trigger is limit_price. For a
+    # stop_limit the order ARMS at stop_price (mark crosses it) then RESTS as a
+    # limit at limit_price. stop_loss / take_profit are UNDERLYING price levels
+    # (the draggable chart brackets) checked by the monitor; close_reason
+    # records what closed the position.
+    order_type: Mapped[str] = mapped_column(String(16), nullable=False, default="market")
     limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Trailing stop (EXIT) — a dynamic stop on an OPEN position that trails the
+    # favorable OPTION mark. trail_amount is an absolute $/share offset;
+    # trail_pct is a fractional offset (0.10 = 10%). trail_hwm is the
+    # monitor-maintained high-water of the favorable mark the trail hangs off
+    # (peak for a long, trough for a short); None until the first tick seeds it.
+    trail_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trail_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trail_hwm: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
     take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
-    close_reason: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    # OCO (one-cancels-the-other): orders sharing an oco_group are siblings —
+    # when one FILLS (working entry) or its position CLOSES on a bracket, the
+    # monitor cancels the still-working siblings in the group. None = no pairing.
+    oco_group: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    close_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Copy trading: the LEAD trade this row was mirrored from (None for an
     # original trade). Lets a lead close cascade to its follower copies.

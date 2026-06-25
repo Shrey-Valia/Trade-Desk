@@ -15,8 +15,8 @@ from pydantic import BaseModel, Field, field_validator
 from calculations.strategies import STRATEGY_TYPES
 
 TradeStatus = Literal["working", "open", "closed", "cancelled"]
-OrderType = Literal["market", "limit", "stop"]
-CloseReason = Literal["manual", "stop_loss", "take_profit", "expiry"]
+OrderType = Literal["market", "limit", "stop", "stop_limit"]
+CloseReason = Literal["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"]
 LegSide = Literal["call", "put"]
 LegAction = Literal["buy", "sell"]
 
@@ -145,8 +145,17 @@ class TradeOut(BaseModel):
     # trigger; stop_loss/take_profit = underlying price levels (chart brackets).
     order_type: OrderType = "market"
     limit_price: float | None = None
+    # stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
+    stop_price: float | None = None
+    # Trailing stop (EXIT): trails the favorable option mark by trail_amount
+    # ($/share) or trail_pct; trail_hwm is the monitor-maintained high-water.
+    trail_amount: float | None = None
+    trail_pct: float | None = None
+    trail_hwm: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
+    # OCO group id pairing sibling working orders (one fill cancels the other).
+    oco_group: str | None = None
     close_reason: CloseReason | None = None
     # Combine-tier introduction. Trades tagged with the tier they were
     # opened on; older rows (none exist post-wipe) default to "50K".

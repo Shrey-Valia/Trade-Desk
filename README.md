@@ -243,6 +243,24 @@ SEED_TRADES=0                      # set 1 to load demo journal entries
 cd backend && uv run pytest -q
 ```
 
+One test in `test_chain_availability` is `network`-marked because it
+reaches live Alpaca data and is environment-dependent. To run the
+deterministic subset (what CI runs), deselect it:
+
+```bash
+cd backend && uv run pytest -q -m "not network"
+```
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull
+request:
+
+- **backend** — Python 3.11, installs `-e ".[dev]"`, runs
+  `pytest -m "not network"` from `backend/`.
+- **frontend** — Node 20, `npm ci`, then `tsc --noEmit` (typecheck) and
+  `npm run build` from `frontend/`.
+
 ---
 
 ## Architecture

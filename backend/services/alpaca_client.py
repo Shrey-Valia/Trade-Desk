@@ -9,12 +9,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from typing import Callable, TypeVar
 from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
+from alpaca.data.historical.news import NewsClient
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import (
+    NewsRequest,
     OptionBarsRequest,
     OptionChainRequest,
     StockBarsRequest,
@@ -26,7 +29,47 @@ from alpaca.trading.client import TradingClient
 from calculations.types import ContractRow
 from config import settings
 from services.cache import cache
-from services.resilience import resilient_call
+from services.rate_limit import TokenBucket
+from services.resilience import CircuitOpenError, resilient_call
+
+# Per-call spacing for the single Alpaca account key. Like the Finnhub
+# client's 0.3s spacing, this smooths the per-symbol fan-out of the
+# watchlist refresh + hot-ticker prewarm so they can't burst into a 429.
+# ~6 calls/sec sustained with a small burst budget (capacity 8) keeps us
+# comfortably under Alpaca's limit while staying responsive for one-off
+# interactive requests. The bucket is process-wide and thread-safe (the
+# refresh/prewarm/order jobs all run on the scheduler's worker threads).
+_ALPACA_RATE = 6.0
+_ALPACA_BURST = 8.0
+_alpaca_bucket = TokenBucket(_ALPACA_RATE, _ALPACA_BURST)
+
+
+def _spaced(fn: Callable[[], T]) -> T:
+    """Block on the shared Alpaca token bucket, then call `fn`. Wrap the
+    SDK call so the spacing happens right before the network hop (and
+    inside resilient_call's breaker check, so a short-circuited call costs
+    no tokens)."""
+    _alpaca_bucket.take()
+    return fn()
+
+
+class MarketDataUnavailable(RuntimeError):
+    """The upstream market-data feed is degraded — the circuit breaker is
+    open or the call was rate-limited — as opposed to a genuine "no data
+    for this symbol/timeframe" (which is an empty result, not an error).
+
+    Chart endpoints map this to a typed 503 (+ Retry-After) so the
+    frontend can render an explicit "data unavailable — retrying" state
+    with auto-retry instead of a 404 or an infinite spinner."""
+
+
+def _is_degraded(exc: Exception) -> bool:
+    """True when `exc` means the feed is throttled/circuit-open (a transient,
+    retryable degradation) rather than a malformed/empty response."""
+    if isinstance(exc, CircuitOpenError):
+        return True
+    s = str(exc).lower()
+    return "too many requests" in s or "429" in s or "rate limit" in s
 
 # All Alpaca SDK calls share ONE breaker: rate limits are account-wide, so a
 # 429 on the option feed means the stock feed is throttled too. One open
@@ -36,6 +79,8 @@ from services.resilience import resilient_call
 _ALPACA = "alpaca"
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 _ET = ZoneInfo("America/New_York")
 # Per-request chunk for option bars. Alpaca accepts large batches but URL
@@ -87,6 +132,12 @@ def _option_client() -> OptionHistoricalDataClient:
     return OptionHistoricalDataClient(settings.alpaca_api_key, settings.alpaca_api_secret)
 
 
+def _news_client() -> NewsClient:
+    # Reuses the SAME Alpaca credentials as the stock/option clients — no
+    # new keys or config. NewsClient takes the same (api_key, secret_key).
+    return NewsClient(settings.alpaca_api_key, settings.alpaca_api_secret)
+
+
 def _trading_client() -> TradingClient:
     """Trading client (paper) — used for the /v2/clock endpoint. Paper vs
     live doesn't matter for the clock; we follow the configured flag."""
@@ -124,7 +175,7 @@ def get_market_clock() -> MarketClock | None:
     if cached is not None:
         return cached
     try:
-        clock = resilient_call(_ALPACA, lambda: _trading_client().get_clock())
+        clock = resilient_call(_ALPACA, lambda: _spaced(lambda: _trading_client().get_clock()))
         out = MarketClock(
             is_open=bool(clock.is_open),
             timestamp=_to_et(clock.timestamp),
@@ -166,7 +217,7 @@ def get_quotes(symbols: list[str]) -> dict[str, Quote]:
 
     client = _stock_client()
     req = StockSnapshotRequest(symbol_or_symbols=symbols)
-    raw = resilient_call(_ALPACA, lambda: client.get_stock_snapshot(req))
+    raw = resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_stock_snapshot(req)))
 
     out: dict[str, Quote] = {}
     for symbol, snap in raw.items():
@@ -213,13 +264,13 @@ def get_year_bars(symbol: str) -> list | None:
     try:
         bars = resilient_call(
             _ALPACA,
-            lambda: client.get_stock_bars(
+            lambda: _spaced(lambda: client.get_stock_bars(
                 StockBarsRequest(
                     symbol_or_symbols=symbol,
                     timeframe=TimeFrame.Day,
                     start=start,
                 )
-            ),
+            )),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("year bars fetch failed for %s: %s", symbol, exc)
@@ -295,7 +346,7 @@ def _fetch_chain(symbol: str):
     client = _option_client()
     req = OptionChainRequest(underlying_symbol=symbol, feed=settings.alpaca_options_feed)
     try:
-        return resilient_call(_ALPACA, lambda: client.get_option_chain(req))
+        return resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_option_chain(req)))
     except Exception as exc:  # noqa: BLE001
         log.warning("alpaca chain fetch failed for %s: %s", symbol, exc)
         return None
@@ -325,7 +376,7 @@ def _sum_today_volume(occ_symbols: list[str], start: datetime) -> int:
             timeframe=TimeFrame.Day,
             start=start,
         )
-        bars = resilient_call(_ALPACA, lambda: client.get_option_bars(req))
+        bars = resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_option_bars(req)))
         # bars.data is dict[symbol, list[Bar]] in alpaca-py >= 0.30
         data = getattr(bars, "data", None) or {}
         for _, bar_list in data.items():
@@ -442,13 +493,13 @@ def _populate_per_contract_volume(
         try:
             bars = resilient_call(
                 _ALPACA,
-                lambda: client.get_option_bars(
+                lambda: _spaced(lambda: client.get_option_bars(
                     OptionBarsRequest(
                         symbol_or_symbols=chunk,
                         timeframe=TimeFrame.Day,
                         start=today_start,
                     )
-                ),
+                )),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("per-contract volume fetch chunk failed: %s", exc)
@@ -508,6 +559,18 @@ _TIMEFRAME_CONFIG: dict[str, tuple[TimeFrame, int, int, bool]] = {
 _DEFAULT_TIMEFRAME = "5m"
 
 
+def bars_cache_ttl(timeframe: str) -> int:
+    """Per-timeframe bars cache TTL (seconds).
+
+    Exposes the same TTL grid `get_bars` uses so derived endpoints
+    (e.g. the indicators overlay) can cache with a matching lifetime
+    instead of hard-coding a number. Unknown timeframes fall back to the
+    default timeframe's TTL.
+    """
+    cfg = _TIMEFRAME_CONFIG.get(timeframe) or _TIMEFRAME_CONFIG[_DEFAULT_TIMEFRAME]
+    return cfg[2]
+
+
 def get_bars(symbol: str, timeframe: str) -> list | None:
     """Bars sized to a chart timeframe. See _TIMEFRAME_CONFIG for the grid."""
     if timeframe not in _TIMEFRAME_CONFIG:
@@ -534,14 +597,21 @@ def get_bars(symbol: str, timeframe: str) -> list | None:
             # default). Still ~15-min delayed on the free plan — this is a
             # feed choice, NOT a delay removal; "indicative pricing"
             # disclosures stay in place.
-            lambda: client.get_stock_bars(
+            lambda: _spaced(lambda: client.get_stock_bars(
                 StockBarsRequest(
                     symbol_or_symbols=symbol, timeframe=tf, start=start, feed=DataFeed.IEX
                 )
-            ),
+            )),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("get_bars failed for %s @ %s: %s", symbol, timeframe, exc)
+        # A circuit-open / rate-limit failure is a TRANSIENT degradation,
+        # not "this symbol has no bars". Surface it as a typed error so the
+        # chart endpoint returns a 503 (retryable) rather than a 404 or a
+        # negative-cached empty that would stick for the whole TTL and leave
+        # the frontend stuck. Genuine empty results below still 404.
+        if _is_degraded(exc):
+            raise MarketDataUnavailable(f"{symbol} bars degraded: {exc}") from exc
         cache.set(cache_key, _NEGATIVE, ttl_seconds=ttl)
         return None
 
@@ -583,9 +653,9 @@ def get_daily_bars_history(symbol: str, years_back: int = 5) -> list | None:
     )
     client = _stock_client()
     try:
-        bars = client.get_stock_bars(
+        bars = _spaced(lambda: client.get_stock_bars(
             StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day, start=start)
-        )
+        ))
     except Exception as exc:  # noqa: BLE001
         log.warning("daily history fetch failed for %s: %s", symbol, exc)
         return None
@@ -594,5 +664,79 @@ def get_daily_bars_history(symbol: str, years_back: int = 5) -> list | None:
     bar_list.sort(key=lambda b: b.timestamp)
     cache.set(cache_key, bar_list, ttl_seconds=86400)
     return bar_list
+
+
+# --- News -------------------------------------------------------------------
+
+# Generous success TTL so repeated requests + ticker-flipping don't hammer
+# the free feed (which 429s under load). A SHORT negative TTL caches the
+# error state too, so an outage doesn't turn into a 429 storm of retries.
+_NEWS_TTL = 300        # 5 min — matches the frontend staleTime
+_NEWS_ERR_TTL = 30     # brief negative cache on failure / 429
+# Sentinel distinguishing a cached ERROR from a cached empty list. An
+# empty list is a valid "no news" success and must NOT read as an error.
+_NEWS_ERROR = object()
+
+
+class NewsUnavailable(Exception):
+    """Alpaca news fetch failed or rate-limited — the router maps this to
+    a 503 so the frontend can show 'News unavailable', distinct from an
+    empty (but successful) result."""
+
+
+def get_news(symbol: str, limit: int = 20) -> list[dict]:
+    """Trimmed, symbol-scoped news via Alpaca's news API.
+
+    Returns a list of ``{id, headline, summary, source, url, created_at}``
+    dicts (possibly empty when the symbol genuinely has no recent news).
+    Raises :class:`NewsUnavailable` on error / rate-limit. Cached per
+    (symbol, limit): successes for 5 min, failures for 30 s.
+
+    News shares the existing "alpaca" circuit breaker (the account quota is
+    feed-wide) and the same per-call token-bucket spacing as every other
+    Alpaca path.
+    """
+    symbol = symbol.upper()
+    cache_key = f"news:{symbol}:{limit}"
+    cached = cache.get(cache_key)
+    if cached is _NEWS_ERROR:
+        raise NewsUnavailable(symbol)
+    if cached is not None:
+        return cached
+
+    try:
+        # NewsRequest.symbols is a comma-separated STRING (not a list).
+        resp = resilient_call(
+            _ALPACA,
+            lambda: _spaced(lambda: _news_client().get_news(
+                NewsRequest(symbols=symbol, limit=limit, exclude_contentless=True)
+            )),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Negative-cache so repeated requests during an outage / 429 don't
+        # pile more load onto the already-throttled free feed.
+        cache.set(cache_key, _NEWS_ERROR, ttl_seconds=_NEWS_ERR_TTL)
+        log.warning("alpaca news fetch failed for %s: %s", symbol, exc)
+        raise NewsUnavailable(symbol) from exc
+
+    raw = getattr(resp, "data", None) or {}
+    articles = raw.get("news", []) if isinstance(raw, dict) else []
+    items = [_trim_news(a) for a in articles]
+    cache.set(cache_key, items, ttl_seconds=_NEWS_TTL)
+    return items
+
+
+def _trim_news(article) -> dict:
+    """Map an Alpaca News model to the trimmed shape the frontend expects.
+    Empty summary collapses to "" (the frontend handles the empty case)."""
+    created = getattr(article, "created_at", None)
+    return {
+        "id": str(getattr(article, "id", "")),
+        "headline": getattr(article, "headline", "") or "",
+        "summary": getattr(article, "summary", "") or "",
+        "source": getattr(article, "source", "") or "",
+        "url": getattr(article, "url", "") or "",
+        "created_at": created.isoformat() if hasattr(created, "isoformat") else (created or ""),
+    }
 
 

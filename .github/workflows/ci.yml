@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Match requires-python = ">=3.11" in backend/pyproject.toml.
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Editable install of the backend package plus the `dev` extra,
+      # which provides pytest (declared in [project.optional-dependencies]).
+      # `uv pip install` into the runner's system Python keeps the
+      # invocation identical to the README's `pip install -e .` path.
+      - name: Install backend dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      # Deselect network-gated tests so CI is deterministic: the
+      # bulk-cache test in test_chain_availability hits live data and
+      # flakes cold/offline (see backend/pyproject.toml markers).
+      - name: Run pytest
+        run: pytest -q -m "not network"
+
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build

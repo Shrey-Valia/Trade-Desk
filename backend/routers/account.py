@@ -55,6 +55,20 @@ class AccountStateOut(BaseModel):
     starting_balance: float
     realized_pnl: float = Field(..., description="Sum of closed-trade realized P&L on the active combine.")
     balance: float = Field(..., description="starting_balance + realized_pnl. Unrealized is added client-side.")
+    today_realized: float = Field(
+        ...,
+        description=(
+            "Signed realized P&L within the current 5pm-PT trading day — the daily"
+            " RPL. The header shows BAL = eod_balance + today_realized + URPL."
+        ),
+    )
+    eod_balance: float = Field(
+        ...,
+        description=(
+            "Balance carried into today (starting + realized BEFORE today's 5pm-PT"
+            " window). The EOD baseline for the daily P&L decomposition."
+        ),
+    )
     high_water_mark: float = Field(..., description="Running (monotonic) HWM.")
     settled_hwm: float = Field(
         ..., description="Settled HWM — basis of the fixed-intraday MLL floor."
@@ -151,6 +165,8 @@ def get_account_state(
         starting_balance=snap.starting_balance,
         realized_pnl=snap.realized_pnl,
         balance=snap.balance,
+        today_realized=snap.today_realized,
+        eod_balance=snap.eod_balance,
         high_water_mark=snap.hwm,
         settled_hwm=snap.settled_hwm,
         mll=snap.mll,

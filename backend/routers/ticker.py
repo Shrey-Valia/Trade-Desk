@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,7 @@ from calculations.iv_metrics import iv_percentile, vrp
 from calculations.pc_ratio import pc_ratio
 from calculations.realized_vol import realized_vol
 from calculations.skew import skew_25d
+from calculations.technicals import atr, ema, rsi, sma, vwap
 from calculations.types import ContractRow
 from database import SessionLocal
 from models.options_snapshot import OptionsSnapshot
@@ -33,11 +35,15 @@ from schemas.ticker import (
     BarPoint,
     ChartAnnotations,
     ChartResponse,
+    IndicatorSeries,
+    IndicatorsResponse,
     MetricsResponse,
     TickerDetailOut,
     WallLevel,
 )
 from services.alpaca_client import (
+    bars_cache_ttl,
+    MarketDataUnavailable,
     get_bars,
     get_chain_snapshot,
     get_quotes,
@@ -45,9 +51,48 @@ from services.alpaca_client import (
 )
 from services.cache import cache
 from services.finnhub_client import next_earnings_for
+from services.resilience import breaker_retry_after
 
 router = APIRouter(prefix="/api/ticker", tags=["ticker"])
 log = logging.getLogger(__name__)
+
+# Alpaca breaker name (kept in sync with services.alpaca_client._ALPACA).
+# Drives the Retry-After header on the degraded chart response.
+_ALPACA_BREAKER = "alpaca"
+# Floor (seconds) for the degraded Retry-After hint. Before the breaker trips
+# (fewer than its fail-threshold consecutive failures) breaker_retry_after
+# returns ~1s, which would tell the client to retry straight back into a
+# just-rate-limited key every second. A 5s floor keeps the early-degradation
+# backoff meaningful; once the breaker opens, its ~30s cooldown dominates.
+_MIN_DEGRADED_RETRY_S = 5
+
+
+class MarketDataDegraded(HTTPException):
+    """HTTP 503 raised when the market-data feed is degraded (circuit
+    breaker open / rate-limited). Carries a `Retry-After` header and a
+    JSON body the frontend keys on (`{"error": "market_data_unavailable",
+    ...}`) to render an explicit "data unavailable — retrying" state with
+    auto-retry instead of an infinite spinner or a bare 500."""
+
+    def __init__(self) -> None:
+        retry_after = max(_MIN_DEGRADED_RETRY_S, breaker_retry_after(_ALPACA_BREAKER))
+        super().__init__(
+            status_code=503,
+            detail="market data temporarily unavailable — retrying",
+            headers={"Retry-After": str(retry_after)},
+        )
+        self.retry_after = retry_after
+
+    def to_response(self) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": str(self.retry_after)},
+            content={
+                "error": "market_data_unavailable",
+                "detail": self.detail,
+                "retry_after": self.retry_after,
+            },
+        )
 
 _ET = ZoneInfo("America/New_York")
 _TRADING_YEAR = 252
@@ -118,8 +163,17 @@ def get_ticker_detail(symbol: str) -> TickerDetailOut:
 
 def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
     """Bars-only fetch. Separated so the bars path doesn't block on the
-    options-chain fetch that drives annotations — see split below."""
-    bars = get_bars(symbol, timeframe) or []
+    options-chain fetch that drives annotations — see split below.
+
+    Raises MarketDataDegraded (503) when the upstream feed is circuit-open
+    / rate-limited — distinct from a genuine "no bars" (404) so the
+    frontend can show a retrying state instead of treating it as terminal.
+    """
+    try:
+        bars = get_bars(symbol, timeframe) or []
+    except MarketDataUnavailable:
+        log.info("bars degraded for %s @ %s (circuit open / rate-limited)", symbol, timeframe)
+        raise MarketDataDegraded() from None
     if not bars:
         raise HTTPException(status_code=404, detail=f"no bars for {symbol} @ {timeframe}")
     return [
@@ -159,6 +213,105 @@ def get_ticker_bars(symbol: str, timeframe: str = "5m") -> ChartResponse:
         oi_source="bars_only",
     )
     cache.set(cache_key, response, ttl_seconds=30)
+    return response
+
+
+# -- Phase: technical indicator overlays ------------------------------------
+
+# Supported indicator keys. Each maps to a (label, pane, builder) where
+# builder(closes, bars) -> list[float | None] aligned to the bars. Window
+# sizes are encoded in the key (sma20 -> 20) so the toggle set is the only
+# query param the frontend sends.
+_INDICATOR_SPECS: dict[str, tuple[str, str]] = {
+    "sma20": ("SMA 20", "price"),
+    "sma50": ("SMA 50", "price"),
+    "ema20": ("EMA 20", "price"),
+    "ema50": ("EMA 50", "price"),
+    "vwap": ("VWAP", "price"),
+    "rsi14": ("RSI 14", "oscillator"),
+    "atr14": ("ATR 14", "volatility"),
+}
+
+_DEFAULT_INDICATOR_SET = "sma20,ema50,vwap,rsi14,atr14"
+
+
+def _build_indicator(key: str, closes: list[float], bars: list) -> list | None:
+    """Dispatch one indicator key to its calculation. Returns the per-bar
+    series, or None if the key is unrecognized."""
+    if key == "vwap":
+        return vwap(bars)
+    if key == "atr14":
+        return atr(bars, 14)
+    if key == "rsi14":
+        return rsi(closes, 14)
+    if key.startswith("sma"):
+        return sma(closes, _window_of(key, "sma"))
+    if key.startswith("ema"):
+        return ema(closes, _window_of(key, "ema"))
+    return None
+
+
+def _window_of(key: str, prefix: str) -> int:
+    try:
+        return int(key[len(prefix):])
+    except ValueError:
+        return 0
+
+
+@router.get("/{symbol}/indicators", response_model=IndicatorsResponse)
+def get_ticker_indicators(
+    symbol: str, timeframe: str = "5m", set: str = _DEFAULT_INDICATOR_SET
+) -> IndicatorsResponse:
+    """Per-bar technical-indicator arrays aligned to the SAME bars the
+    /chart and /bars endpoints return.
+
+    `set` is a comma-separated list of indicator keys (e.g.
+    `sma20,ema50,vwap,rsi14,atr14`). Unknown keys are skipped. Each
+    returned series is the same length as the bar array, with `None` in
+    the warm-up region. Cached per (symbol, timeframe, set) reusing the
+    per-timeframe bars TTL."""
+    symbol = symbol.upper()
+    requested = [k.strip().lower() for k in set.split(",") if k.strip()]
+    # Normalize to the canonical, supported, de-duplicated order so the
+    # cache key is stable regardless of how the caller spelled the set.
+    keys = [k for k in _INDICATOR_SPECS if k in requested]
+    norm_set = ",".join(keys)
+
+    cache_key = f"indicators:{symbol}:{timeframe}:{norm_set}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Same degraded-feed handling as _fetch_bars: a circuit-open / rate-limited
+    # feed surfaces as a typed 503 (retryable) rather than a bare 500, so the
+    # indicator overlay degrades the same way the underlying chart does.
+    try:
+        bars = get_bars(symbol, timeframe) or []
+    except MarketDataUnavailable:
+        log.info("indicators degraded for %s @ %s (circuit open / rate-limited)", symbol, timeframe)
+        raise MarketDataDegraded() from None
+    if not bars:
+        raise HTTPException(
+            status_code=404, detail=f"no bars for {symbol} @ {timeframe}"
+        )
+
+    closes = [float(b.close) for b in bars]
+    times = [b.timestamp.isoformat() for b in bars]
+
+    series: list[IndicatorSeries] = []
+    for key in keys:
+        values = _build_indicator(key, closes, bars)
+        if values is None:
+            continue
+        label, pane = _INDICATOR_SPECS[key]
+        series.append(
+            IndicatorSeries(key=key, label=label, pane=pane, values=values)
+        )
+
+    response = IndicatorsResponse(
+        symbol=symbol, timeframe=timeframe, times=times, series=series
+    )
+    cache.set(cache_key, response, ttl_seconds=bars_cache_ttl(timeframe))
     return response
 
 
