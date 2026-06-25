@@ -99,6 +99,13 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             leg["contracts"] = min(scaled, cap)
         net = compute_net_debit_credit([TradeLeg(**leg) for leg in legs])
 
+        # Per-follower bracket overrides win; fall back to the lead's levels
+        # when the follower hasn't set its own.
+        stop_loss = f.copy_stop_loss if f.copy_stop_loss is not None else lead_trade.stop_loss
+        take_profit = (
+            f.copy_take_profit if f.copy_take_profit is not None else lead_trade.take_profit
+        )
+
         mirrored = Trade(
             symbol=lead_trade.symbol,
             strategy=lead_trade.strategy,
@@ -108,8 +115,8 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             status=lead_trade.status,
             order_type=lead_trade.order_type,
             limit_price=lead_trade.limit_price,
-            stop_loss=lead_trade.stop_loss,
-            take_profit=lead_trade.take_profit,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
             is_paper=True,
             notes=f"{lead_trade.notes or ''} · copied from {lead_combine.name}".strip(" ·"),
             tier=f.tier,

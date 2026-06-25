@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { UIButton } from "@/components/ui/UIButton";
 import { useCombines, useUpdateCopyConfig } from "@/hooks/useCombines";
+import type { CombineOut, CopyFollowerInput } from "@/types/combine";
 
 /** Copy multiplier bounds — must match the backend FollowerConfig schema
  *  (routers/combines.py: ge=0.1, le=10.0). */
@@ -32,10 +33,17 @@ export function CopyTradingPanel() {
   const update = useUpdateCopyConfig();
   const combines = (data?.combines ?? []).filter((c) => c.status !== "archived");
   const lead = data?.copy_lead_combine_id ?? null;
-  const followers = combines
+  // Carry the full per-follower config (multiplier + SL/TP overrides) so any
+  // single-field edit round-trips the rest unchanged.
+  const followers: CopyFollowerInput[] = combines
     .filter((c) => c.copy_follow)
-    .map((c) => ({ combine_id: c.id, multiplier: c.copy_multiplier }));
-  const followerMap = new Map(followers.map((f) => [f.combine_id, f.multiplier]));
+    .map((c) => ({
+      combine_id: c.id,
+      multiplier: c.copy_multiplier,
+      stop_loss: c.copy_stop_loss,
+      take_profit: c.copy_take_profit,
+    }));
+  const followerMap = new Map(followers.map((f) => [f.combine_id, f]));
 
   const setLead = (id: number | null) =>
     update.mutate({
@@ -49,11 +57,11 @@ export function CopyTradingPanel() {
         ? followers.filter((f) => f.combine_id !== id)
         : [...followers, { combine_id: id, multiplier: 1 }],
     });
-  const setMultiplier = (id: number, multiplier: number) =>
+  const patchFollower = (id: number, patch: Partial<CopyFollowerInput>) =>
     update.mutate({
       lead_combine_id: lead,
       followers: followers.map((f) =>
-        f.combine_id === id ? { ...f, multiplier } : f,
+        f.combine_id === id ? { ...f, ...patch } : f,
       ),
     });
 
@@ -112,41 +120,166 @@ export function CopyTradingPanel() {
                   No other accounts to follow.
                 </span>
               ) : (
-                followerOptions.map((c) => {
-                  const on = followerMap.has(c.id);
-                  const mult = followerMap.get(c.id) ?? 1;
-                  return (
-                    <div
-                      key={c.id}
-                      className="flex items-center justify-between gap-3 border border-hairline bg-tier-2 px-2.5 py-1.5"
-                      style={{ borderRadius: 4 }}
-                    >
-                      <span className="text-tiny text-fg-primary truncate">
-                        {c.name}{" "}
-                        <span className="text-fg-tertiary-2">· {c.tier}</span>
-                      </span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {on && (
-                          <MultiplierPicker
-                            value={mult}
-                            cap={c.max_contracts}
-                            onChange={(m) => setMultiplier(c.id, m)}
-                          />
-                        )}
-                        <FollowToggle
-                          on={on}
-                          onChange={() => toggleFollower(c.id)}
-                        />
-                      </div>
-                    </div>
-                  );
-                })
+                followerOptions.map((c) => (
+                  <FollowerRow
+                    key={c.id}
+                    combine={c}
+                    config={followerMap.get(c.id) ?? null}
+                    onToggle={() => toggleFollower(c.id)}
+                    onPatch={(patch) => patchFollower(c.id, patch)}
+                  />
+                ))
               )}
             </div>
           )}
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * One follower account row: the follow toggle + multiplier on the header
+ * line, and an expandable "advanced" section exposing the per-follower
+ * stop-loss / take-profit overrides (underlying price levels). Overrides are
+ * only editable while following; null in either field means "inherit the
+ * lead trade's bracket" on each mirrored open.
+ */
+function FollowerRow({
+  combine,
+  config,
+  onToggle,
+  onPatch,
+}: {
+  combine: CombineOut;
+  config: CopyFollowerInput | null;
+  onToggle: () => void;
+  onPatch: (patch: Partial<CopyFollowerInput>) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const on = config != null;
+  const mult = config?.multiplier ?? 1;
+  const hasOverride = on && (config?.stop_loss != null || config?.take_profit != null);
+
+  return (
+    <div
+      className="flex flex-col border border-hairline bg-tier-2 px-2.5 py-1.5"
+      style={{ borderRadius: 4 }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-tiny text-fg-primary truncate">
+          {combine.name}{" "}
+          <span className="text-fg-tertiary-2">· {combine.tier}</span>
+          {hasOverride && (
+            <span className="text-amber" style={{ fontSize: 10 }}>
+              {" "}
+              · SL/TP
+            </span>
+          )}
+        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          {on && (
+            <>
+              <MultiplierPicker
+                value={mult}
+                cap={combine.max_contracts}
+                onChange={(m) => onPatch({ multiplier: m })}
+              />
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                aria-expanded={expanded}
+                className="text-fg-tertiary-2 hover:text-fg-primary px-1"
+                style={{ fontSize: 11 }}
+                title="Per-follower stop-loss / take-profit"
+              >
+                {expanded ? "▾ SL/TP" : "▸ SL/TP"}
+              </button>
+            </>
+          )}
+          <FollowToggle on={on} onChange={onToggle} />
+        </div>
+      </div>
+
+      {on && expanded && (
+        <div className="flex items-center gap-3 flex-wrap mt-1.5 pt-1.5 border-t border-hairline">
+          <BracketInput
+            label="Stop loss"
+            value={config?.stop_loss ?? null}
+            onCommit={(v) => onPatch({ stop_loss: v })}
+          />
+          <BracketInput
+            label="Take profit"
+            value={config?.take_profit ?? null}
+            onCommit={(v) => onPatch({ take_profit: v })}
+          />
+          <span className="text-fg-tertiary-2" style={{ fontSize: 10, lineHeight: 1.3 }}>
+            Underlying price. Empty = inherit the lead&rsquo;s bracket.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A nullable underlying-price bracket field. Commits on blur / Enter; an
+ * empty field commits null (inherit the lead's bracket). Negative / zero
+ * inputs are rejected to null — the backend requires gt=0.
+ */
+function BracketInput({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  value: number | null;
+  onCommit: (v: number | null) => void;
+}) {
+  const [draft, setDraft] = useState(value == null ? "" : String(value));
+  useEffect(() => setDraft(value == null ? "" : String(value)), [value]);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      if (value != null) onCommit(null);
+      return;
+    }
+    const n = Number(trimmed);
+    if (Number.isNaN(n) || n <= 0) {
+      setDraft(value == null ? "" : String(value)); // revert invalid
+      return;
+    }
+    const rounded = Math.round(n * 100) / 100;
+    setDraft(String(rounded));
+    if (rounded !== value) onCommit(rounded);
+  };
+
+  return (
+    <label className="flex items-center gap-1.5">
+      <span className="text-fg-tertiary uppercase tracking-label-up" style={{ fontSize: 10 }}>
+        {label}
+      </span>
+      <input
+        type="number"
+        inputMode="decimal"
+        step="0.01"
+        min={0}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        placeholder="—"
+        aria-label={label}
+        className="h-7 w-20 px-1.5 text-right tabular-nums bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary-2 focus:border-amber focus:outline-none"
+        style={{ borderRadius: 4, fontSize: 12 }}
+      />
+    </label>
   );
 }
 
