@@ -140,6 +140,38 @@ def test_working_order_cancelled_when_combine_failed(auth_client, session_factor
     s.close()
 
 
+def test_day_working_order_expires_into_a_later_session(auth_client, session_factory):
+    """A DAY working order that survives unfilled into a later ET session is
+    cancelled by the monitor; a GTC order rests indefinitely."""
+    from datetime import timedelta
+
+    c = make_combine(auth_client, "50K")
+    day_tid = _seed(
+        session_factory, c["id"], status="working", order_type="limit",
+        limit_price=1.0, time_in_force="day",
+    )
+    gtc_tid = _seed(
+        session_factory, c["id"], status="working", order_type="limit",
+        limit_price=1.0, time_in_force="gtc",
+    )
+    # Backdate both to a prior ET session (created yesterday, still unfilled).
+    prior = datetime.now(timezone.utc) - timedelta(days=1)
+    s = session_factory()
+    for tid in (day_tid, gtc_tid):
+        s.get(Trade, tid).created_at = prior
+    s.commit()
+    s.close()
+
+    # Mark 1.2 > limit 1.0 (buy) → would NOT fill; the DAY order is expired, the
+    # GTC order rests.
+    summary = _run(session_factory, option_mark=lambda t, s: 1.2)
+    assert summary["cancelled"] >= 1
+    s = session_factory()
+    assert s.get(Trade, day_tid).status == "cancelled"
+    assert s.get(Trade, gtc_tid).status == "working"
+    s.close()
+
+
 # --- stop-limit working orders ----------------------------------------------
 
 

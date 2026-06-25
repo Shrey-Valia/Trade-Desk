@@ -408,6 +408,10 @@ class OpenLegRequest(BaseModel):
     # OCO pairing: two working orders sharing this id are siblings — when one
     # fills, the monitor cancels the other. None = unpaired.
     oco_group: str | None = Field(default=None, max_length=36)
+    # Time-in-force for a WORKING order: "gtc" rests until filled/cancelled,
+    # "day" is cancelled by the monitor if it survives unfilled into a later
+    # session. Ignored for market orders. Defaults to "gtc".
+    time_in_force: Literal["day", "gtc"] = "gtc"
 
 
 # Per-contract size-impact slippage: each contract above the first nudges the
@@ -769,6 +773,7 @@ def open_zerodte_leg(
         trail_amount=payload.trail_amount,
         trail_pct=payload.trail_pct,
         oco_group=payload.oco_group,
+        time_in_force=payload.time_in_force if is_working else "gtc",
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
         is_paper=True,

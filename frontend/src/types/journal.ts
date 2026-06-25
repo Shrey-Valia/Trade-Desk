@@ -34,6 +34,8 @@ export const TradeOutSchema = z.object({
   tier: z.string().default("50K"),
   // Limit/stop orders + SL/TP brackets.
   order_type: OrderTypeSchema.default("market"),
+  // Time-in-force for a working order ('gtc' rests; 'day' expires next session).
+  time_in_force: z.enum(["day", "gtc"]).default("gtc"),
   limit_price: z.number().nullable().optional(),
   // stop_limit ENTRY: arms at stop_price, then rests as a limit at limit_price.
   stop_price: z.number().nullable().optional(),

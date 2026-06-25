@@ -158,6 +158,48 @@ def test_close_trade_via_patch_sets_realized_pnl(client):
     assert body["exit_underlying_price"] == 245.0
 
 
+def test_scale_out_reduces_contracts_and_accumulates_realized(client):
+    """Scaling out books `qty` contracts of an OPEN position: every leg drops by
+    qty, realized P&L ACCUMULATES across scale-outs, and the position stays open
+    with the remainder. Closing the last contracts is a normal PATCH close, so
+    a scale-out of >= the held size is rejected."""
+    legs = [
+        {"side": "call", "action": "buy", "strike": 230,
+         "expiry": _future_expiry(), "contracts": 10, "entry_price": 6.20},
+        {"side": "put", "action": "buy", "strike": 230,
+         "expiry": _future_expiry(), "contracts": 10, "entry_price": 5.80},
+    ]
+    tid = client.post("/api/journal/trades", json=_trade_payload(legs=legs)).json()["id"]
+
+    # Scale out 4 of 10 → every leg 10→6, realized = 200, still open.
+    r = client.post(
+        f"/api/journal/trades/{tid}/scale-out",
+        json={"qty": 4, "realized_pnl": 200.0, "exit_underlying_price": 235.0},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "open"
+    assert all(leg["contracts"] == 6 for leg in body["legs"])
+    assert body["realized_pnl"] == 200.0
+
+    # Scale out 4 more → 6→2, realized accumulates 200 + 150 = 350.
+    r2 = client.post(
+        f"/api/journal/trades/{tid}/scale-out",
+        json={"qty": 4, "realized_pnl": 150.0},
+    )
+    assert r2.status_code == 200
+    b2 = r2.json()
+    assert all(leg["contracts"] == 2 for leg in b2["legs"])
+    assert b2["realized_pnl"] == 350.0
+
+    # qty >= held (2) is rejected — the rest closes via the normal PATCH close.
+    r3 = client.post(
+        f"/api/journal/trades/{tid}/scale-out",
+        json={"qty": 2, "realized_pnl": 50.0},
+    )
+    assert r3.status_code == 400
+
+
 def test_delete_removes_trade(client):
     tid = client.post("/api/journal/trades", json=_trade_payload()).json()["id"]
     assert client.delete(f"/api/journal/trades/{tid}").status_code == 204

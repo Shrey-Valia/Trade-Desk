@@ -429,6 +429,19 @@ export const setBrackets = (
 export const cancelOrder = (id: number): Promise<Trade> =>
   mutate(`/api/journal/trades/${id}/cancel`, TradeOutSchema, { method: "POST" });
 
+/** Partial close (scale-out): book `qty` contracts of an OPEN position,
+ *  leaving the rest open. `realized_pnl` is the booked P&L for the slice;
+ *  the backend accumulates it and reduces every leg by qty. qty must be
+ *  strictly fewer than the position holds (full close uses updateTrade). */
+export const scaleOutTrade = (
+  id: number,
+  payload: { qty: number; realized_pnl: number; exit_underlying_price?: number | null },
+): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/scale-out`, TradeOutSchema, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
 export const deleteTrade = async (id: number): Promise<void> => {
   const res = await fetch(`${API_BASE}/api/journal/trades/${id}`, {
     method: "DELETE",

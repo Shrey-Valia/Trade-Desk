@@ -124,6 +124,7 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             status=lead_trade.status,
             order_type=lead_trade.order_type,
             limit_price=lead_trade.limit_price,
+            time_in_force=lead_trade.time_in_force,
             stop_loss=stop_loss,
             take_profit=take_profit,
             # Copy the trailing-stop CONFIG (offset) so followers trail too,

@@ -123,6 +123,9 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("close_reason", "VARCHAR(16)"),
     # Copy trading: the lead trade a mirrored row was copied from.
     ("copied_from_trade_id", "INTEGER"),
+    # Time-in-force for working orders. 'gtc' (default) preserves legacy
+    # rest-indefinitely behavior; 'day' expires unfilled at the next session.
+    ("time_in_force", "VARCHAR(8) NOT NULL DEFAULT 'gtc'"),
 ]
 
 

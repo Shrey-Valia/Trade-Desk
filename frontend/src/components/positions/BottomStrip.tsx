@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   keepPreviousData,
@@ -13,7 +13,7 @@ import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
-import { fetchTradeAnalytics, updateTrade } from "@/lib/api";
+import { fetchTradeAnalytics, scaleOutTrade, updateTrade } from "@/lib/api";
 import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
 import { useActivePosition } from "@/stores/activePosition";
@@ -422,6 +422,31 @@ function OpenPositionCol({
     onError: (e) => toast.error((e as Error)?.message || "Could not close position"),
   });
 
+  // Scale-out: close `closeQty` of `held` contracts (default = full). A partial
+  // close books the round-trip P&L (UPL − exit commission) split proportionally
+  // and leaves the remainder open, still tracking live.
+  const held = trade ? totalContracts(trade) : 1;
+  const [rawCloseQty, setCloseQty] = useState<number | null>(null);
+  const closeQty = Math.min(held, Math.max(1, rawCloseQty ?? held));
+  const isPartial = closeQty < held;
+  const sliceRealized = held > 0 ? (liveUpl - commissionSide) * (closeQty / held) : 0;
+  const scaleOut = useMutation({
+    mutationFn: async () => {
+      if (!trade || !liveAnalytics) return null;
+      return scaleOutTrade(trade.id, {
+        qty: closeQty,
+        realized_pnl: sliceRealized,
+        exit_underlying_price: liveAnalytics.spot,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+      setCloseQty(null); // reset to "full" for the now-smaller remaining position
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Could not scale out"),
+  });
+
   return (
     <>
       <ColHeader
@@ -521,10 +546,15 @@ function OpenPositionCol({
             </>
           )}
           <div className="mt-auto pt-2 flex flex-col gap-1.5">
+            {held > 1 && (
+              <QtyStepper qty={closeQty} max={held} onChange={setCloseQty} />
+            )}
             <CloseButton
-              disabled={!liveAnalytics || close.isPending}
-              upl={liveUpl}
-              onClick={() => close.mutate()}
+              disabled={!liveAnalytics || close.isPending || scaleOut.isPending}
+              upl={isPartial ? sliceRealized : liveUpl}
+              partialQty={isPartial ? closeQty : null}
+              totalQty={held}
+              onClick={() => (isPartial ? scaleOut.mutate() : close.mutate())}
             />
             <BulkActions />
           </div>
@@ -731,13 +761,62 @@ function RiskItem({
   );
 }
 
+function QtyStepper({
+  qty,
+  max,
+  onChange,
+}: {
+  qty: number;
+  max: number;
+  onChange: (q: number) => void;
+}) {
+  const clamp = (q: number) => Math.min(max, Math.max(1, q));
+  return (
+    <div className="flex items-center justify-between gap-2 text-tiny tabular-nums">
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
+        Close qty
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onChange(clamp(qty - 1))}
+          disabled={qty <= 1}
+          className="w-5 h-5 border border-hairline text-fg-secondary hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ borderRadius: 0 }}
+          aria-label="decrease close quantity"
+        >
+          −
+        </button>
+        <span className="w-10 text-center text-fg-primary">
+          {qty}/{max}
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange(clamp(qty + 1))}
+          disabled={qty >= max}
+          className="w-5 h-5 border border-hairline text-fg-secondary hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ borderRadius: 0 }}
+          aria-label="increase close quantity"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CloseButton({
   disabled,
   upl,
+  partialQty,
+  totalQty,
   onClick,
 }: {
   disabled: boolean;
   upl: number;
+  /** When set, this is a PARTIAL close of `partialQty` of `totalQty` contracts. */
+  partialQty?: number | null;
+  totalQty?: number;
   onClick: () => void;
 }) {
   // Filled bearish-red treatment to match the SELL action button —
@@ -757,9 +836,8 @@ function CloseButton({
       ].join(" ")}
       style={{ fontSize: 12, letterSpacing: "0.04em" }}
     >
-      CLOSE · realize <span className="ml-1">
-        {formatSignedDollar(upl)}
-      </span>
+      {partialQty != null ? `SCALE OUT ${partialQty}/${totalQty}` : "CLOSE"} · realize{" "}
+      <span className="ml-1">{formatSignedDollar(upl)}</span>
     </button>
   );
 }

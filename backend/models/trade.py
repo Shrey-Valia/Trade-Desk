@@ -92,6 +92,11 @@ class Trade(Base):
     # monitor cancels the still-working siblings in the group. None = no pairing.
     oco_group: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     close_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Time-in-force for a WORKING (limit/stop/stop_limit) order. "gtc" rests
+    # indefinitely until filled/cancelled (default — preserves legacy behavior);
+    # "day" is cancelled by the monitor if it survives unfilled to a later
+    # trading session. Moot for market orders (they fill immediately).
+    time_in_force: Mapped[str] = mapped_column(String(8), nullable=False, default="gtc")
 
     # Copy trading: the LEAD trade this row was mirrored from (None for an
     # original trade). Lets a lead close cascade to its follower copies.

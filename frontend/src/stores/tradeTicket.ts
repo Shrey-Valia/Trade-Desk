@@ -46,12 +46,15 @@ interface TradeTicketState {
   /** Optional trailing-stop EXIT distance ($/share off the favorable mark);
    *  null = no trailing stop attached at open. */
   trailAmount: number | null;
+  /** Time-in-force for a working order: 'gtc' rests, 'day' expires next session. */
+  timeInForce: "day" | "gtc";
   setSelection: (sel: TicketSelection | null) => void;
   setContracts: (n: number) => void;
   setOrderType: (t: TicketOrderType) => void;
   setLimitPrice: (p: number | null) => void;
   setStopPrice: (p: number | null) => void;
   setTrailAmount: (a: number | null) => void;
+  setTimeInForce: (t: "day" | "gtc") => void;
   clear: () => void;
 }
 
@@ -62,6 +65,7 @@ export const useTradeTicket = create<TradeTicketState>((set) => ({
   limitPrice: null,
   stopPrice: null,
   trailAmount: null,
+  timeInForce: "gtc",
   // Selecting a contract seeds limitPrice + stopPrice to its indicative price
   // so a limit/stop/stop_limit order starts at a sensible default to nudge.
   // The trailing stop stays off (null) unless the user opts in.
@@ -78,6 +82,7 @@ export const useTradeTicket = create<TradeTicketState>((set) => ({
   setLimitPrice: (limitPrice) => set({ limitPrice }),
   setStopPrice: (stopPrice) => set({ stopPrice }),
   setTrailAmount: (trailAmount) => set({ trailAmount }),
+  setTimeInForce: (timeInForce) => set({ timeInForce }),
   clear: () =>
     set({
       selection: null,
@@ -85,5 +90,6 @@ export const useTradeTicket = create<TradeTicketState>((set) => ({
       limitPrice: null,
       stopPrice: null,
       trailAmount: null,
+      timeInForce: "gtc",
     }),
 }));

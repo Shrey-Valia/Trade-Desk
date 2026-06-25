@@ -21,6 +21,8 @@ export async function openZeroDteLeg(input: {
   limit_price?: number | null;
   /** Option-premium arm level for a stop_limit order. */
   stop_price?: number | null;
+  /** Time-in-force for a working order: 'gtc' (default) rests; 'day' expires next session. */
+  time_in_force?: "day" | "gtc";
   /** Optional trailing-stop EXIT distance ($/share off the favorable mark). */
   trail_amount?: number | null;
   /** Optional SL/TP brackets (underlying price levels). */
@@ -42,6 +44,7 @@ export async function openZeroDteLeg(input: {
       entry_price: input.entry_price,
       contracts: input.contracts ?? 1,
       order_type: input.order_type ?? "market",
+      time_in_force: input.time_in_force ?? "gtc",
       limit_price: input.limit_price ?? null,
       stop_price: input.stop_price ?? null,
       trail_amount: input.trail_amount ?? null,

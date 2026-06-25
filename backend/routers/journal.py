@@ -51,6 +51,7 @@ from schemas.journal import (
     BracketsUpdate,
     EXPECTED_LEG_COUNT,
     MISTAKE_TAG_VOCABULARY,
+    ScaleOutRequest,
     TradeAnalyticsOut,
     TradeIn,
     TradeOut,
@@ -198,6 +199,47 @@ def update_trade(
     # Copy trading: a lead close cascades to its follower copies (best-effort).
     if trade.status == "closed":
         mirror_close(session, trade)
+    return _to_out(trade)
+
+
+@router.post("/trades/{trade_id}/scale-out", response_model=TradeOut)
+def scale_out_trade(
+    trade_id: int,
+    payload: ScaleOutRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Partial close (scale-out): book `qty` contracts of an OPEN position and
+    leave the rest open. Reduces each leg's contracts by qty, ACCUMULATES the
+    booked realized P&L for the slice, records a scale-out note, and cascades
+    proportionally to any follower copies. Scale-out is strictly PARTIAL
+    (qty < held); closing the final contracts uses the normal PATCH close."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "open":
+        raise HTTPException(status_code=409, detail="can only scale out an OPEN position")
+    legs = trade.legs
+    held = max((int(leg.get("contracts", 1) or 1) for leg in legs), default=1)
+    if payload.qty >= held:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scale-out qty {payload.qty} must be fewer than the {held} held — use close for the rest",
+        )
+    # Reduce every leg by qty (all legs scale together — a straddle closes qty
+    # of each side) and ACCUMULATE the slice's realized onto the running total.
+    for leg in legs:
+        leg["contracts"] = int(leg.get("contracts", 1) or 1) - payload.qty
+    trade.legs = legs
+    trade.realized_pnl = round((trade.realized_pnl or 0.0) + payload.realized_pnl, 2)
+    if payload.exit_underlying_price is not None:
+        trade.exit_underlying_price = payload.exit_underlying_price
+    px = f"${payload.exit_underlying_price:.2f}" if payload.exit_underlying_price else "—"
+    trade.notes = (trade.notes or "") + f" · scaled out {payload.qty} @ {px}"
+    session.commit()
+    session.refresh(trade)
+    # Copy-trade: cascade the partial close proportionally to follower copies.
+    # The lead's legs are ALREADY reduced here — mirror_close derives the lead's
+    # original size as (post-reduction contracts + closed_qty).
+    mirror_close(session, trade, closed_qty=payload.qty)
     return _to_out(trade)
 
 
@@ -791,6 +833,7 @@ def _to_out(trade: Trade) -> TradeOut:
         stop_loss=trade.stop_loss,
         take_profit=trade.take_profit,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
+        time_in_force=trade.time_in_force,  # type: ignore[arg-type]
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
         confidence=trade.confidence,

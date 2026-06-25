@@ -16,6 +16,7 @@ from calculations.strategies import STRATEGY_TYPES
 
 TradeStatus = Literal["working", "open", "closed", "cancelled"]
 OrderType = Literal["market", "limit", "stop", "stop_limit"]
+TimeInForce = Literal["day", "gtc"]
 CloseReason = Literal["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"]
 LegSide = Literal["call", "put"]
 LegAction = Literal["buy", "sell"]
@@ -126,6 +127,17 @@ class BracketsUpdate(BaseModel):
     take_profit: float | None = Field(default=None, gt=0)
 
 
+class ScaleOutRequest(BaseModel):
+    """POST payload for a PARTIAL close (scale-out) of an OPEN position.
+    Closes `qty` contracts (strictly fewer than the position holds), booking
+    `realized_pnl` for that slice; the position stays open with the remainder.
+    `exit_underlying_price` records the spot at the scale-out for the journal."""
+
+    qty: int = Field(gt=0)
+    realized_pnl: float
+    exit_underlying_price: float | None = Field(default=None, gt=0)
+
+
 class TradeOut(BaseModel):
     id: int
     symbol: str
@@ -157,6 +169,9 @@ class TradeOut(BaseModel):
     # OCO group id pairing sibling working orders (one fill cancels the other).
     oco_group: str | None = None
     close_reason: CloseReason | None = None
+    # Time-in-force for a working order ('gtc' rests indefinitely; 'day' expires
+    # at the next session). Defaults to 'gtc' so legacy rows read unchanged.
+    time_in_force: TimeInForce = "gtc"
     # Combine-tier introduction. Trades tagged with the tier they were
     # opened on; older rows (none exist post-wipe) default to "50K".
     tier: str = "50K"

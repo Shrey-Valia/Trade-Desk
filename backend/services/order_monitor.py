@@ -83,6 +83,14 @@ def _t_to_close(now: datetime) -> float:
     return secs / SECONDS_PER_YEAR
 
 
+def _et_date(dt: datetime):
+    """ET calendar date of an instant — used to expire DAY working orders that
+    survive unfilled into a later trading session."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_ET).date()
+
+
 def _default_option_mark(trade: Trade, spot: float, now: datetime) -> float:
     """Per-share option premium for a (working) position. Uses a chain-default
     IV — approximate, but a working order only needs to know when the mark
@@ -257,6 +265,20 @@ def run_order_monitor(
                 continue
             try:
                 if trade.status == "working":
+                    # DAY time-in-force: a working order that survived unfilled
+                    # into a later ET session is expired (the simulated analog of
+                    # an exchange cancelling DAY orders at the close).
+                    if (
+                        trade.time_in_force == "day"
+                        and trade.created_at is not None
+                        and _et_date(trade.created_at) < _et_date(now)
+                    ):
+                        trade.status = "cancelled"
+                        trade.close_reason = None
+                        trade.notes = (trade.notes or "") + " · DAY order expired (unfilled)"
+                        cancelled += 1
+                        session.commit()
+                        continue
                     outcome = _process_working(session, trade, spot, now, option_mark)
                     if outcome == "filled":
                         filled += 1
