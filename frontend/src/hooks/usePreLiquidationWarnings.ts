@@ -63,6 +63,7 @@ export function usePreLiquidationWarnings(): PreLiquidationUrgency {
   const dllNearLimit =
     !combine.loading &&
     !combine.dayLocked &&
+    !combine.dllDisabled && // DLL off → no DLL warning (only the MLL binds)
     combine.dllBudget > 0 &&
     dllFraction > DLL_WARN_FRACTION &&
     dllFraction < 1;

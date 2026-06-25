@@ -244,7 +244,8 @@ function MetricPills() {
   // DLL_used — see services/account_tiers, the spec). Mirrors how BAL
   // folds UPL on top of the realized-only balance.
   const dllUsed = Math.max(0, (account?.dll_used ?? 0) + Math.max(0, -upl));
-  const dllTone = dllToneClass(dllUsed, dllBudget);
+  const dllDisabled = combine.dllDisabled;
+  const dllTone = dllDisabled ? "text-fg-tertiary-2" : dllToneClass(dllUsed, dllBudget);
   const dllHit = combine.dayLocked;
 
   return (
@@ -301,16 +302,26 @@ function MetricPills() {
       />
       <MetricPill
         label="DLL"
-        value={formatDllUsage(dllUsed, dllBudget)}
+        value={dllDisabled ? "off" : formatDllUsage(dllUsed, dllBudget)}
         valueClass={dllTone}
-        pulse={urgency.dllNearLimit}
+        pulse={!dllDisabled && urgency.dllNearLimit}
         title={
-          dllHit
-            ? "Daily loss limit hit — DAY LOCK: no further trading today (account survives). Lifts at the 5pm-PT settlement."
-            : "Daily loss limit (live, incl. open URPL) — resets at the 5pm-PT settlement."
+          dllDisabled
+            ? "Daily loss limit switched OFF for this tier (Settings → Risk). Only the MLL floor binds — matching Topstep, which dropped the DLL in 2024."
+            : dllHit
+              ? "Daily loss limit hit — DAY LOCK: no further trading today (account survives). Lifts at the 5pm-PT settlement."
+              : "Daily loss limit (live, incl. open URPL) — resets at the 5pm-PT settlement."
         }
       >
-        {dllHit && (
+        {dllDisabled ? (
+          <span
+            className="ml-1 inline-flex items-center px-1 border border-tier-3 text-fg-tertiary-2 uppercase tracking-label-up rounded-btn"
+            style={{ fontSize: 11, height: 14 }}
+            title="Daily loss limit disabled for this tier."
+          >
+            OFF
+          </span>
+        ) : dllHit ? (
           <span
             className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
             style={{ fontSize: 11, height: 14 }}
@@ -318,7 +329,7 @@ function MetricPills() {
           >
             DAY LOCK
           </span>
-        )}
+        ) : null}
       </MetricPill>
       <MarketPill />
     </>

@@ -73,11 +73,22 @@ DLL_OVERRIDE_MIN_FRAC = 0.01
 DLL_OVERRIDE_MAX_FRAC = 0.10
 
 
-def resolve_dll_budget(tier_key: TierKey, override: float | None) -> float:
+def resolve_dll_budget(
+    tier_key: TierKey, override: float | None, disabled: bool = False
+) -> float:
     """The effective Daily Loss Limit for a tier: the user's override clamped
-    to the 1-10%-of-starting-balance band, or the tier default when unset."""
+    to the 1-10%-of-starting-balance band, or the tier default when unset.
+
+    `disabled` is the DLL-off toggle (matching real Topstep's 2024 drop of the
+    DLL). When True the returned budget is kept as the tier DEFAULT amount —
+    a JSON-safe DISPLAY reference only; ENFORCEMENT is skipped at the call
+    sites (combine_state's day-lock / breach tests and order_monitor's
+    auto-liquidation gate are guarded by the disable flag, so they ignore the
+    DLL entirely). The MLL floor still binds. Returning the default rather than
+    0 or +inf keeps every downstream serializer valid while the flag carries
+    the on/off truth."""
     tier = TIERS[tier_key]
-    if override is None:
+    if disabled or override is None:
         return tier.dll_amount
     lo = DLL_OVERRIDE_MIN_FRAC * tier.starting_balance
     hi = DLL_OVERRIDE_MAX_FRAC * tier.starting_balance

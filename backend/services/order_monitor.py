@@ -493,7 +493,12 @@ def _combine_dll_enabled(session, combine) -> bool:
     not switched the daily loss limit OFF (the DLL-off toggle, matching real
     Topstep's 2024 drop of the DLL). Off → the auto-liquidation + soft-gate
     skip the DLL test entirely (MLL still binds). Defaults ON."""
-    return True
+    from models.user import User
+
+    owner = session.get(User, combine.user_id)
+    if owner is None:
+        return True
+    return owner.dll_enabled_for(combine.tier)
 
 
 def _process_working(session, trade: Trade, spot: float, now: datetime, option_mark) -> str | None:

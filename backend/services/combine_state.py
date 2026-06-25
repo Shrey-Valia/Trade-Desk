@@ -76,6 +76,10 @@ class CombineSnapshot:
     dll_budget: float
     dll_breached: bool
     day_locked: bool
+    # DLL-off toggle: True when the owner has switched the Daily Loss Limit OFF
+    # for this tier. The dll_budget is then +inf (no day-lock / breach); the
+    # API serializes it specially since inf is JSON-unsafe.
+    dll_disabled: bool
     profit_target: float
     objective_progress: float
     # --- scaling plan: max position size (contracts) by built equity ---
@@ -251,8 +255,14 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     eod_balance = compute_balance(tier.starting_balance, realized - today_realized, 0.0)
     owner = session.get(User, combine.user_id)
     dll_override = owner.dll_overrides.get(combine.tier) if owner else None
-    dll_budget = resolve_dll_budget(combine.tier, dll_override)  # type: ignore[arg-type]
-    day_locked = dll_used >= dll_budget
+    # DLL-off toggle: when the owner has disabled the DLL for this tier the
+    # budget stays numeric (tier default, for display) but the day-lock /
+    # breach tests are suppressed — the DLL no longer binds, only the MLL.
+    dll_disabled = bool(owner and not owner.dll_enabled_for(combine.tier))
+    dll_budget = resolve_dll_budget(
+        combine.tier, dll_override, disabled=dll_disabled
+    )  # type: ignore[arg-type]
+    day_locked = (not dll_disabled) and dll_used >= dll_budget
 
     # PASS progress (realized-based), bucketed per 5pm-PT trading day.
     by_day = realized_by_trading_day(session, combine.id, since)
@@ -316,8 +326,9 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         mll=mll,
         dll_used=dll_used,
         dll_budget=dll_budget,
-        dll_breached=dll_used > dll_budget,
+        dll_breached=(not dll_disabled) and dll_used > dll_budget,
         day_locked=day_locked,
+        dll_disabled=dll_disabled,
         profit_target=target,
         objective_progress=objective_progress(combine.tier, realized),
         max_contracts=max_contracts,

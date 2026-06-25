@@ -175,10 +175,13 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
 ]
 
 # Copy trading added a lead pointer to users; per-tier DLL overrides added the
-# JSON column. Same idempotent additive pattern.
+# JSON column; the DLL-off toggle added a per-tier disable list. Same
+# idempotent additive pattern.
 _USER_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("copy_lead_combine_id", "INTEGER"),
     ("dll_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
+    # Per-tier DLL DISABLE flags (JSON list of tier keys). [] = DLL on.
+    ("dll_disabled_json", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 
