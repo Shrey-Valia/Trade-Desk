@@ -196,6 +196,27 @@ html:not([data-bg-gradient="off"]) body {
   background: #3A4258;
 }
 
+/* Pre-liquidation urgency pulse — applied to the header MLL / DLL pills
+ * when the account enters the warning band (cushion <15% / DLL >80%). A
+ * slow border+shadow pulse draws the eye without flashing. Auto-disabled
+ * by the reduced-motion query below. */
+@media (prefers-reduced-motion: no-preference) {
+  .td-pulse-warn {
+    animation: td-pulse-warn 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes td-pulse-warn {
+  0%, 100% {
+    border-color: var(--td-pulse-color, #F0A030);
+    box-shadow: 0 0 0 0 rgba(240, 160, 48, 0);
+  }
+  50% {
+    border-color: var(--td-pulse-color, #F0A030);
+    box-shadow: 0 0 0 2px rgba(240, 160, 48, 0.35);
+  }
+}
+
 /* Respect reduced-motion preference — opt-out users get instant state
  * changes rather than the 100ms opacity transitions used elsewhere. */
 @media (prefers-reduced-motion: reduce) {
