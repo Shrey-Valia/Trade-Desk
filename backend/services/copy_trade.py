@@ -28,7 +28,7 @@ from models.combine import Combine
 from models.trade import Trade
 from models.user import User
 from schemas.journal import TradeLeg, compute_net_debit_credit
-from services.account_tiers import TIERS
+from services.account_tiers import TIERS, resolve_dll_budget
 from services.combine_state import dll_used_today_for_combine
 from services.scaling_plan import max_contracts as scaling_max_contracts
 
@@ -47,9 +47,27 @@ def _follower_cap(combine: Combine) -> int:
     return scaling_max_contracts(combine.tier, settled_profit)
 
 
-def _day_locked(session: Session, combine: Combine, now: datetime) -> bool:
+def _day_locked(
+    session: Session,
+    combine: Combine,
+    now: datetime,
+    dll_overrides: dict | None,
+    owner: User | None = None,
+) -> bool:
+    # Gate copy trades on the SAME budget the direct open path enforces
+    # (combine_state.combine_snapshot): the owner's clamped per-tier DLL
+    # override, falling back to the tier default. Previously this used the
+    # raw tier default, so a follower who tightened their DLL kept receiving
+    # mirrored trades past their configured floor (and a loosened one locked
+    # early).
+    # DLL-off toggle: a disabled DLL never day-locks — mirror combine_snapshot
+    # (`day_locked = (not dll_disabled) and used >= budget`) so a follower whose
+    # DLL is switched OFF keeps receiving mirrored trades (the MLL still binds).
+    if owner is not None and not owner.dll_enabled_for(combine.tier):
+        return False
     used = dll_used_today_for_combine(session, combine.id, now, combine.eval_reset_at)
-    return used >= TIERS[combine.tier].dll_amount
+    budget = resolve_dll_budget(combine.tier, (dll_overrides or {}).get(combine.tier))
+    return used >= budget
 
 
 def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> MirrorResult:
@@ -86,7 +104,7 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
         if cap < 1:
             result.skipped.append((f.id, "no contract allowance"))
             continue
-        if _day_locked(session, f, now):
+        if _day_locked(session, f, now, user.dll_overrides, owner=user):
             result.skipped.append((f.id, "daily loss limit hit"))
             continue
 
@@ -99,6 +117,13 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             leg["contracts"] = min(scaled, cap)
         net = compute_net_debit_credit([TradeLeg(**leg) for leg in legs])
 
+        # Per-follower bracket overrides win; fall back to the lead's levels
+        # when the follower hasn't set its own.
+        stop_loss = f.copy_stop_loss if f.copy_stop_loss is not None else lead_trade.stop_loss
+        take_profit = (
+            f.copy_take_profit if f.copy_take_profit is not None else lead_trade.take_profit
+        )
+
         mirrored = Trade(
             symbol=lead_trade.symbol,
             strategy=lead_trade.strategy,
@@ -108,8 +133,17 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             status=lead_trade.status,
             order_type=lead_trade.order_type,
             limit_price=lead_trade.limit_price,
-            stop_loss=lead_trade.stop_loss,
-            take_profit=lead_trade.take_profit,
+            time_in_force=lead_trade.time_in_force,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            # Copy the trailing-stop CONFIG (offset) so followers trail too,
+            # but NOT trail_hwm: each follower's monitor must seed its own
+            # high-water from its own marks. Copying the lead's trail_hwm
+            # would make followers trail off the LEAD's peak — closing them on
+            # the lead's pullback regardless of their own price action.
+            trail_amount=lead_trade.trail_amount,
+            trail_pct=lead_trade.trail_pct,
+            trail_hwm=None,
             is_paper=True,
             notes=f"{lead_trade.notes or ''} · copied from {lead_combine.name}".strip(" ·"),
             tier=f.tier,
@@ -134,12 +168,46 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
     return result
 
 
-def mirror_close(session: Session, lead_trade: Trade) -> int:
+def _leg_contracts(trade: Trade) -> int:
+    legs = trade.legs or []
+    return int(legs[0].get("contracts", 0)) if legs else 0
+
+
+def _set_leg_contracts(trade: Trade, contracts: int) -> None:
+    """Reduce every leg's contract count to `contracts`, preserving the rest
+    of each leg dict. Mirrors the per-leg scaling done at mirror time."""
+    legs = trade.legs or []
+    for leg in legs:
+        leg["contracts"] = contracts
+    trade.legs = legs
+
+
+def mirror_close(
+    session: Session,
+    lead_trade: Trade,
+    *,
+    closed_qty: int | None = None,
+    slice_pnl: float | None = None,
+) -> int:
     """Cascade a lead trade's close to its still-open follower copies.
 
-    Linked via Trade.copied_from_trade_id. Each follower's realized P&L is the
-    lead's scaled by the contract ratio (followers may hold fewer contracts
-    after the multiplier + cap clamp). Returns how many were closed."""
+    Linked via Trade.copied_from_trade_id. Two modes:
+
+    * ``closed_qty is None`` (default) — FULL close. Each follower copy is
+      closed outright; its realized P&L is the lead's scaled by the contract
+      ratio (followers may hold fewer contracts after the multiplier + cap
+      clamp). This is the historical behaviour other callers
+      (zerodte.py / order_monitor.py / journal full-close) rely on.
+
+    * ``closed_qty`` set — PROPORTIONAL PARTIAL close (the WS-A scale-out
+      seam). The lead reduced its leg contracts by ``closed_qty`` and
+      accumulated realized on that slice; each follower closes
+      ``clamp(round(follower_contracts * closed_qty / lead_original), 1,
+      follower_contracts)`` of its own contracts, reducing its legs and
+      ACCUMULATING realized on the booked slice, and stays open until its
+      contracts reach 0 (then closes). Mirrors WS-A's lead-side contract.
+
+    Returns how many follower copies were touched."""
     followers = session.execute(
         select(Trade).where(
             Trade.copied_from_trade_id == lead_trade.id,
@@ -149,24 +217,85 @@ def mirror_close(session: Session, lead_trade: Trade) -> int:
     if not followers:
         return 0
 
-    lead_legs = lead_trade.legs or []
-    lead_contracts = int(lead_legs[0].get("contracts", 0)) if lead_legs else 0
+    if closed_qty is None:
+        _cascade_full_close(lead_trade, followers)
+    else:
+        _cascade_partial_close(lead_trade, followers, closed_qty, slice_pnl)
 
     for f in followers:
-        f_legs = f.legs or []
-        f_contracts = int(f_legs[0].get("contracts", 0)) if f_legs else 0
-        ratio = (f_contracts / lead_contracts) if lead_contracts else 1.0
+        session.add(f)
+    session.commit()
+    log.info(
+        "copy-trade: lead trade %s cascaded close (closed_qty=%s) to %d follower copies",
+        lead_trade.id,
+        closed_qty,
+        len(followers),
+    )
+    return len(followers)
+
+
+def _cascade_full_close(lead_trade: Trade, followers: list[Trade]) -> None:
+    lead_contracts = _leg_contracts(lead_trade)
+    for f in followers:
+        ratio = (_leg_contracts(f) / lead_contracts) if lead_contracts else 1.0
         f.status = "closed"
         f.exit_date = lead_trade.exit_date
         f.exit_underlying_price = lead_trade.exit_underlying_price
         if lead_trade.realized_pnl is not None:
             f.realized_pnl = round(lead_trade.realized_pnl * ratio, 2)
         f.close_reason = "copy"
-        session.add(f)
 
-    session.commit()
-    log.info("copy-trade: lead trade %s closed %d follower copies", lead_trade.id, len(followers))
-    return len(followers)
+
+def _cascade_partial_close(
+    lead_trade: Trade,
+    followers: list[Trade],
+    closed_qty: int,
+    slice_pnl: float | None = None,
+) -> None:
+    closed_qty = max(0, int(closed_qty))
+    if closed_qty <= 0:
+        return
+    # WS-A reduced the lead's legs by closed_qty before calling us, so the
+    # ORIGINAL lead size is the current (reduced) size plus what just closed.
+    lead_original = _leg_contracts(lead_trade) + closed_qty
+    if lead_original <= 0:
+        return
+    # Realized booked on the lead's JUST-CLOSED slice. The caller threads this
+    # in explicitly (lead_trade.realized_pnl is a RUNNING ACCUMULATED total, so
+    # reading it would re-book the lead's whole history onto followers on the
+    # 2nd+ scale-out); the fallback is correct only for a single scale-out.
+    lead_slice_pnl = slice_pnl if slice_pnl is not None else lead_trade.realized_pnl
+
+    for f in followers:
+        f_contracts = _leg_contracts(f)
+        if f_contracts <= 0:
+            continue
+        # Proportional follower slice, at least 1 contract, never more than it
+        # currently holds.
+        f_close = min(
+            f_contracts,
+            max(1, round(f_contracts * closed_qty / lead_original)),
+        )
+        remaining = f_contracts - f_close
+
+        # Accumulate realized on the follower's closed slice. Scale the lead's
+        # just-closed-slice P&L by the follower/lead closed-contract ratio so
+        # the per-contract realized stays consistent across the cascade.
+        if lead_slice_pnl is not None:
+            slice_pnl = round(lead_slice_pnl * (f_close / closed_qty), 2)
+            f.realized_pnl = round((f.realized_pnl or 0.0) + slice_pnl, 2)
+
+        if remaining <= 0:
+            # Fully unwound — close the follower copy.
+            _set_leg_contracts(f, 0)
+            f.status = "closed"
+            f.exit_date = lead_trade.exit_date
+            f.exit_underlying_price = lead_trade.exit_underlying_price
+            f.close_reason = "copy"
+        else:
+            # Still open with fewer contracts; keep status, record the level.
+            _set_leg_contracts(f, remaining)
+            f.exit_underlying_price = lead_trade.exit_underlying_price
 
 
 def mirror_cancel(session: Session, lead_trade: Trade) -> int:

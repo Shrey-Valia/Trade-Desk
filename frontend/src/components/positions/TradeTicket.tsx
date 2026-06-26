@@ -49,6 +49,8 @@ export function TradeTicket() {
   const setStopPrice = useTradeTicket((s) => s.setStopPrice);
   const trailAmount = useTradeTicket((s) => s.trailAmount);
   const setTrailAmount = useTradeTicket((s) => s.setTrailAmount);
+  const timeInForce = useTradeTicket((s) => s.timeInForce);
+  const setTimeInForce = useTradeTicket((s) => s.setTimeInForce);
   const clear = useTradeTicket((s) => s.clear);
 
   const legMutation = useOpenZeroDteLeg();
@@ -159,6 +161,7 @@ export function TradeTicket() {
         entry_price: selection.price,
         contracts,
         order_type: effectiveOrderType,
+        time_in_force: needsLimit ? timeInForce : "gtc",
         limit_price: needsLimit ? limitPrice : null,
         stop_price: needsStop ? stopPrice : null,
         trail_amount: trailAmount && trailAmount > 0 ? trailAmount : null,
@@ -204,6 +207,8 @@ export function TradeTicket() {
           setLimitPrice={setLimitPrice}
           stopPrice={stopPrice}
           setStopPrice={setStopPrice}
+          timeInForce={timeInForce}
+          setTimeInForce={setTimeInForce}
         />
       )}
       {isLeg && (
@@ -432,6 +437,8 @@ function OrderTypeRow({
   setLimitPrice,
   stopPrice,
   setStopPrice,
+  timeInForce,
+  setTimeInForce,
 }: {
   orderType: TicketOrderType;
   setOrderType: (t: TicketOrderType) => void;
@@ -439,6 +446,8 @@ function OrderTypeRow({
   setLimitPrice: (p: number | null) => void;
   stopPrice: number | null;
   setStopPrice: (p: number | null) => void;
+  timeInForce: "day" | "gtc";
+  setTimeInForce: (t: "day" | "gtc") => void;
 }) {
   const types: Array<{ key: TicketOrderType; label: string }> = [
     { key: "market", label: "market" },
@@ -495,6 +504,38 @@ function OrderTypeRow({
             onChange={setLimitPrice}
             ariaLabel="Resting limit price (option premium)"
           />
+        </div>
+      )}
+      {orderType !== "market" && (
+        <div className="flex items-center gap-1.5">
+          <span
+            className="uppercase tracking-label-up text-fg-tertiary-2"
+            style={{ fontSize: 10 }}
+          >
+            TIF
+          </span>
+          {(["day", "gtc"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTimeInForce(t)}
+              aria-pressed={timeInForce === t}
+              title={
+                t === "day"
+                  ? "Day — cancelled at the next session if still unfilled"
+                  : "GTC — rests until filled or cancelled"
+              }
+              className={[
+                "uppercase tracking-label-up rounded-btn px-2 transition-colors duration-100 select-none",
+                timeInForce === t
+                  ? "bg-tier-3 border border-amber text-amber"
+                  : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+              ].join(" ")}
+              style={{ height: 22, fontSize: 10 }}
+            >
+              {t}
+            </button>
+          ))}
         </div>
       )}
     </div>

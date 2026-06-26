@@ -30,7 +30,8 @@ from calculations.types import ContractRow
 from config import settings
 from services.cache import cache
 from services.rate_limit import TokenBucket
-from services.resilience import CircuitOpenError, resilient_call
+from services.realtime_feed import get_realtime_feed
+from services.resilience import CircuitOpenError, get_breaker, resilient_call
 
 # Per-call spacing for the single Alpaca account key. Like the Finnhub
 # client's 0.3s spacing, this smooths the per-symbol fan-out of the
@@ -77,6 +78,153 @@ def _is_degraded(exc: Exception) -> bool:
 # "too many requests" cascade. CircuitOpenError surfaces as the same graceful
 # "no data" the existing per-call try/except already returns.
 _ALPACA = "alpaca"
+
+# WS6 — dedicated breaker for the real-time STREAM read-through. Kept SEPARATE
+# from the "alpaca" REST breaker so a misbehaving stream (raising on read, a
+# bad value) opens only this circuit and self-heals to polling, without
+# tripping the healthy REST path. With the flag off the feed is the NoOp, the
+# read-through returns None, and this breaker is never even consulted.
+_ALPACA_STREAM = "alpaca-stream"
+
+
+def _stream_quote(symbol: str) -> "Quote | None":
+    """Serve `symbol` from the real-time feed iff the flag is on AND a FRESH
+    streamed quote exists, behind the `"alpaca-stream"` breaker. Returns None
+    on miss/stale/disabled/degraded → caller falls through to the unchanged
+    REST path. NEVER raises: a broken stream must not break a read.
+
+    Flag-off invariant: `get_realtime_feed()` returns NoOp whose
+    `latest_quote` is None, so this returns None before touching the breaker —
+    byte-for-byte identical to not calling it at all.
+    """
+    feed = get_realtime_feed()
+    fq = feed.latest_quote(symbol)
+    if fq is None:
+        return None
+    breaker = get_breaker(_ALPACA_STREAM)
+    if not breaker.allow():
+        return None
+    try:
+        quote = Quote(
+            symbol=symbol,
+            price=float(fq.last),
+            # The stream carries no previous daily close; reuse the most
+            # recent REST-cached prev_close so change_pct stays correct. If
+            # none is cached yet, fall through to REST (which fills it).
+            prev_close=_cached_prev_close(symbol),
+        )
+        if quote.prev_close <= 0:
+            return None
+        breaker.record_success()
+        return quote
+    except Exception as exc:  # noqa: BLE001
+        breaker.record_failure()
+        log.warning("alpaca-stream quote read-through failed for %s: %s", symbol, exc)
+        return None
+
+
+def _cached_prev_close(symbol: str) -> float:
+    """Best-effort previous daily close for a streamed quote, pulled from a
+    prior REST snapshot still in the TTLCache. Returns 0.0 when unknown (the
+    caller then declines the streamed value and lets REST repopulate)."""
+    for key, value in _iter_snapshot_cache():
+        q = value.get(symbol) if isinstance(value, dict) else None
+        if q is not None and getattr(q, "prev_close", 0):
+            return float(q.prev_close)
+    return 0.0
+
+
+def _iter_snapshot_cache():
+    """Yield (key, value) for cached snapshot payloads. Isolated so the
+    read-through has no other reason to reach into the cache internals."""
+    store = getattr(cache, "_store", {})
+    for key, entry in list(store.items()):
+        if not key.startswith("alpaca:snapshots:"):
+            continue
+        # entry is (expires_at, value); skip expired defensively.
+        try:
+            expires_at, value = entry
+        except (TypeError, ValueError):
+            continue
+        yield key, value
+
+
+def _stream_bars(symbol: str, timeframe: str) -> "list | None":
+    """Serve a single fresh streamed bar for `(symbol, timeframe)` iff the
+    flag is on, behind the `"alpaca-stream"` breaker. Only the streamed 1m
+    grain is ever populated, so non-1m timeframes always miss here and fall
+    through to REST. Returns None on miss/stale/disabled/degraded.
+
+    Returns a one-element list shaped like the REST bar (duck-typed:
+    `.timestamp/.open/.high/.low/.close/.volume`) so consumers need no change.
+    """
+    feed = get_realtime_feed()
+    fb = feed.latest_bar(symbol, timeframe)
+    if fb is None:
+        return None
+    breaker = get_breaker(_ALPACA_STREAM)
+    if not breaker.allow():
+        return None
+    try:
+        bar = _StreamBar(fb)
+        breaker.record_success()
+        return [bar]
+    except Exception as exc:  # noqa: BLE001
+        breaker.record_failure()
+        log.warning("alpaca-stream bar read-through failed for %s: %s", symbol, exc)
+        return None
+
+
+class _StreamBar:
+    """Duck-typed REST-bar shape from a streamed FeedBar, so `get_bars`
+    consumers (which read `.timestamp/.open/.high/.low/.close/.volume`) need
+    no change."""
+
+    __slots__ = ("timestamp", "open", "high", "low", "close", "volume")
+
+    def __init__(self, fb) -> None:
+        self.timestamp = fb.ts
+        self.open = fb.open
+        self.high = fb.high
+        self.low = fb.low
+        self.close = fb.close
+        self.volume = fb.volume
+
+
+def _merge_stream_tail(symbol: str, timeframe: str, cached_bars: list) -> "list | None":
+    """If a FRESH streamed bar for `(symbol, timeframe)` is at-or-after the
+    cached series' last bar, return a copy of the series with that tail
+    appended (new bar) or replaced (same bar, fresher values). Returns None
+    when there's nothing fresh to merge so the caller keeps the cached series
+    as-is.
+
+    Serving a single streamed bar would yield a degenerate 1-bar chart; this
+    keeps the full REST history and only freshens the live-most candle. Only
+    the streamed grain (1m) ever populates, so other timeframes always get
+    None here and read pure REST.
+    """
+    streamed = _stream_bars(symbol, timeframe)
+    if not streamed or not cached_bars:
+        return None
+    new_bar = streamed[-1]
+    last = cached_bars[-1]
+    last_ts = getattr(last, "timestamp", None)
+    new_ts = getattr(new_bar, "timestamp", None)
+    if last_ts is None or new_ts is None:
+        return None
+    try:
+        if new_ts < last_ts:
+            return None  # stream is behind the cached tail — keep REST
+        same_candle = new_ts == last_ts
+    except TypeError:
+        # Mixed naive/aware timestamps — refuse to merge rather than guess.
+        return None
+    out = list(cached_bars)
+    if same_candle:
+        out[-1] = new_bar  # same candle, fresher values
+    else:
+        out.append(new_bar)  # a newer candle has formed
+    return out
 
 log = logging.getLogger(__name__)
 
@@ -215,9 +363,38 @@ def get_quotes(symbols: list[str]) -> dict[str, Quote]:
     if cached is not None:
         return cached
 
+    # WS6 read-through (flag-gated). When the real-time feed is enabled AND
+    # every requested symbol has a FRESH streamed quote, serve from the stream
+    # with no network hop. A single miss/stale symbol declines the whole
+    # batch so we fall through to the UNCHANGED REST path below (which also
+    # repopulates prev_close for the stream). Flag OFF → NoOp feed → every
+    # `_stream_quote` is None → this block is a no-op and the path below is
+    # byte-for-byte today's behavior.
+    streamed: dict[str, Quote] = {}
+    for symbol in symbols:
+        sq = _stream_quote(symbol)
+        if sq is None:
+            streamed = {}
+            break
+        streamed[symbol] = sq
+    if streamed:
+        # Do NOT write the 5s cache here: streamed entries carry their own
+        # short staleness window in the feed; caching for 5s would mask a
+        # subsequent stream stall. REST results keep caching as before.
+        return streamed
+
     client = _stock_client()
     req = StockSnapshotRequest(symbol_or_symbols=symbols)
-    raw = resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_stock_snapshot(req)))
+    try:
+        raw = resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_stock_snapshot(req)))
+    except Exception:  # noqa: BLE001
+        # Degrade like get_market_clock / get_year_bars: a rate-limit, open
+        # circuit, or feed error must not 500 every caller (indices widget,
+        # ticker detail/chart/metrics, the 0DTE chain). Every caller uses
+        # .get(sym) and handles a missing quote — a clean 503/404 or a
+        # fallback. Not cached, so recovery is immediate when Alpaca returns.
+        log.exception("alpaca snapshot fetch failed for %s", symbols)
+        return {}
 
     out: dict[str, Quote] = {}
     for symbol, snap in raw.items():
@@ -586,7 +763,13 @@ def get_bars(symbol: str, timeframe: str) -> list | None:
     if cached is _NEGATIVE:
         return None
     if cached is not None:
-        return cached
+        # WS6 read-through (flag-gated): if the stream holds a FRESH bar for
+        # this grain that's newer than the cached series' tail, append/replace
+        # the tail so the chart shows the live-most bar without a REST hop.
+        # Flag OFF → `_stream_bars` is None → `cached` returns unchanged
+        # (byte-for-byte today's behavior).
+        merged = _merge_stream_tail(symbol, timeframe, cached)
+        return merged if merged is not None else cached
 
     start = datetime.combine(today_et - timedelta(days=lookback_days), time.min, tzinfo=_ET)
     client = _stock_client()

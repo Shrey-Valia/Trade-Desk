@@ -90,6 +90,12 @@ class CombineOut(BaseModel):
     copy_multiplier: float = Field(
         ..., description="Size multiplier applied to the lead's contracts before clamping."
     )
+    copy_stop_loss: float | None = Field(
+        None, description="Per-follower stop-loss override (underlying price); null = inherit lead's."
+    )
+    copy_take_profit: float | None = Field(
+        None, description="Per-follower take-profit override (underlying price); null = inherit lead's."
+    )
     created_at: datetime
 
 
@@ -106,6 +112,10 @@ class CombinesOut(BaseModel):
 class FollowerConfig(BaseModel):
     combine_id: int
     multiplier: float = Field(1.0, ge=0.1, le=10.0)
+    # Per-follower bracket overrides (underlying price levels). null = inherit
+    # the lead trade's stop_loss / take_profit on each mirrored open.
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
 
 
 class CopyConfigIn(BaseModel):
@@ -191,6 +201,8 @@ def _to_out(session: Session, combine: Combine) -> CombineOut:
         funded_activated=snap.funded_activated,
         copy_follow=combine.copy_follow,
         copy_multiplier=combine.copy_multiplier,
+        copy_stop_loss=combine.copy_stop_loss,
+        copy_take_profit=combine.copy_take_profit,
         created_at=combine.created_at,
     )
 
@@ -278,19 +290,26 @@ def set_copy_config(
     lead = payload.lead_combine_id
     if lead is not None and lead not in owned:
         raise HTTPException(404, f"combine {lead} not found")
-    # combine_id → multiplier, excluding the lead (it can't follow itself).
-    fmap = {f.combine_id: f.multiplier for f in payload.followers if f.combine_id != lead}
+    # combine_id → follower config, excluding the lead (it can't follow itself).
+    fmap = {f.combine_id: f for f in payload.followers if f.combine_id != lead}
     for fid in fmap:
         if fid not in owned:
             raise HTTPException(404, f"combine {fid} not found")
 
     user.copy_lead_combine_id = lead
     for cid, combine in owned.items():
-        if cid in fmap:
+        cfg = fmap.get(cid)
+        if cfg is not None:
             combine.copy_follow = True
-            combine.copy_multiplier = fmap[cid]
+            combine.copy_multiplier = cfg.multiplier
+            combine.copy_stop_loss = cfg.stop_loss
+            combine.copy_take_profit = cfg.take_profit
         else:
             combine.copy_follow = False
+            # Clear stale overrides when a combine stops following so they
+            # don't silently reapply if it follows again later.
+            combine.copy_stop_loss = None
+            combine.copy_take_profit = None
         session.add(combine)
     session.add(user)
     session.commit()

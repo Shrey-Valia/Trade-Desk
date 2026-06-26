@@ -184,9 +184,11 @@ export const fetchTickerMetrics = (symbol: string): Promise<MetricsResponse> =>
 
 /**
  * Technical-indicator overlays. `set` is a comma-separated list of
- * indicator keys (e.g. "sma20,ema50,vwap,rsi14,atr14"); the backend
- * returns per-bar arrays aligned to the same timestamps as /chart and
- * /bars. Zod-validated like the other ticker fetchers.
+ * `family:period` tokens (e.g. "sma:20,ema:50,vwap,rsi:14,atr:14"); the
+ * backend returns per-bar arrays aligned to the same timestamps as /chart
+ * and /bars. The period is part of the cache key on both sides, so changing
+ * a window refetches just that series. Zod-validated like the other ticker
+ * fetchers.
  */
 export const fetchTickerIndicators = (
   symbol: string,
@@ -266,6 +268,36 @@ export const createTrade = (input: TradeInput): Promise<Trade> =>
     method: "POST",
     body: JSON.stringify(input),
   });
+
+/**
+ * Attach a screenshot to an existing trade (multipart). The backend
+ * validates size (≤5MB) + format (PNG/JPEG), stores the file, and returns
+ * the refreshed trade with `screenshot_url` set. We do NOT set a
+ * Content-Type header — the browser sets the multipart boundary itself.
+ */
+export const uploadTradeScreenshot = async (
+  id: number,
+  file: File,
+): Promise<Trade> => {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/api/journal/trades/${id}/screenshot`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = `Upload failed: ${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* non-JSON body */
+    }
+    throw new Error(detail);
+  }
+  return TradeOutSchema.parse(await res.json());
+};
 
 export const fetchAccountState = (): Promise<AccountState> =>
   request("/api/account/state", AccountStateSchema);
@@ -357,22 +389,36 @@ export const updateCopyConfig = (input: CopyConfigInput): Promise<CombinesOut> =
     body: JSON.stringify(input),
   });
 
-// -- DLL overrides (server-enforced) -----------------------------------------
+// -- DLL overrides + disable flags (server-enforced) -------------------------
 
-const DllOverridesSchema = z.object({ overrides: z.record(z.number()) });
+const DllOverridesSchema = z.object({
+  overrides: z.record(z.number()),
+  // Tier keys with the DLL switched OFF (the DLL-off toggle). Defaulted so an
+  // older backend response (no `disabled` key) still parses.
+  disabled: z.array(z.string()).default([]),
+});
 
-/** The user's per-tier DLL overrides ({tier: dollars}). */
-export const fetchDllOverrides = (): Promise<Record<string, number>> =>
-  request("/api/account/dll-overrides", DllOverridesSchema).then((r) => r.overrides);
+/** The user's per-tier DLL overrides + disable flags. */
+export interface DllOverridesConfig {
+  overrides: Record<string, number>;
+  disabled: string[];
+}
 
-/** Replace the user's per-tier DLL overrides (server clamps to the band). */
+export const fetchDllOverrides = (): Promise<DllOverridesConfig> =>
+  request("/api/account/dll-overrides", DllOverridesSchema);
+
+/** Replace the user's per-tier DLL overrides + disable flags. `disabled`
+ *  omitted leaves the existing disable set untouched server-side. */
 export const updateDllOverrides = (
   overrides: Record<string, number>,
-): Promise<Record<string, number>> =>
+  disabled?: string[],
+): Promise<DllOverridesConfig> =>
   mutate("/api/account/dll-overrides", DllOverridesSchema, {
     method: "PUT",
-    body: JSON.stringify({ overrides }),
-  }).then((r) => r.overrides);
+    body: JSON.stringify(
+      disabled === undefined ? { overrides } : { overrides, disabled },
+    ),
+  });
 
 // -- auth --------------------------------------------------------------------
 
@@ -414,6 +460,19 @@ export const setBrackets = (
 /** Cancel a working (unfilled) limit/stop order. */
 export const cancelOrder = (id: number): Promise<Trade> =>
   mutate(`/api/journal/trades/${id}/cancel`, TradeOutSchema, { method: "POST" });
+
+/** Partial close (scale-out): book `qty` contracts of an OPEN position,
+ *  leaving the rest open. `realized_pnl` is the booked P&L for the slice;
+ *  the backend accumulates it and reduces every leg by qty. qty must be
+ *  strictly fewer than the position holds (full close uses updateTrade). */
+export const scaleOutTrade = (
+  id: number,
+  payload: { qty: number; realized_pnl: number; exit_underlying_price?: number | null },
+): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/scale-out`, TradeOutSchema, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 
 export const deleteTrade = async (id: number): Promise<void> => {
   const res = await fetch(`${API_BASE}/api/journal/trades/${id}`, {

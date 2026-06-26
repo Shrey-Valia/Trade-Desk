@@ -5,6 +5,7 @@ import { fetchTradeAnalytics } from "@/lib/api";
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
 import type { BracketOverlay } from "@/components/stock/PositionBracketsLayer";
 import { BottomStrip } from "@/components/positions/BottomStrip";
+import { CalendarStrip } from "@/components/positions/CalendarStrip";
 import { ContractDetailPanel } from "@/components/positions/ContractDetailPanel";
 import { RightChain } from "@/components/positions/chain/RightChain";
 import { ChartToolbar } from "@/components/positions/ChartToolbar";
@@ -304,6 +305,10 @@ export function PositionsPage() {
           chain/ticket rail, the whole page scrolling vertically. */}
       <div className="flex flex-col md:flex-row flex-1 min-h-0">
         <main className="flex-1 min-w-0 flex flex-col min-h-[60vh] md:min-h-0">
+          {/* Econ-calendar strip — macro tape above the chart (FOMC / CPI /
+              OPEX / earnings / ISM). Wires the previously-orphaned
+              useCalendar() feed. */}
+          <CalendarStrip />
           <ChartToolbar
             symbol={symbol}
             timeframe={timeframe}

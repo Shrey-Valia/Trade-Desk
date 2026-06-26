@@ -51,6 +51,7 @@ from schemas.journal import (
     BracketsUpdate,
     EXPECTED_LEG_COUNT,
     MISTAKE_TAG_VOCABULARY,
+    ScaleOutRequest,
     TradeAnalyticsOut,
     TradeIn,
     TradeOut,
@@ -87,6 +88,94 @@ def _owned_trade(session: Session, user: User, trade_id: int) -> Trade:
         # Foreign trade — indistinguishable from nonexistent.
         raise HTTPException(404, f"trade {trade_id} not found")
     return trade
+
+
+def _position_commission_side(trade: Trade) -> float:
+    """Exit-side commission for a full position: contract count × the
+    configured per-contract rate. Same convention `_fold_commission` and the
+    order monitor's `_commission_side` use."""
+    position_contracts = max(
+        (int(leg.get("contracts", 1) or 1) for leg in (trade.legs or [])),
+        default=1,
+    )
+    return position_contracts * settings.commission_per_contract
+
+
+def _recompute_unrealized(trade: Trade) -> float:
+    """Server-side unrealized P&L for `trade` from the LIVE mark — the
+    integrity backbone of the close / scale-out recompute. Mirrors EXACTLY
+    the pattern the order monitor's `_default_unrealized_for` uses and the
+    `get_trade_analytics` endpoint serves, so a manual close books the same
+    number the user sees on screen and the monitor would book on a bracket:
+
+      * spot  = live quote for the symbol, falling back to entry price when
+                the feed is cold (nights / weekends / rate-limit);
+      * branch = `_trade_is_zerodte` → `_intraday_analytics` (0DTE) else
+                `compute_analytics` (multi-day);
+      * value = the branch's folded `unrealized_pnl` (entry commission folded
+                in by `_fold_commission`, the same as the analytics endpoint).
+
+    The caller subtracts the EXIT-side commission to get realized. The client
+    never supplies the number — it is recomputed here from the mark."""
+    # Live spot — prefer the quote, fall back to entry so a cold feed still
+    # books a deterministic number instead of failing the close.
+    spot = float(trade.entry_underlying_price)
+    try:
+        quote = get_quotes([trade.symbol]).get(trade.symbol)
+        if quote is not None:
+            spot = float(quote.price)
+    except Exception:  # noqa: BLE001 — feed cold → entry price is the fallback
+        log.debug("close recompute: quote fetch failed for %s", trade.symbol)
+
+    try:
+        rate = latest_dgs3mo_rate()
+    except Exception:  # noqa: BLE001
+        rate = DEFAULT_RATE_FALLBACK
+
+    commission_side = _position_commission_side(trade)
+
+    if _trade_is_zerodte(trade):
+        # Elapsed since entry, in hours — drives sub-day theta (same as the
+        # analytics endpoint's wall-clock default for a freshly-opened 0DTE).
+        entry_dt = trade.entry_date or datetime.now(timezone.utc)
+        if entry_dt.tzinfo is None:
+            entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+        elapsed_hours = max(
+            0.0, (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600.0
+        )
+        resp = _intraday_analytics(
+            trade=trade, spot=spot, rate=rate, elapsed_hours=elapsed_hours
+        )
+        resp = _fold_commission(resp, commission_side)
+        return float(resp.unrealized_pnl)
+
+    # Multi-day branch — identical to the analytics endpoint's day path.
+    today = datetime.now(timezone.utc).date()
+    entry_date = trade.entry_date.date() if trade.entry_date else today
+    legs_now, iv_used, iv_source = build_legs_from_journal(
+        trade.legs,
+        today=today,
+        rate=rate,
+        spot_at_entry=trade.entry_underlying_price,
+        entry_date=entry_date,
+    )
+    if not legs_now:
+        raise HTTPException(
+            422,
+            f"trade {trade.id} has no usable legs — its stored legs data is "
+            "missing or malformed",
+        )
+    result = compute_analytics(
+        legs_now,
+        spot=spot,
+        rate=rate,
+        scrubber_dte_days=None,
+        iv_used=iv_used,
+        iv_source=iv_source,
+    )
+    # Fold entry commission the same way `_fold_commission` does on the full
+    # TradeAnalyticsOut (unrealized = current_value − cost_basis, less entry side).
+    return float(result.unrealized_pnl - commission_side)
 
 
 @router.post("/trades", response_model=TradeOut, status_code=201)
@@ -176,14 +265,26 @@ def update_trade(
 ) -> TradeOut:
     trade = _owned_trade(session, user, trade_id)
 
+    # A trade transitioning INTO closed this request books realized P&L. We
+    # detect the transition (was-not-closed → status='closed') so editing an
+    # already-closed trade's notes/tags doesn't re-book it.
+    closing_now = payload.status == "closed" and trade.status != "closed"
+
     if payload.status is not None:
         trade.status = payload.status
     if payload.exit_date is not None:
         trade.exit_date = _as_utc(payload.exit_date)
     if payload.exit_underlying_price is not None:
         trade.exit_underlying_price = payload.exit_underlying_price
-    if payload.realized_pnl is not None:
-        trade.realized_pnl = payload.realized_pnl
+    # INTEGRITY: `payload.realized_pnl` is DEPRECATED + IGNORED. On a close we
+    # RECOMPUTE realized server-side from the live mark (recompute unrealized,
+    # then subtract the exit-side commission) — the exact `_book_close` /
+    # `_default_unrealized_for` path the order monitor uses. The client can no
+    # longer book an arbitrary number.
+    if closing_now:
+        unrealized = _recompute_unrealized(trade)
+        realized = unrealized - _position_commission_side(trade)
+        trade.realized_pnl = round(realized, 2)
     if payload.notes is not None:
         trade.notes = payload.notes
     if payload.tags is not None:
@@ -198,6 +299,68 @@ def update_trade(
     # Copy trading: a lead close cascades to its follower copies (best-effort).
     if trade.status == "closed":
         mirror_close(session, trade)
+    return _to_out(trade)
+
+
+@router.post("/trades/{trade_id}/scale-out", response_model=TradeOut)
+def scale_out_trade(
+    trade_id: int,
+    payload: ScaleOutRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Partial close (scale-out): book `qty` contracts of an OPEN position and
+    leave the rest open. Reduces each leg's contracts by qty, ACCUMULATES the
+    booked realized P&L for the slice, records a scale-out note, and cascades
+    proportionally to any follower copies. Scale-out is strictly PARTIAL
+    (qty < held); closing the final contracts uses the normal PATCH close.
+
+    INTEGRITY: `payload.realized_pnl` is DEPRECATED + IGNORED. The slice's
+    realized is RECOMPUTED server-side: recompute the WHOLE position's
+    unrealized from the live mark, take the slice = `unrealized × qty / held`,
+    and subtract a proportional exit commission (qty × per-contract rate)."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "open":
+        raise HTTPException(status_code=409, detail="can only scale out an OPEN position")
+    legs = trade.legs
+    # Guard on the SMALLEST leg so reducing every leg by qty can't drive any leg
+    # negative (imbalanced multi-leg positions are representable). For the common
+    # balanced case (straddle / single leg) min == max, so this is unchanged.
+    held = min((int(leg.get("contracts", 1) or 1) for leg in legs), default=1)
+    if payload.qty >= held:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scale-out qty {payload.qty} must be fewer than the {held} held — use close for the rest",
+        )
+
+    # RECOMPUTE the slice server-side from the live mark. `_recompute_unrealized`
+    # returns the WHOLE position's folded unrealized (entry commission already
+    # folded); the slice is the held-fraction of it. The exit commission is
+    # PROPORTIONAL to the closed contracts (qty × rate), not the whole position.
+    position_unrealized = _recompute_unrealized(trade)
+    slice_fraction = payload.qty / held
+    slice_unrealized = position_unrealized * slice_fraction
+    exit_commission = payload.qty * settings.commission_per_contract
+    slice_realized = round(slice_unrealized - exit_commission, 2)
+
+    # Reduce every leg by qty (all legs scale together — a straddle closes qty
+    # of each side) and ACCUMULATE the slice's realized onto the running total.
+    for leg in legs:
+        leg["contracts"] = int(leg.get("contracts", 1) or 1) - payload.qty
+    trade.legs = legs
+    trade.realized_pnl = round((trade.realized_pnl or 0.0) + slice_realized, 2)
+    if payload.exit_underlying_price is not None:
+        trade.exit_underlying_price = payload.exit_underlying_price
+    px = f"${payload.exit_underlying_price:.2f}" if payload.exit_underlying_price else "—"
+    trade.notes = (trade.notes or "") + f" · scaled out {payload.qty} @ {px}"
+    session.commit()
+    session.refresh(trade)
+    # Copy-trade: cascade the partial close proportionally to follower copies.
+    # The lead's legs are ALREADY reduced here — mirror_close derives the lead's
+    # original size as (post-reduction contracts + closed_qty). Pass the per-slice
+    # P&L explicitly (trade.realized_pnl is the running accumulated total, which
+    # would over-book followers on the 2nd+ scale-out).
+    mirror_close(session, trade, closed_qty=payload.qty, slice_pnl=slice_realized)
     return _to_out(trade)
 
 
@@ -791,6 +954,7 @@ def _to_out(trade: Trade) -> TradeOut:
         stop_loss=trade.stop_loss,
         take_profit=trade.take_profit,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
+        time_in_force=trade.time_in_force,  # type: ignore[arg-type]
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
         confidence=trade.confidence,

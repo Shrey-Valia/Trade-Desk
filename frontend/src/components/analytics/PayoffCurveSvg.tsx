@@ -78,6 +78,8 @@ export function PayoffCurveSvg({
       viewBox={`0 0 ${W} ${H}`}
       preserveAspectRatio="none"
       style={{ display: "block", height: "100%" }}
+      role="img"
+      aria-label="Option position payoff diagram"
     >
       {areaTo((v) => Math.max(v, 0), colors.bullish)}
       {areaTo((v) => Math.min(v, 0), colors.bearish)}

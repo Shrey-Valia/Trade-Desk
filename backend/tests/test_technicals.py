@@ -3,13 +3,27 @@
 Follows the test_calculations.py pattern: small series with values
 worked out by hand (or against the canonical Wilder formulas) so a
 regression in the math is obvious.
+
+The endpoint-level tests at the bottom exercise the /indicators period
+syntax (WS2): a tuned period must change the returned series AND land in a
+distinct cache key, so `sma:20` and `sma:50` can never alias.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from calculations.technicals import atr, ema, rsi, sma, vwap
+from calculations.technicals import (
+    atr,
+    bollinger,
+    ema,
+    macd,
+    rsi,
+    sma,
+    stochastic,
+    vwap,
+)
 
 
 @dataclass
@@ -195,3 +209,248 @@ def test_atr_wilder_smoothing_step():
 
 def test_atr_insufficient_data_all_none():
     assert atr([_Bar(high=1, low=1, close=1)], 14) == [None]
+
+
+# ---------- macd ----------
+
+
+def test_macd_linear_ramp_constant_line():
+    # On a linear ramp the two EMAs run parallel, so MACD line is flat.
+    # fast=2 seed idx1=SMA(1,2)=1.5; slow=4 seed idx3=SMA(1,2,3,4)=2.5;
+    # line idx3 = 3.5 - 2.5 = 1.0 and stays 1.0. Line is None until slow-1=3.
+    closes = [1, 2, 3, 4, 5, 6, 7, 8]
+    m = macd(closes, fast=2, slow=4, signal=2)
+    assert m["line"][:3] == [None, None, None]
+    assert m["line"][3] == pytest.approx(1.0)
+    assert m["line"][-1] == pytest.approx(1.0)
+
+
+def test_macd_signal_and_histogram_offsets():
+    # Signal EMAs the line; first defined at slow-1 + signal-1 = 3+1 = 4.
+    # With a flat line of 1.0 the signal seeds to 1.0 and the histogram
+    # (line - signal) is 0 once both are defined.
+    closes = [1, 2, 3, 4, 5, 6, 7, 8]
+    m = macd(closes, fast=2, slow=4, signal=2)
+    assert m["signal"][3] is None
+    assert m["signal"][4] == pytest.approx(1.0)
+    assert m["histogram"][3] is None
+    assert m["histogram"][4] == pytest.approx(0.0)
+
+
+def test_macd_aligned_length_and_components():
+    closes = list(range(40))
+    m = macd(closes)  # default 12/26/9
+    assert set(m) == {"line", "signal", "histogram"}
+    for comp in m.values():
+        assert len(comp) == len(closes)
+    # Default MACD line first defined at slow-1 = 25.
+    assert m["line"][24] is None
+    assert m["line"][25] is not None
+    # Signal first defined at slow-1 + signal-1 = 25 + 8 = 33.
+    assert m["signal"][32] is None
+    assert m["signal"][33] is not None
+
+
+def test_macd_invalid_windows_all_none():
+    closes = [1, 2, 3, 4, 5]
+    # fast >= slow is invalid.
+    m = macd(closes, fast=5, slow=3, signal=2)
+    assert m["line"] == [None] * 5
+    assert m["signal"] == [None] * 5
+    assert m["histogram"] == [None] * 5
+
+
+# ---------- bollinger ----------
+
+
+def test_bollinger_mid_is_sma():
+    # n=3 over [2,4,6,8]: mid = SMA(3) -> idx2=4.0, idx3=6.0.
+    b = bollinger([2, 4, 6, 8], n=3, k=2)
+    assert b["mid"][:2] == [None, None]
+    assert b["mid"][2] == pytest.approx(4.0)
+    assert b["mid"][3] == pytest.approx(6.0)
+
+
+def test_bollinger_band_width_population_sd():
+    # Window [2,4,6]: mean 4, population variance (4+0+4)/3 = 8/3,
+    # sd = sqrt(8/3) ≈ 1.63299. upper/lower = mid ± 2σ.
+    b = bollinger([2, 4, 6, 8], n=3, k=2)
+    sd = (8 / 3) ** 0.5
+    assert b["upper"][2] == pytest.approx(4.0 + 2 * sd)
+    assert b["lower"][2] == pytest.approx(4.0 - 2 * sd)
+
+
+def test_bollinger_flat_series_zero_width():
+    # Constant closes -> zero variance -> all three bands coincide.
+    b = bollinger([5, 5, 5, 5], n=2, k=2)
+    assert b["mid"][1] == pytest.approx(5.0)
+    assert b["upper"][1] == pytest.approx(5.0)
+    assert b["lower"][1] == pytest.approx(5.0)
+
+
+def test_bollinger_insufficient_data_all_none():
+    b = bollinger([1, 2], n=5)
+    assert b == {"upper": [None, None], "mid": [None, None], "lower": [None, None]}
+
+
+# ---------- stochastic ----------
+
+
+def test_stochastic_percent_k():
+    # k=3. idx2 window bars0-2: hh=14, ll=8, close=13 -> 100*5/6 ≈ 83.33.
+    # idx3 window bars1-3: hh=14, ll=9, close=12 -> 60. idx4: hh=15, ll=10,
+    # close=14 -> 80.
+    bars = [
+        _Bar(high=10, low=8, close=9),
+        _Bar(high=12, low=9, close=11),
+        _Bar(high=14, low=10, close=13),
+        _Bar(high=13, low=11, close=12),
+        _Bar(high=15, low=12, close=14),
+    ]
+    s = stochastic(bars, k=3, d=2)
+    assert s["k"][:2] == [None, None]
+    assert s["k"][2] == pytest.approx(100 * 5 / 6)
+    assert s["k"][3] == pytest.approx(60.0)
+    assert s["k"][4] == pytest.approx(80.0)
+
+
+def test_stochastic_percent_d_is_sma_of_k():
+    # %D = SMA(2) of %K, first defined at idx (k-1)+(d-1) = 2+1 = 3.
+    bars = [
+        _Bar(high=10, low=8, close=9),
+        _Bar(high=12, low=9, close=11),
+        _Bar(high=14, low=10, close=13),
+        _Bar(high=13, low=11, close=12),
+        _Bar(high=15, low=12, close=14),
+    ]
+    s = stochastic(bars, k=3, d=2)
+    assert s["d"][2] is None
+    assert s["d"][3] == pytest.approx((100 * 5 / 6 + 60.0) / 2)
+    assert s["d"][4] == pytest.approx((60.0 + 80.0) / 2)
+
+
+def test_stochastic_flat_window_is_neutral_50():
+    # A window where high == low (no range) maps %K to 50, not a crash.
+    bars = [_Bar(high=5, low=5, close=5) for _ in range(3)]
+    s = stochastic(bars, k=3, d=2)
+    assert s["k"][2] == pytest.approx(50.0)
+
+
+def test_stochastic_insufficient_data_all_none():
+    bars = [_Bar(high=2, low=1, close=1.5)]
+    s = stochastic(bars, k=14, d=3)
+    assert s == {"k": [None], "d": [None]}
+# ====================================================================
+# WS2 — /indicators endpoint: configurable periods
+#
+# These hit the real router via the TestClient, monkeypatching get_bars
+# to a deterministic series so the assertions are exact. They verify that
+# (a) a custom period changes the returned series length/values and
+# (b) the period lands in the cache key (distinct periods => distinct
+# cache entries, never aliased).
+# ====================================================================
+
+
+@dataclass
+class _TBar:
+    """Bar shaped like the Alpaca SDK bar the endpoint reads:
+    .timestamp / .open / .high / .low / .close / .volume."""
+
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 1000.0
+
+
+def _ramp_bars(n: int) -> list[_TBar]:
+    """`n` bars whose close ramps 100, 101, 102, … — a strictly monotonic
+    series so SMA warm-up length and values differ clearly by period."""
+    base = datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc)
+    out: list[_TBar] = []
+    for i in range(n):
+        c = 100.0 + i
+        out.append(
+            _TBar(
+                timestamp=base + timedelta(minutes=5 * i),
+                open=c,
+                high=c + 0.5,
+                low=c - 0.5,
+                close=c,
+            )
+        )
+    return out
+
+
+def _series_by_key(payload: dict) -> dict[str, list]:
+    return {s["key"]: s["values"] for s in payload["series"]}
+
+
+def test_indicators_custom_period_changes_series(api_client, monkeypatch):
+    """A larger SMA window produces a longer all-None warm-up prefix and a
+    LOWER trailing value (mean of a ramp lags further back) — so the period
+    demonstrably flows into the math, not just the label."""
+    import routers.ticker as ticker
+
+    monkeypatch.setattr(ticker, "get_bars", lambda symbol, timeframe: _ramp_bars(40))
+
+    r5 = api_client.get("/api/ticker/SMACUST5/indicators?timeframe=5m&set=sma:5")
+    r20 = api_client.get("/api/ticker/SMACUST20/indicators?timeframe=5m&set=sma:20")
+    assert r5.status_code == 200 and r20.status_code == 200
+
+    s5 = _series_by_key(r5.json())["sma:5"]
+    s20 = _series_by_key(r20.json())["sma:20"]
+
+    # Same number of points (1:1 with bars) but different warm-up + values.
+    assert len(s5) == len(s20) == 40
+    # Warm-up: first n-1 are None.
+    assert s5[:4] == [None, None, None, None] and s5[4] is not None
+    assert s20[:19] == [None] * 19 and s20[19] is not None
+    # On a +1/bar ramp the trailing SMA = last_close - (n-1)/2, so the wider
+    # window trails further below the last price → strictly smaller value.
+    assert s20[-1] == pytest.approx(s5[-1] - (20 - 5) / 2)
+    assert s20[-1] < s5[-1]
+
+
+def test_indicators_period_in_cache_key(api_client, monkeypatch):
+    """The period is part of the cache key: two requests that differ ONLY in
+    the SMA window must create two distinct cache entries (no aliasing). We
+    also confirm the legacy `sma20` spelling canonicalizes to the same
+    `sma:20` cache entry."""
+    import routers.ticker as ticker
+    from services.cache import cache
+
+    monkeypatch.setattr(ticker, "get_bars", lambda symbol, timeframe: _ramp_bars(40))
+
+    sym = "CACHEKEY"
+    api_client.get(f"/api/ticker/{sym}/indicators?timeframe=5m&set=sma:20")
+    api_client.get(f"/api/ticker/{sym}/indicators?timeframe=5m&set=sma:50")
+
+    keys = set(cache._store.keys())
+    assert f"indicators:{sym}:5m:sma:20" in keys
+    assert f"indicators:{sym}:5m:sma:50" in keys
+
+    # Legacy form canonicalizes onto the SAME entry as sma:20 (cache hit, no
+    # new key spelled "sma20").
+    before = set(cache._store.keys())
+    api_client.get(f"/api/ticker/{sym}/indicators?timeframe=5m&set=sma20")
+    after = set(cache._store.keys())
+    assert after == before
+    assert f"indicators:{sym}:5m:sma20" not in after
+
+
+def test_indicators_default_period_for_bare_family(api_client, monkeypatch):
+    """A bare family name resolves to its catalog default period (rsi → 14)
+    and is returned under the canonical `rsi:14` key + a fixed 0–100 pane."""
+    import routers.ticker as ticker
+
+    monkeypatch.setattr(ticker, "get_bars", lambda symbol, timeframe: _ramp_bars(40))
+
+    r = api_client.get("/api/ticker/BAREFAM/indicators?timeframe=5m&set=rsi")
+    assert r.status_code == 200
+    series = r.json()["series"]
+    assert len(series) == 1
+    assert series[0]["key"] == "rsi:14"
+    assert series[0]["label"] == "RSI 14"
+    assert series[0]["pane"] == "oscillator"

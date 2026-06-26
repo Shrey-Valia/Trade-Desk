@@ -44,6 +44,62 @@ jobs:
       - name: Run pytest
         run: pytest -q -m "not network"
 
+  # Proves the additive migrations + the suite run on Postgres, not just
+  # SQLite. Same install path; the only difference is DATABASE_URL points
+  # at a postgres:16 service container. init_db() runs the additive
+  # migrations on first connect, so a green run here means the ALTER TABLE
+  # ladder is Postgres-valid.
+  backend-postgres:
+    name: Backend (pytest, Postgres)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trade
+          POSTGRES_PASSWORD: trade
+          POSTGRES_DB: trade_test
+        ports:
+          - 5432:5432
+        # Wait for the DB to accept connections before the job runs.
+        options: >-
+          --health-cmd "pg_isready -U trade -d trade_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # psycopg (v3) driver — installed via the pg extra below.
+      DATABASE_URL: postgresql+psycopg://trade:trade@localhost:5432/trade_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Pull in the Postgres driver alongside the dev extra.
+      - name: Install backend dependencies
+        run: uv pip install --system -e ".[dev,pg]"
+
+      # Run the additive migrations explicitly against Postgres first so a
+      # migration failure is an unambiguous, isolated step (init_db() is
+      # idempotent, so the test run re-invoking it is a safe no-op).
+      - name: Run additive migrations on Postgres
+        run: python -c "from database import init_db; init_db()"
+
+      - name: Run pytest against Postgres
+        run: pytest -q -m "not network"
+
   frontend:
     name: Frontend (typecheck + build)
     runs-on: ubuntu-latest

@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { fetchAccountState, fetchDllOverrides, updateDllOverrides } from "@/lib/api";
+import {
+  fetchAccountState,
+  fetchDllOverrides,
+  updateDllOverrides,
+  type DllOverridesConfig,
+} from "@/lib/api";
 import { toast } from "@/stores/toast";
 
 const ACCOUNT_STATE_KEY = ["account", "state"] as const;
@@ -38,16 +43,18 @@ export function useDllOverrides() {
   });
 }
 
-/** Replace the per-tier DLL overrides. Refreshes the overrides + the active
- *  account snapshot (whose dll_budget reflects the new override). */
+/** Replace the per-tier DLL overrides and/or DLL-off disable flags. Refreshes
+ *  the config + the active account snapshot (whose dll_budget / dll_disabled
+ *  reflect the change). `disabled` omitted leaves the disable set untouched. */
 export function useUpdateDllOverrides() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (overrides: Record<string, number>) => updateDllOverrides(overrides),
-    onSuccess: (saved) => {
+    mutationFn: (input: { overrides: Record<string, number>; disabled?: string[] }) =>
+      updateDllOverrides(input.overrides, input.disabled),
+    onSuccess: (saved: DllOverridesConfig) => {
       qc.setQueryData(DLL_OVERRIDES_KEY, saved);
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
     },
-    onError: (e) => toast.error((e as Error)?.message || "Couldn't save DLL limit"),
+    onError: (e) => toast.error((e as Error)?.message || "Couldn't save DLL settings"),
   });
 }

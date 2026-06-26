@@ -25,6 +25,8 @@ export interface CombineStatus {
   /** Live DLL used today ($, ≥0) — realized loss + current URPL loss. */
   dllUsedLive: number;
   dllBudget: number;
+  /** DLL switched OFF for the active tier — no day-lock / breach applies. */
+  dllDisabled: boolean;
   // --- PASS / profit-target (the OTHER pole — how close to passing) ---
   /** True once the combine has PASSED (permanent). */
   passed: boolean;
@@ -103,6 +105,9 @@ export function useCombineStatus(): CombineStatus {
   const mllProximity =
     trailingDistance > 0 ? Math.max(0, Math.min(1, mllCushion / trailingDistance)) : 0;
 
+  // DLL-off toggle: when the active tier has the DLL switched off, no
+  // day-lock / breach applies (only the MLL floor binds).
+  const dllDisabled = account?.dll_disabled ?? false;
   // Live DLL: today's realized loss (backend) + any current URPL loss.
   const dllUsedLive = Math.max(0, (account?.dll_used ?? 0) + Math.max(0, -liveUpl));
 
@@ -115,7 +120,8 @@ export function useCombineStatus(): CombineStatus {
       : account?.status === "passed"
         ? "passed"
         : "active";
-  const dayLocked = (account?.day_locked ?? false) || dllUsedLive >= dllBudget;
+  const dayLocked =
+    !dllDisabled && ((account?.day_locked ?? false) || dllUsedLive >= dllBudget);
 
   // PASS / profit-target progress. Passing PERSISTS on realized profit
   // (backend); live URPL only moves the displayed proximity.
@@ -158,6 +164,7 @@ export function useCombineStatus(): CombineStatus {
     mllProximity,
     dllUsedLive,
     dllBudget,
+    dllDisabled,
     passed,
     profitTarget,
     realizedProfit,

@@ -6,9 +6,12 @@ unrealized_for / market_open. Trades are seeded straight into the DB.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 import models.combine_event  # noqa: F401 — ensure combine_events table exists
+import services.order_monitor as order_monitor
 from models.trade import Trade
 from services.order_monitor import (
     _bracket_triggered,
@@ -18,6 +21,16 @@ from services.order_monitor import (
 from tests.conftest import make_combine
 
 _TODAY = datetime.now(timezone.utc).date()
+
+
+@pytest.fixture(autouse=True)
+def _clear_last_good_spot():
+    """The last-known-good spot store is module-level and persists across
+    ticks by design — clear it between tests so one test's warm spot doesn't
+    leak into another's feed-gap assertions."""
+    order_monitor._LAST_GOOD_SPOT.clear()
+    yield
+    order_monitor._LAST_GOOD_SPOT.clear()
 
 
 def _seed(session_factory, combine_id, **kw):
@@ -137,6 +150,59 @@ def test_working_order_cancelled_when_combine_failed(auth_client, session_factor
     assert summary["filled"] == 0
     s = session_factory()
     assert s.get(Trade, tid).status == "cancelled"
+    s.close()
+
+
+def test_dll_exhausted_by_realized_loss_does_not_liquidate_open_winner(auth_client, session_factory):
+    """When the DAILY loss budget is already met by REALIZED (closed) trades, the
+    combine is day-locked but its OPEN positions are NOT force-closed — least of
+    all winners. Regression: the DLL liquidation branch fired on realized day-loss
+    alone (snap.dll_used >= budget), flattening profitable open positions whose
+    closure can't reduce the realized day-loss anyway."""
+    c = make_combine(auth_client, "50K")
+    # Realized day-loss already AT the 50K DLL budget ($1,500) → day-locked.
+    # Balance 48,500 + URPL stays above the 48,000 MLL floor, so MLL doesn't bind.
+    _seed(
+        session_factory, c["id"], status="closed",
+        realized_pnl=-1500.0, exit_date=datetime.now(timezone.utc),
+    )
+    open_tid = _seed(session_factory, c["id"], status="open")  # an OPEN winner
+    summary = _run(session_factory, unrealized_for=lambda t, s: 200.0)
+    assert summary.get("liquidated", 0) == 0
+    s = session_factory()
+    assert s.get(Trade, open_tid).status == "open"  # winner survives the day-lock
+    s.close()
+
+
+def test_day_working_order_expires_into_a_later_session(auth_client, session_factory):
+    """A DAY working order that survives unfilled into a later ET session is
+    cancelled by the monitor; a GTC order rests indefinitely."""
+    from datetime import timedelta
+
+    c = make_combine(auth_client, "50K")
+    day_tid = _seed(
+        session_factory, c["id"], status="working", order_type="limit",
+        limit_price=1.0, time_in_force="day",
+    )
+    gtc_tid = _seed(
+        session_factory, c["id"], status="working", order_type="limit",
+        limit_price=1.0, time_in_force="gtc",
+    )
+    # Backdate both to a prior ET session (created yesterday, still unfilled).
+    prior = datetime.now(timezone.utc) - timedelta(days=1)
+    s = session_factory()
+    for tid in (day_tid, gtc_tid):
+        s.get(Trade, tid).created_at = prior
+    s.commit()
+    s.close()
+
+    # Mark 1.2 > limit 1.0 (buy) → would NOT fill; the DAY order is expired, the
+    # GTC order rests.
+    summary = _run(session_factory, option_mark=lambda t, s: 1.2)
+    assert summary["cancelled"] >= 1
+    s = session_factory()
+    assert s.get(Trade, day_tid).status == "cancelled"
+    assert s.get(Trade, gtc_tid).status == "working"
     s.close()
 
 
@@ -534,7 +600,13 @@ def test_no_liquidation_when_live_balance_above_mll(auth_client, session_factory
 
 def test_auto_liquidates_when_open_loss_exhausts_dll(auth_client, session_factory):
     """No realized loss, but a −1,500 open loss exhausts the 1,500 DLL budget
-    while balance 48,500 stays above the 48,000 MLL floor → DLL-path liquidation."""
+    while balance 48,500 stays above the 48,000 MLL floor → DLL-path liquidation.
+
+    Worst-first: a DLL breach liquidates open risk to pull the open drawdown
+    back under the daily budget, but DOES NOT fail the combine — a DLL is a
+    daily hard-stop, not a permanent floor (real Topstep day-locks, never fails,
+    on the DLL). The combine survives ACTIVE; the realized loss day-locks it at
+    the next snapshot."""
     from models.combine import Combine
 
     c = make_combine(auth_client, "50K")
@@ -549,7 +621,9 @@ def test_auto_liquidates_when_open_loss_exhausts_dll(auth_client, session_factor
     t = s.get(Trade, tid)
     assert t.status == "closed" and t.close_reason == "liquidation"
     assert "daily loss limit" in (t.notes or "")
-    assert s.get(Combine, c["id"]).outcome == "failed"
+    # DLL liquidation survives (no permanent fail); the day-lock applies once
+    # the booked loss lands in the realized DLL window.
+    assert s.get(Combine, c["id"]).outcome == "active"
     s.close()
 
 
@@ -571,6 +645,76 @@ def test_auto_liquidation_closes_all_positions_on_combine(auth_client, session_f
     assert s.get(Trade, t1).status == "closed"
     assert s.get(Trade, t2).status == "closed"
     assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
+def _leg_at(strike: float) -> list[dict]:
+    """A single-leg list at a given strike — lets an injected unrealized_for
+    return a PER-POSITION URPL by keying off the leg strike."""
+    return [{
+        "side": "call", "action": "buy", "strike": strike,
+        "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 1.0,
+    }]
+
+
+def test_worst_first_liquidation_stops_once_dll_clears(auth_client, session_factory):
+    """Worst-first: a DLL breach driven by ONE big open loser, with a winner on
+    the book. Cutting the worst loser pulls the open drawdown back under the
+    daily budget, so the WINNER stays open and the combine survives (DLL never
+    fails a combine). Proves the worst-first cut stops early — not flatten-all.
+
+    50K: DLL budget 1,500 · MLL floor 48,000. Loser −1,900 (strike 100), winner
+    +300 (strike 200). Aggregate open URPL −1,600 → live balance 48,400 (above
+    the MLL floor) but the aggregate open LOSS 1,600 ≥ 1,500 DLL → breach.
+    Cutting the −1,900 leaves remaining open URPL +300 (loss 0 < 1,500) →
+    cleared; the +300 winner survives and the combine stays active."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    loser = _seed(session_factory, c["id"], status="open", _legs=_leg_at(100.0))
+    winner = _seed(session_factory, c["id"], status="open", _legs=_leg_at(200.0))
+
+    def urpl(t, s):
+        return -1_900.0 if t.legs[0]["strike"] == 100.0 else 300.0
+
+    summary = _run(session_factory, spot_for=lambda sym: 99.0, unrealized_for=urpl)
+    # Only the worst loser is cut; the winner is left open.
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    assert s.get(Trade, loser).status == "closed"
+    assert s.get(Trade, loser).close_reason == "liquidation"
+    assert s.get(Trade, winner).status == "open"   # net-winner remainder survives
+    assert s.get(Combine, c["id"]).outcome == "active"   # DLL doesn't fail
+    s.close()
+
+
+def test_worst_first_keeps_winner_when_only_mll_marginal(auth_client, session_factory):
+    """Worst-first on a MARGINAL MLL breach with a winner present: cutting the
+    single worst loser realizes its loss but leaves a winner whose URPL keeps
+    the live balance above the floor → the combine survives and the winner
+    stays open.
+
+    50K floor 48,000. Loser −2,100 (strike 100), winner +500 (strike 200).
+    Aggregate −1,600 → live 48,400 (ABOVE the floor) but the open LOSS 2,100 ≥
+    1,500 DLL → DLL breach. Cut the −2,100: remaining open loss 0 < 1,500 →
+    cleared. Realized after the cut 47,899 < 48,000, but the +500 winner stays
+    OPEN, so the live balance (47,899 + 500 = 48,399) holds above the floor →
+    no MLL fail. The winner survives."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    loser = _seed(session_factory, c["id"], status="open", _legs=_leg_at(100.0))
+    winner = _seed(session_factory, c["id"], status="open", _legs=_leg_at(200.0))
+
+    def urpl(t, s):
+        return -2_100.0 if t.legs[0]["strike"] == 100.0 else 500.0
+
+    summary = _run(session_factory, spot_for=lambda sym: 99.0, unrealized_for=urpl)
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    assert s.get(Trade, loser).status == "closed"
+    assert s.get(Trade, winner).status == "open"
+    assert s.get(Combine, c["id"]).outcome == "active"
     s.close()
 
 
@@ -605,6 +749,95 @@ def test_auto_liquidation_skips_when_spot_unavailable(auth_client, session_facto
     assert s.get(Trade, tid).status == "open"
     assert s.get(Combine, c["id"]).outcome == "active"
     s.close()
+
+
+# --- auto-liquidation last-known-good spot fallback -------------------------
+
+
+def test_liquidation_uses_fresh_fallback_spot_on_feed_gap(auth_client, session_factory):
+    """A None live spot does NOT skip the liquidation when a FRESH last-known-
+    good spot exists — the book is priced off the fallback so a breach is still
+    flattened (bounds MLL overshoot across a transient feed gap)."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open")
+
+    now = datetime.now(timezone.utc)
+    # Warm the store with a good spot observed 30s ago (< 60s TTL).
+    order_monitor._LAST_GOOD_SPOT["SPY"] = (99.0, now - timedelta(seconds=30))
+
+    summary = _run(
+        session_factory,
+        now=now,
+        spot_for=lambda sym: None,            # live feed is cold this tick
+        unrealized_for=lambda t, s: -2_600.0,  # breaches the 48,000 MLL floor
+    )
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed"
+    assert t.close_reason == "liquidation"
+    assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
+def test_liquidation_skips_when_fallback_spot_is_stale(auth_client, session_factory):
+    """A None live spot WITH a STALE fallback (> 60s) still skips — we don't
+    liquidate on a price we no longer trust."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open")
+
+    now = datetime.now(timezone.utc)
+    # Fallback observed 120s ago — beyond the 60s TTL.
+    order_monitor._LAST_GOOD_SPOT["SPY"] = (99.0, now - timedelta(seconds=120))
+
+    summary = _run(
+        session_factory,
+        now=now,
+        spot_for=lambda sym: None,
+        unrealized_for=lambda t, s: -2_600.0,
+    )
+    assert summary["liquidated"] == 0
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    assert s.get(Combine, c["id"]).outcome == "active"
+    s.close()
+
+
+def test_liquidation_prefers_live_spot_over_fallback(auth_client, session_factory):
+    """When the live feed IS available, the live spot is used (and recorded as
+    the new last-known-good) — the fallback is only a gap filler."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    _seed(session_factory, c["id"], status="open")
+
+    now = datetime.now(timezone.utc)
+    # A stale fallback is present, but the live feed returns a value this tick,
+    # so the stale fallback must NOT be consulted.
+    order_monitor._LAST_GOOD_SPOT["SPY"] = (50.0, now - timedelta(seconds=999))
+
+    captured: dict[str, float] = {}
+
+    def _unreal(t, s):
+        captured["spot"] = s
+        return -2_600.0
+
+    summary = _run(
+        session_factory,
+        now=now,
+        spot_for=lambda sym: 99.0,  # live feed available
+        unrealized_for=_unreal,
+    )
+    assert summary["liquidated"] == 1
+    # Priced off the LIVE 99.0, not the stale fallback 50.0.
+    assert captured["spot"] == 99.0
+    # And the store was refreshed to the live value at `now`.
+    assert order_monitor._LAST_GOOD_SPOT["SPY"][0] == 99.0
+    assert order_monitor._LAST_GOOD_SPOT["SPY"][1] == now
 
 
 def test_auto_liquidation_cascades_to_follower_copies(auth_client, session_factory):

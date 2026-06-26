@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.rate_limit import RateLimiter, TokenBucket, auth_limiter
+from services.rate_limit import RateLimiter, TokenBucket, auth_limiter, global_limiter
 
 
 class FakeClock:
@@ -141,3 +141,49 @@ def test_signin_and_signup_have_separate_budgets(api_client, monkeypatch):
         json={"email": "fresh@test.local", "password": "password123"},
     )
     assert res.status_code == 201
+
+
+# -- Global per-IP throttle (main.py middleware) -----------------------------
+
+
+def test_global_limiter_blocks_after_limit(api_client, monkeypatch):
+    """The global middleware 429s ANY endpoint once the per-IP budget is
+    spent — here on a non-auth path so it's clearly the global limiter, not
+    the auth one. Returns a Retry-After header."""
+    monkeypatch.setattr(global_limiter, "max_attempts", 3)
+    # A cheap, always-present non-auth route.
+    path = "/api/watchlist"
+    assert api_client.get(path).status_code != 429
+    assert api_client.get(path).status_code != 429
+    assert api_client.get(path).status_code != 429
+    res = api_client.get(path)  # 4th request → throttled
+    assert res.status_code == 429
+    assert "Retry-After" in res.headers
+    assert res.json()["detail"]
+
+
+def test_global_limiter_disabled_when_attempts_non_positive(api_client, monkeypatch):
+    """attempts <= 0 disables the global throttle entirely (e.g. behind an
+    upstream limiter) — many requests, never a 429."""
+    monkeypatch.setattr(global_limiter, "max_attempts", 0)
+    assert not global_limiter.enabled
+    for _ in range(50):
+        assert api_client.get("/api/watchlist").status_code != 429
+
+
+def test_global_limiter_independent_of_auth_budget(api_client, monkeypatch):
+    """The global throttle and the auth brute-force throttle are separate
+    budgets: exhausting auth signin attempts doesn't pre-empt a non-auth
+    request through the global limiter, and vice-versa."""
+    monkeypatch.setattr(auth_limiter, "max_attempts", 1)
+    monkeypatch.setattr(global_limiter, "max_attempts", 100)
+    # Burn the auth signin budget → 429 from the auth limiter.
+    api_client.post("/api/auth/signin", json={"email": "a@b.c", "password": "x"})
+    assert (
+        api_client.post(
+            "/api/auth/signin", json={"email": "a@b.c", "password": "x"}
+        ).status_code
+        == 429
+    )
+    # A non-auth path still flows: global budget is large, untouched by auth.
+    assert api_client.get("/api/watchlist").status_code != 429

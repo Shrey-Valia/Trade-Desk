@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -38,6 +40,11 @@ class ChartAnnotations(BaseModel):
     max_pain: float | None = None
     gamma_flip: float | None = None
     earnings_date: str | None = None
+    # Auto support/resistance from swing structure (calculations/levels.py).
+    # Price-ordered, relative to the latest close; rendered as dotted price
+    # lines behind the same annotations toggle as the EM/wall overlays.
+    support_levels: list[float] = []
+    resistance_levels: list[float] = []
 
 
 class ChartResponse(BaseModel):
@@ -67,14 +74,20 @@ class IndicatorSeries(BaseModel):
     LineSeries against the same timestamps with no index juggling.
 
     `pane` tells the UI where the series belongs:
-      - "price": shares the main price scale (SMA / EMA / VWAP)
-      - "oscillator": its own 0–100 pane (RSI)
+      - "price": shares the main price scale (SMA / EMA / VWAP / Bollinger)
+      - "oscillator": its own 0–100 pane (RSI / Stochastic)
       - "volatility": its own absolute-value pane (ATR)
+      - "macd": MACD's own zero-centred pane (line / signal / histogram)
+
+    `kind` tells the UI how to draw the series:
+      - "line": a LineSeries (the default — every overlay except below)
+      - "histogram": a HistogramSeries (MACD histogram bars)
     """
 
-    key: str          # e.g. "sma20", "ema50", "vwap", "rsi14", "atr14"
+    key: str          # canonical "name:period" (e.g. "sma:20","rsi:14") or "vwap"
     label: str        # human label, e.g. "SMA 20"
-    pane: str         # "price" | "oscillator" | "volatility"
+    pane: str         # "price" | "oscillator" | "volatility" | "macd"
+    kind: Literal["line", "histogram"] = "line"
     values: list[float | None]
 
 

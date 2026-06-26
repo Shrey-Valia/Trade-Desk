@@ -25,6 +25,7 @@ import { MarketDataUnavailableError } from "@/lib/api"; // WS3: degraded-state d
 import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { enabledSetParam, useIndicators } from "@/stores/indicators";
+import { useIndicatorPeriods } from "@/stores/indicatorPeriods";
 import { useUserSettings } from "@/stores/userSettings";
 import {
   CHART_TIMEFRAMES,
@@ -118,7 +119,15 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
   // Enabled indicator set (persisted store) -> query -> per-bar series.
   // Drawn as LineSeries by a dedicated effect inside LightweightChart.
   const enabledIndicators = useIndicators((s) => s.enabled);
-  const indicatorSet = enabledSetParam(enabledIndicators);
+  // WS2: per-family period overrides feed the `family:period` query tokens.
+  // Subscribing to the `periods` map (not just the getter) re-renders this
+  // component when a window changes, so the query key updates and refetches.
+  const indicatorPeriodsMap = useIndicatorPeriods((s) => s.periods);
+  const periodFor = useIndicatorPeriods((s) => s.periodFor);
+  const indicatorSet = enabledSetParam(enabledIndicators, periodFor);
+  // `indicatorPeriodsMap` is read for its subscription side-effect (above);
+  // reference it so lint sees the dependency that drives `indicatorSet`.
+  void indicatorPeriodsMap;
   const indicators = useTickerIndicators(symbol, timeframe, indicatorSet);
   const indicatorSeries = indicators.data?.series ?? EMPTY_INDICATOR_SERIES;
   // --- end WS1 -----------------------------------------------------------
@@ -251,6 +260,8 @@ const EMPTY_ANNOTATIONS: ChartAnnotations = {
   max_pain: null,
   gamma_flip: null,
   earnings_date: null,
+  support_levels: [],
+  resistance_levels: [],
 };
 
 // Stable empty array so a no-position render doesn't churn the overlay effect.
@@ -297,9 +308,18 @@ function LightweightChart({
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const annotationLinesRef = useRef<IPriceLine[]>([]);
   const positionLinesRef = useRef<IPriceLine[]>([]);
-  // WS1: one LineSeries per enabled indicator, keyed by indicator key so
-  // the effect can diff add/remove without rebuilding everything.
-  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
+  // One series per enabled indicator COMPONENT, keyed by its series key so the
+  // effect can diff add/remove without rebuilding. A component is a LineSeries
+  // or (macd_hist) a HistogramSeries.
+  const indicatorSeriesRef = useRef<
+    Map<string, ISeriesApi<"Line"> | ISeriesApi<"Histogram">>
+  >(new Map());
+  // WS2: real multi-pane support (lightweight-charts v5). Non-price panes
+  // ("oscillator", "volatility", "macd") each get their own stacked chart pane
+  // created lazily via chart.addPane(); this map remembers the assigned
+  // paneIndex so every series in that pane routes to the same index and we
+  // don't create a pane twice. The price pane is always index 0.
+  const paneIndexRef = useRef<Map<string, number>>(new Map());
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   // Synthetic in-progress candle: the current slot timestamp + running
   // open/high/low so quote ticks update one bar in place (close = quote).
@@ -470,6 +490,9 @@ function LightweightChart({
       // WS1: chart.remove() drops all series including indicator lines;
       // just clear the bookkeeping map so the next chart starts clean.
       indicatorSeriesRef.current.clear();
+      // WS2: panes are destroyed with the chart — drop the index map so the
+      // next chart re-creates panes from scratch.
+      paneIndexRef.current.clear();
       markersRef.current = null;
       seriesRef.current = null;
       volumeRef.current = null;
@@ -577,17 +600,23 @@ function LightweightChart({
   }, [bars, annotations, timeframe, userBullish, userBearish]);
 
   // ======================================================================
-  // WS1 — technical indicator overlays
+  // WS1 + WS2 — technical indicator overlays (TRUE multi-pane, v5)
   //
   // Self-contained block (placed AFTER the candles/volume effect, BEFORE
   // the position-overlay effects) so it merges cleanly with WS3's
   // loading/error-state edits elsewhere in this file.
   //
-  // SMA/EMA/VWAP share the main RIGHT price scale (overlaid on candles).
-  // RSI gets its own pane via priceScaleId "rsi" pinned to a 0–100 axis;
-  // ATR gets its own pane via priceScaleId "atr". The panes are squeezed
-  // into the bottom of the chart with scaleMargins so they don't fight
-  // the candles for vertical space.
+  // SMA/EMA/VWAP/Bollinger share the main price pane (paneIndex 0, overlaid
+  // on candles). Each NON-price family ("oscillator" for RSI, "volatility"
+  // for ATR, "macd", …) gets its OWN stacked pane created lazily via
+  // chart.addPane(); series in that pane are added with the v5
+  // `addSeries(SeriesType, options, paneIndex)` signature so the engine
+  // lays them out as real sub-charts. This replaces the old `scaleMargins`
+  // squeeze that crammed every oscillator into the bottom band of the price
+  // pane and fought the candles for vertical space.
+  //
+  // RSI is still pinned to a fixed 0–100 axis (via autoscaleInfoProvider)
+  // so the line reads against meaningful 30/70 levels even in its own pane.
   //
   // Indicator values are aligned 1:1 with `bars` (same timestamps), with
   // `null` warm-up gaps that lightweight-charts simply skips. We diff the
@@ -600,9 +629,14 @@ function LightweightChart({
     if (!chart) return;
 
     const live = indicatorSeriesRef.current;
+    const panes = paneIndexRef.current;
     const wanted = new Set(indicatorSeries.map((s) => s.key));
 
-    // Remove series that are no longer enabled.
+    // Remove series that are no longer enabled. We deliberately leave any
+    // emptied non-price panes in place — re-creating/destroying panes on
+    // every toggle churns the layout, and an empty pane collapses to zero
+    // height in v5 anyway. Pane indices are reused when the indicator
+    // comes back.
     for (const [key, series] of live) {
       if (!wanted.has(key)) {
         try {
@@ -614,38 +648,61 @@ function LightweightChart({
       }
     }
 
+    // Resolve (creating if needed) the paneIndex for a given pane name.
+    // The price pane is always 0; everything else gets the next stacked
+    // pane via chart.addPane(), whose index we cache so all series of that
+    // family share one pane.
+    const paneIndexFor = (pane: string): number => {
+      if (pane === "price") return 0;
+      const existing = panes.get(pane);
+      if (existing != null) return existing;
+      // addPane() appends a new pane and returns its IPaneApi; paneIndex()
+      // gives us the numeric index to route addSeries calls to.
+      const paneApi = chart.addPane();
+      const idx = paneApi.paneIndex();
+      panes.set(pane, idx);
+      return idx;
+    };
+
     // Add / update the enabled series.
     for (const s of indicatorSeries) {
-      const color = INDICATOR_COLORS[s.key] ?? colors.accentCyan;
+      const color = INDICATOR_COLORS[indicatorColorKey(s.key)] ?? colors.accentCyan;
       let series = live.get(s.key);
+
       if (!series) {
-        series = chart.addSeries(LineSeries, {
-          color,
-          lineWidth: 2,
-          priceLineVisible: false,
-          lastValueVisible: s.pane !== "price",
-          // RSI/ATR live in their own pane via a dedicated price scale;
-          // price-pane indicators ride the main right scale.
-          priceScaleId: PANE_SCALE_ID[s.pane] ?? "right",
-          ...(s.pane === "oscillator"
-            ? { priceFormat: { type: "price" as const, precision: 0, minMove: 1 } }
-            : {}),
-        });
-        // Squeeze the oscillator/volatility panes into the lower band so
-        // they don't overlap the candles; pin RSI to a fixed 0–100 range.
+        const paneIndex = paneIndexFor(s.pane);
+        // macd_hist renders as a HistogramSeries (signed bars); every other
+        // component is a LineSeries. Both route to their real v5 pane (the
+        // third arg; 0 = price pane overlaid on candles, >0 = a stacked pane).
+        if (s.kind === "histogram") {
+          series = chart.addSeries(
+            HistogramSeries,
+            { color, priceLineVisible: false, lastValueVisible: false },
+            paneIndex,
+          );
+        } else {
+          series = chart.addSeries(
+            LineSeries,
+            {
+              color,
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              ...(s.pane === "oscillator"
+                ? { priceFormat: { type: "price" as const, precision: 0, minMove: 1 } }
+                : {}),
+            },
+            paneIndex,
+          );
+        }
+        // Pin the oscillator pane to a fixed 0–100 range so RSI/Stoch read
+        // against their conventional levels.
         if (s.pane === "oscillator") {
-          series.priceScale().applyOptions({
-            scaleMargins: { top: 0.78, bottom: 0.0 },
-            autoScale: false,
-          });
+          series.priceScale().applyOptions({ autoScale: false });
           series.applyOptions({
             autoscaleInfoProvider: () => ({
               priceRange: { minValue: 0, maxValue: 100 },
             }),
-          });
-        } else if (s.pane === "volatility") {
-          series.priceScale().applyOptions({
-            scaleMargins: { top: 0.85, bottom: 0.0 },
           });
         }
         live.set(s.key, series);
@@ -653,19 +710,42 @@ function LightweightChart({
         series.applyOptions({ color });
       }
 
-      series.setData(
-        bars
-          .map((b, i) => {
-            const v = s.values[i];
-            return v == null ? null : { time: toTime(b.t), value: v };
-          })
-          .filter((p): p is { time: UTCTimestamp; value: number } => p !== null),
-      );
+      if (s.kind === "histogram") {
+        // Color each histogram bar by sign: bullish above zero, bearish
+        // below, so MACD momentum reads at a glance.
+        (series as ISeriesApi<"Histogram">).setData(
+          bars
+            .map((b, i) => {
+              const v = s.values[i];
+              return v == null
+                ? null
+                : {
+                    time: toTime(b.t),
+                    value: v,
+                    color: v >= 0 ? `${userBullish}99` : `${userBearish}99`,
+                  };
+            })
+            .filter(
+              (p): p is { time: UTCTimestamp; value: number; color: string } =>
+                p !== null,
+            ),
+        );
+      } else {
+        (series as ISeriesApi<"Line">).setData(
+          bars
+            .map((b, i) => {
+              const v = s.values[i];
+              return v == null ? null : { time: toTime(b.t), value: v };
+            })
+            .filter((p): p is { time: UTCTimestamp; value: number } => p !== null),
+        );
+      }
     }
     // Depend on `bars` so a timeframe switch / bars refetch re-aligns the
     // overlay data; `indicatorSeries` covers toggle changes.
-  }, [indicatorSeries, bars]);
-  // ===================== end WS1 indicator overlays =====================
+    // userBullish/userBearish color the macd histogram bars.
+  }, [indicatorSeries, bars, userBullish, userBearish]);
+  // ===================== end WS1/WS2 indicator overlays =====================
 
   // Market-structure annotation overlay — toggle-aware.
   useEffect(() => {
@@ -824,6 +904,16 @@ function buildPriceLines(
   addLine(a.max_pain, colors.accentCyan, "MP");
   addLine(a.gamma_flip, colors.accentCyan, "GF");
 
+  // WS-B: auto support/resistance — support green (price floor), resistance
+  // red (price ceiling), matching the PW/CW color convention. Same dotted
+  // dimmed price-line style; gated behind the same annotations toggle.
+  for (const s of a.support_levels ?? []) {
+    addLine(s, colors.bullish, "S");
+  }
+  for (const r of a.resistance_levels ?? []) {
+    addLine(r, colors.bearish, "R");
+  }
+
   return lines;
 }
 
@@ -843,27 +933,38 @@ const INTERVAL_SECONDS: Partial<Record<ChartTimeframe, number>> = {
   "4h": 14400,
 };
 
-// WS1: per-indicator line colors. Chosen from the design palette so the
-// overlays read as distinct from the magenta POSITION line and the
-// candle bullish/bearish hues. Single source of truth for the hex lives
-// here, next to the chart that draws it.
+// WS1/WS2: per-indicator-FAMILY line colors. Chosen from the design palette
+// so the overlays read as distinct from the magenta POSITION line and the
+// candle bullish/bearish hues. Keyed by the indicator family (sma, ema, …),
+// NOT the period-specific key, so `sma:20` and `sma:50` share one hue. Single
+// source of truth for the hex lives here, next to the chart that draws it.
 const INDICATOR_COLORS: Record<string, string> = {
-  sma20: colors.accentAmber,
-  ema50: colors.accentCyan,
+  sma: colors.accentAmber,
+  ema: colors.accentCyan,
   vwap: colors.fgSecondary,
-  rsi14: colors.accentCyan,
-  atr14: colors.warning,
+  rsi: colors.accentCyan,
+  atr: colors.warning,
+  // Round-2 multi-component palettes — looked up by the FULL component key
+  // (indicatorColorKey leaves these intact: no period to strip).
+  bb_upper: colors.accentCyan,
+  bb_mid: colors.accentAmber,
+  bb_lower: colors.accentCyan,
+  macd_line: colors.accentCyan,
+  macd_signal: colors.accentAmber,
+  macd_hist: colors.fgTertiary,
+  stoch_k: colors.accentCyan,
+  stoch_d: colors.accentAmber,
 };
 
-// WS1: which price scale each pane binds to. "price" rides the main
-// right scale (overlaid on candles); the oscillator/volatility panes get
-// their own hidden scales so RSI's 0–100 range and ATR's absolute range
-// don't distort the price axis.
-const PANE_SCALE_ID: Record<string, string> = {
-  price: "right",
-  oscillator: "rsi",
-  volatility: "atr",
-};
+// WS2: collapse a series key to its color family. Backend keys arrive as
+// either the legacy `sma20` form or the new `sma:20` (name:period) form; both
+// reduce to the family token "sma". Component keys (macd_line, bb_upper,
+// stoch_k…) have no period and pass through unchanged. VWAP stays "vwap".
+function indicatorColorKey(key: string): string {
+  const colonIdx = key.indexOf(":");
+  if (colonIdx > 0) return key.slice(0, colonIdx);
+  return key.replace(/\d+$/, "") || key;
+}
 
 /** Compose a #RRGGBBAA from #RRGGBB + 0..1 opacity. Falls back to the
  *  base hex if input doesn't parse. */

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from sqlalchemy import DateTime, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import QueuePool
 from sqlalchemy.types import TypeDecorator
 
 from config import settings
@@ -45,11 +46,37 @@ if settings.database_url.startswith("sqlite:///"):
     db_path = Path(settings.database_url.replace("sqlite:///", "", 1))
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-engine = create_engine(
-    settings.database_url,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
-    future=True,
-)
+
+def _make_engine(url: str):
+    """Build the engine with backend-appropriate connection handling.
+
+    SQLite keeps its single-file `check_same_thread=False` shim (the
+    FastAPI request thread differs from the one that opened the
+    connection). Everything else (Postgres in deployment / CI) gets a
+    real `QueuePool`: a bounded pool with overflow headroom and
+    `pool_pre_ping` so a connection killed by the server (idle timeout,
+    failover) is detected and recycled instead of handed out dead. All
+    knobs are env-overridable via `settings` so a small box and a big
+    box can both be tuned without code changes.
+    """
+    if "sqlite" in url:
+        return create_engine(
+            url,
+            connect_args={"check_same_thread": False},
+            future=True,
+        )
+    return create_engine(
+        url,
+        poolclass=QueuePool,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_pre_ping=True,
+        pool_recycle=settings.db_pool_recycle_s,
+        future=True,
+    )
+
+
+engine = _make_engine(settings.database_url)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
@@ -123,6 +150,9 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("close_reason", "VARCHAR(16)"),
     # Copy trading: the lead trade a mirrored row was copied from.
     ("copied_from_trade_id", "INTEGER"),
+    # Time-in-force for working orders. 'gtc' (default) preserves legacy
+    # rest-indefinitely behavior; 'day' expires unfilled at the next session.
+    ("time_in_force", "VARCHAR(8) NOT NULL DEFAULT 'gtc'"),
 ]
 
 
@@ -172,13 +202,20 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # and the size multiplier applied before clamping to its cap.
     ("copy_follow", "BOOLEAN NOT NULL DEFAULT 0"),
     ("copy_multiplier", "FLOAT NOT NULL DEFAULT 1.0"),
+    # Per-follower bracket overrides (underlying price levels). NULL = inherit
+    # the lead trade's stop_loss / take_profit on a mirrored open.
+    ("copy_stop_loss", "FLOAT"),
+    ("copy_take_profit", "FLOAT"),
 ]
 
 # Copy trading added a lead pointer to users; per-tier DLL overrides added the
-# JSON column. Same idempotent additive pattern.
+# JSON column; the DLL-off toggle added a per-tier disable list. Same
+# idempotent additive pattern.
 _USER_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("copy_lead_combine_id", "INTEGER"),
     ("dll_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
+    # Per-tier DLL DISABLE flags (JSON list of tier keys). [] = DLL on.
+    ("dll_disabled_json", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 

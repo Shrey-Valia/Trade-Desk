@@ -50,6 +50,45 @@ log = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
+# --- last-known-good spot fallback (auto-liquidation safety) -----------------
+#
+# Auto-liquidation FORCE-CLOSES a book when the live balance breaches the MLL
+# floor / DLL budget. A single None spot (transient feed gap / rate-limit)
+# previously SKIPPED the whole combine — meaning a breach could go un-flattened
+# for one or more ticks, letting the loss overshoot the floor. To bound that
+# overshoot we keep the last successfully-fetched spot per symbol and reuse it
+# for a short TTL when the live fetch returns None.
+#
+# Keyed by symbol → (spot, observed_at). `observed_at` is the deterministic
+# `now` threaded through the monitor — NEVER datetime.now() — so age is
+# reproducible in tests and free of wall-clock surprises.
+_LAST_GOOD_SPOT: dict[str, tuple[float, datetime]] = {}
+
+# Max age a fallback spot may be and still be trusted for a liquidation price.
+_SPOT_FALLBACK_TTL_SECONDS = 60.0
+
+
+def _record_good_spot(symbol: str, spot: float, now: datetime) -> None:
+    """Remember a freshly-fetched spot as the last-known-good for `symbol`,
+    stamped with the deterministic monitor clock `now`."""
+    _LAST_GOOD_SPOT[symbol] = (float(spot), now)
+
+
+def _fallback_spot(symbol: str, now: datetime) -> tuple[float | None, float | None]:
+    """Return (spot, age_seconds) from the last-known-good store if it is fresh
+    (age ≤ TTL), else (None, age_or_None). Age is measured against the
+    deterministic `now` so it never depends on wall-clock."""
+    entry = _LAST_GOOD_SPOT.get(symbol)
+    if entry is None:
+        return None, None
+    spot, observed_at = entry
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    age = (now - observed_at).total_seconds()
+    if 0.0 <= age <= _SPOT_FALLBACK_TTL_SECONDS:
+        return spot, age
+    return None, age
+
 
 # --- default (production) injectables ---------------------------------------
 
@@ -81,6 +120,14 @@ def _t_to_close(now: datetime) -> float:
     close = datetime.combine(now_et.date(), time(16, 0), tzinfo=_ET)
     secs = max((close - now_et).total_seconds(), 60.0)
     return secs / SECONDS_PER_YEAR
+
+
+def _et_date(dt: datetime):
+    """ET calendar date of an instant — used to expire DAY working orders that
+    survive unfilled into a later trading session."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_ET).date()
 
 
 def _default_option_mark(trade: Trade, spot: float, now: datetime) -> float:
@@ -251,12 +298,31 @@ def run_order_monitor(
             ):
                 continue
             if trade.symbol not in spot_cache:
-                spot_cache[trade.symbol] = spot_for(trade.symbol)
+                fetched = spot_for(trade.symbol)
+                if fetched is not None:
+                    # Warm the last-known-good store so a later auto-liquidation
+                    # tick can fall back to this price across a brief feed gap.
+                    _record_good_spot(trade.symbol, fetched, now)
+                spot_cache[trade.symbol] = fetched
             spot = spot_cache[trade.symbol]
             if spot is None:
                 continue
             try:
                 if trade.status == "working":
+                    # DAY time-in-force: a working order that survived unfilled
+                    # into a later ET session is expired (the simulated analog of
+                    # an exchange cancelling DAY orders at the close).
+                    if (
+                        trade.time_in_force == "day"
+                        and trade.created_at is not None
+                        and _et_date(trade.created_at) < _et_date(now)
+                    ):
+                        trade.status = "cancelled"
+                        trade.close_reason = None
+                        trade.notes = (trade.notes or "") + " · DAY order expired (unfilled)"
+                        cancelled += 1
+                        session.commit()
+                        continue
                     outcome = _process_working(session, trade, spot, now, option_mark)
                     if outcome == "filled":
                         filled += 1
@@ -290,22 +356,85 @@ def run_order_monitor(
         session.close()
 
 
+def _liquidation_spot(
+    symbol: str, spot_for, now: datetime, spot_cache: dict[str, float | None]
+) -> float | None:
+    """Resolve the spot to PRICE a liquidation, preferring the live feed and
+    falling back to the last-known-good price across a brief feed gap.
+
+    Order of preference:
+      1. A live spot already cached this tick (the main loop or an earlier
+         position resolved it) — used as-is and recorded as last-known-good.
+      2. A fresh live fetch — recorded as last-known-good.
+      3. The last-known-good fallback IF it is fresh (age ≤ TTL) — logged with
+         `liquidation_spot_age_seconds` so a stale-but-used price is visible.
+
+    Returns None only when there is no live price AND no fresh fallback, in
+    which case the caller SKIPS the combine (no liquidation on partial info)."""
+    cached = spot_cache.get(symbol)
+    if cached is not None:
+        _record_good_spot(symbol, cached, now)
+        return cached
+
+    fetched = spot_for(symbol)
+    if fetched is not None:
+        _record_good_spot(symbol, fetched, now)
+        spot_cache[symbol] = fetched
+        return fetched
+
+    # Live feed is cold for this symbol — try the last-known-good fallback.
+    fallback, age = _fallback_spot(symbol, now)
+    if fallback is not None:
+        log.warning(
+            "order_monitor: liquidation using last-known-good spot for %s "
+            "(liquidation_spot_age_seconds=%.1f, spot=%.4f)",
+            symbol,
+            age if age is not None else -1.0,
+            fallback,
+        )
+        spot_cache[symbol] = fallback
+        return fallback
+
+    if age is not None:
+        # A fallback existed but was too stale to trust — log why we skip.
+        log.warning(
+            "order_monitor: liquidation fallback for %s is stale "
+            "(liquidation_spot_age_seconds=%.1f > %.1f) — skipping",
+            symbol,
+            age,
+            _SPOT_FALLBACK_TTL_SECONDS,
+        )
+    spot_cache[symbol] = None
+    return None
+
+
 def _auto_liquidate(
     session, now: datetime, spot_for, unrealized_for, spot_cache: dict[str, float | None]
 ) -> int:
-    """Force-close every open position on any combine that has breached its
-    risk floor THIS tick, then mark the combine `outcome = "failed"`.
+    """Worst-first force-close on any combine that has breached its risk floor
+    THIS tick: close the WORST-URPL positions one at a time, stopping the
+    instant the LIVE balance (realized-after-cuts + the surviving open book)
+    clears the floor — instead of always flattening everything.
 
-    Breach test, per combine with ≥1 open position:
-      live_balance = snap.balance + URPL  ≤  snap.mll   (MLL floor)
+    Breach test, per combine with ≥1 open position, against the combine's
+    realized balance + the fixed-intraday floor:
+      live_balance = realized + open_urpl  ≤  snap.mll   (MLL floor)
         OR
-      live_dll_used = snap.dll_used + open-loss  ≥  snap.dll_budget   (DLL exhausted)
+      live_dll_used = realized_day_loss + open_loss  ≥  snap.dll_budget  (DLL)
 
-    where URPL is the summed unrealized P&L of the combine's open positions and
-    open-loss is the loss-only portion of that URPL (gains don't count against
-    the DLL). snap.balance is the realized live balance (start + realized) and
-    snap.mll the fixed-intraday floor — both from the same combine engine the
-    rest of the app reads. Fully deterministic.
+    where open_loss is the loss-only portion of the OPEN book's URPL (gains
+    don't count against the DLL). When breached, positions are sorted WORST
+    (most negative) URPL first and closed in order. A close REALIZES its loss,
+    so after each cut we re-test against the moving realized base + the still-
+    OPEN positions. The worst-first ordering means the largest open drawdowns
+    leave the book first; we stop the instant the surviving book clears both
+    floors (e.g. a marginal DLL breach where a net-winning remainder survives),
+    keeping those positions open instead of flattening blindly.
+
+    `outcome = "failed"` is set ONLY when, after the pass, the realized balance
+    is still at/through the MLL floor (a permanent breach the cuts couldn't
+    undo). A DLL-only breach that the cut cleared leaves the combine ACTIVE
+    (a DLL never fails a combine — it day-locks, re-evaluated at settlement).
 
     Each force-close books realized P&L exactly like a bracket close
     (`unrealized − exit commission`) with close_reason "liquidation", then
@@ -353,58 +482,148 @@ def _auto_liquidate(
             marks: dict[int, tuple[float, float]] = {}  # trade.id -> (spot, unreal)
             usable = True
             for t in positions:
-                if t.symbol not in spot_cache:
-                    spot_cache[t.symbol] = spot_for(t.symbol)
-                spot = spot_cache[t.symbol]
+                spot = _liquidation_spot(t.symbol, spot_for, now, spot_cache)
                 if spot is None:
+                    # No live price AND no fresh fallback — can't price the book
+                    # this tick. Don't liquidate on partial info (overshoot is
+                    # bounded by the fallback when one exists; here it doesn't).
                     usable = False
                     break
                 unreal = unrealized_for(t, spot)
                 marks[t.id] = (spot, unreal)
                 urpl += unreal
             if not usable:
-                # Can't price the book this tick — don't liquidate on partial info.
                 continue
 
             snap = combine_snapshot(session, combine)
-            live_balance = snap.balance + urpl
-            open_loss = max(0.0, -urpl)
-            live_dll_used = snap.dll_used + open_loss
-
-            mll_breach = live_balance <= snap.mll
-            dll_breach = snap.dll_budget > 0 and live_dll_used >= snap.dll_budget
-            if not (mll_breach or dll_breach):
+            # DLL branch active unless the owner disabled it (Step 3 toggle).
+            dll_active = _combine_dll_enabled(session, combine)
+            if not _breaches_floor(snap, snap.balance, urpl, dll_active):
                 continue
 
+            # The breach reason at pass start (MLL takes precedence — it's the
+            # permanent floor). Tagged on every cut trade for a legible ledger.
+            mll_breach = (snap.balance + urpl) <= snap.mll
             reason_note = (
                 "MLL floor breached" if mll_breach else "daily loss limit exhausted"
             )
-            for t in positions:
-                spot, _unreal = marks[t.id]
+
+            # Sort WORST (most negative) URPL first — the largest open drawdowns
+            # leave the book first. Tie-break on trade id for a deterministic,
+            # stable order.
+            ordered = sorted(positions, key=lambda t: (marks[t.id][1], t.id))
+
+            # `realized_base` GROWS as each cut books its loss — the true live
+            # MLL test (realized + still-open) is invariant, so an MLL breach
+            # can't be traded out of: it flattens the book. The DLL test reduces
+            # the still-OPEN loss against the pass-start realized day-loss, so
+            # cutting the worst bleeder CAN bring open exposure back under the
+            # daily budget while a net-winning remainder survives.
+            realized_base = snap.balance
+            remaining_urpl = urpl
+            for t in ordered:
+                spot, unreal = marks[t.id]
                 _book_close(t, spot, now, unrealized_for, "liquidation")
-                t.notes = (t.notes or "") + f" · auto-liquidated ({reason_note})"
+                t.notes = (
+                    (t.notes or "")
+                    + f" · auto-liquidated worst-first ({reason_note})"
+                )
                 session.flush()
                 mirror_close(session, t)
                 liquidated += 1
+                realized_base += t.realized_pnl or 0.0
+                remaining_urpl -= unreal
+                if not _breaches_floor(snap, realized_base, remaining_urpl, dll_active):
+                    break
 
-            # Mark the combine FAILED (terminal). The combine engine also
-            # fails on a realized-only MLL breach; doing it here makes the
-            # auto-flatten and the fail atomic in the same tick.
-            if combine.outcome == "active":
+            from services.combine_state import record_event
+
+            # FAILED only if STILL breached after the worst-first pass — the cuts
+            # couldn't bring the book back inside the floor (a single
+            # catastrophic position, or every position underwater). If the cut
+            # CLEARED the breach (e.g. a DLL breach where a net-winning remainder
+            # survives), the combine stays ACTIVE and keeps those positions open.
+            still_breached = _breaches_floor(
+                snap, realized_base, remaining_urpl, dll_active
+            )
+            if still_breached and combine.outcome == "active":
+                survive_note = (
+                    "MLL floor breached"
+                    if (realized_base + remaining_urpl) <= snap.mll
+                    else "daily loss limit exhausted"
+                )
                 combine.outcome = "failed"
-                from services.combine_state import record_event
-
                 record_event(
                     session,
                     combine,
                     "failed",
-                    f"Auto-liquidated — {reason_note}.",
+                    f"Auto-liquidated — {survive_note}.",
+                )
+            elif not still_breached:
+                # The worst-first cut cleared the breach — log it so the
+                # liquidation is legible even though the combine survives.
+                record_event(
+                    session,
+                    combine,
+                    "liquidated",
+                    f"Worst-first liquidation — cut {liquidated} position"
+                    f"{'s' if liquidated != 1 else ''} to clear the "
+                    f"{'MLL floor' if mll_breach else 'daily loss limit'}.",
                 )
             session.commit()
         except Exception:  # noqa: BLE001 — isolate one combine from the rest
             session.rollback()
             log.exception("order_monitor: auto-liquidation for combine %s failed", combine_id)
     return liquidated
+
+
+def _breaches_floor(
+    snap, realized_base: float, open_urpl: float, dll_active: bool
+) -> bool:
+    """True when the combine breaches the MLL floor or (when the DLL is active)
+    exhausts the daily loss budget, given a REALIZED base + the still-OPEN
+    book's URPL.
+
+      live_balance  = realized_base   + open_urpl            vs  snap.mll
+      live_dll_used = snap.dll_used + max(0, -open_urpl)      vs  snap.dll_budget
+
+    MLL uses `realized_base`, which GROWS as the worst-first pass books each
+    cut — so realized_base + open_urpl is the true (invariant) live balance,
+    and an MLL breach can't be cleared by closing (the loss is locked in).
+
+    DLL uses the PASS-START realized day-loss (`snap.dll_used`) plus the
+    loss-only portion of the STILL-OPEN book — so cutting the worst open loser
+    reduces the open drawdown and can bring the DLL back under budget. The DLL
+    is the daily *open-risk* hard-stop; the already-realized day-loss is fixed.
+    Shared by the breach gate and the worst-first stop test so they can't
+    drift."""
+    if realized_base + open_urpl <= snap.mll:
+        return True
+    if dll_active and snap.dll_budget > 0:
+        # Only the OPEN book's loss should TRIGGER a DLL liquidation. If the
+        # already-REALIZED day-loss (snap.dll_used, fixed for the pass) alone
+        # meets the budget, the combine is day-LOCKED — the soft-gate blocks new
+        # opens, but force-closing the existing open book (which may be WINNERS,
+        # and whose closure can't reduce the realized day-loss) is wrong. So the
+        # DLL only fires while the realized portion is still under budget and the
+        # open loss pushes it over.
+        live_dll_used = snap.dll_used + max(0.0, -open_urpl)
+        if snap.dll_used < snap.dll_budget and live_dll_used >= snap.dll_budget:
+            return True
+    return False
+
+
+def _combine_dll_enabled(session, combine) -> bool:
+    """Whether the DLL branch is ACTIVE for this combine — i.e. the owner has
+    not switched the daily loss limit OFF (the DLL-off toggle, matching real
+    Topstep's 2024 drop of the DLL). Off → the auto-liquidation + soft-gate
+    skip the DLL test entirely (MLL still binds). Defaults ON."""
+    from models.user import User
+
+    owner = session.get(User, combine.user_id)
+    if owner is None:
+        return True
+    return owner.dll_enabled_for(combine.tier)
 
 
 def _process_working(session, trade: Trade, spot: float, now: datetime, option_mark) -> str | None:

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useTickerDetail } from "@/hooks/useTickerDetail";
-import { useCreateTrade } from "@/hooks/useTrades";
+import { useCreateTrade, useUploadScreenshot } from "@/hooks/useTrades";
 import { useSelectedTicker } from "@/stores/selectedTicker";
 import {
   STRATEGY_LABELS,
@@ -46,6 +46,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
   const selected = useSelectedTicker((s) => s.symbol);
   const { data: detail } = useTickerDetail(selected ?? null);
   const createTrade = useCreateTrade();
+  const uploadScreenshot = useUploadScreenshot();
 
   const [symbol, setSymbol] = useState(selected ?? "");
   const [strategy, setStrategy] = useState<string>("long_call");
@@ -64,6 +65,12 @@ export function TradeEntryModal({ open, onClose }: Props) {
   const [plannedExit, setPlannedExit] = useState("");
   const [riskAmount, setRiskAmount] = useState("");
 
+  // Screenshot staged at entry time. The trade must exist before it can
+  // carry a screenshot (the upload sets it on an existing row), so we hold
+  // the File here and POST it right after createTrade returns the new id.
+  const [screenshot, setScreenshot] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   // Hydrate defaults when the modal opens.
   useEffect(() => {
     if (!open) return;
@@ -81,7 +88,28 @@ export function TradeEntryModal({ open, onClose }: Props) {
     setThesis("");
     setPlannedExit("");
     setRiskAmount("");
+    setScreenshot(null);
   }, [open, selected, detail]);
+
+  const onPickScreenshot = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] ?? null;
+    if (!f) {
+      setScreenshot(null);
+      return;
+    }
+    // Mirror the server guard so the user gets instant feedback rather than
+    // a round-trip 422.
+    if (!["image/png", "image/jpeg", "image/jpg"].includes(f.type)) {
+      setFormError("Screenshot must be a PNG or JPEG image.");
+      return;
+    }
+    if (f.size > 5 * 1024 * 1024) {
+      setFormError("Screenshot must be 5 MB or smaller.");
+      return;
+    }
+    setFormError(null);
+    setScreenshot(f);
+  };
 
   const addTag = () => {
     const t = tagDraft.trim();
@@ -127,7 +155,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
       return;
     }
     try {
-      await createTrade.mutateAsync({
+      const created = await createTrade.mutateAsync({
         symbol: symbol.toUpperCase().trim(),
         strategy,
         legs,
@@ -142,6 +170,16 @@ export function TradeEntryModal({ open, onClose }: Props) {
         planned_exit: plannedExit.trim() || null,
         risk_amount: riskAmount ? Number(riskAmount) : null,
       });
+      // The trade now exists — attach the staged screenshot if there is one.
+      // A failed upload doesn't unwind the (already-saved) trade; surface it
+      // as a toast (via the hook's onError) and still close the modal.
+      if (screenshot && created?.id != null) {
+        try {
+          await uploadScreenshot.mutateAsync({ id: created.id, file: screenshot });
+        } catch {
+          /* hook's onError toasts; the trade itself was saved */
+        }
+      }
       onClose();
     } catch (err) {
       setFormError((err as Error).message);
@@ -398,6 +436,46 @@ export function TradeEntryModal({ open, onClose }: Props) {
               style={{ borderRadius: 0 }}
             />
           </Field>
+          <Field label="Screenshot (PNG / JPEG, ≤ 5 MB)" className="col-span-2">
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg"
+                onChange={onPickScreenshot}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="h-7 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2"
+                style={{ borderRadius: 0 }}
+              >
+                {screenshot ? "Change…" : "Attach image…"}
+              </button>
+              {screenshot && (
+                <span className="inline-flex items-center gap-1 text-tiny text-fg-secondary">
+                  <span className="truncate" style={{ maxWidth: 220 }}>
+                    {screenshot.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScreenshot(null);
+                      if (fileInputRef.current) fileInputRef.current.value = "";
+                    }}
+                    className="text-fg-tertiary hover:text-bearish leading-none px-1"
+                    aria-label="Remove screenshot"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+            </div>
+            <div className="text-tiny text-fg-tertiary mt-0.5">
+              Uploaded after the trade is saved.
+            </div>
+          </Field>
         </div>
 
         {formError && (
@@ -415,11 +493,15 @@ export function TradeEntryModal({ open, onClose }: Props) {
           </button>
           <button
             type="submit"
-            disabled={createTrade.isPending}
+            disabled={createTrade.isPending || uploadScreenshot.isPending}
             className="h-7 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 disabled:opacity-50"
             style={{ borderRadius: 0 }}
           >
-            {createTrade.isPending ? "Saving…" : "Save trade"}
+            {uploadScreenshot.isPending
+              ? "Uploading…"
+              : createTrade.isPending
+                ? "Saving…"
+                : "Save trade"}
           </button>
         </footer>
       </form>

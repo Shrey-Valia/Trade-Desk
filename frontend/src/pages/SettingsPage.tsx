@@ -390,13 +390,22 @@ const FALLBACK_RISK_TIERS: TierSpec[] = [
  * server-side.
  */
 function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
-  const { data: overrides = {} } = useDllOverrides();
+  const { data: config } = useDllOverrides();
+  const overrides = config?.overrides ?? {};
+  const disabled = config?.disabled ?? [];
   const update = useUpdateDllOverrides();
   const setOverride = (tierKey: TierKey, amount: number | null) => {
     const next: Record<string, number> = { ...overrides };
     if (amount == null) delete next[tierKey];
     else next[tierKey] = amount;
-    update.mutate(next);
+    update.mutate({ overrides: next });
+  };
+  const setDisabled = (tierKey: TierKey, off: boolean) => {
+    const set = new Set(disabled);
+    if (off) set.add(tierKey);
+    else set.delete(tierKey);
+    // Send the current overrides alongside so the server keeps them.
+    update.mutate({ overrides, disabled: Array.from(set) });
   };
   return (
     <div className="border-b border-hairline">
@@ -414,7 +423,8 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
           How much you can lose in one trading day before the DLL pill warns,
           then breaches. Once realized losses hit it, new opens are blocked
           until the 5pm-PT settlement. Range: 1-10% of the tier&rsquo;s
-          starting balance.
+          starting balance. Switch it OFF to trade with only the MLL floor —
+          matching Topstep, which dropped the DLL in 2024.
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-3 pb-3 pt-1">
@@ -423,6 +433,7 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
           const override = overrides[tierKey];
           const value = override ?? t.dll_amount;
           const isDefault = override == null;
+          const off = disabled.includes(tierKey);
           const min = Math.round(t.starting_balance * 0.01);
           const max = Math.round(t.starting_balance * 0.10);
           return (
@@ -431,13 +442,36 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
               className="flex flex-col gap-1 p-2 border border-hairline bg-tier-1"
               style={{ borderRadius: 0 }}
             >
-              <span
-                className="uppercase tracking-label-up text-fg-tertiary-2"
-                style={{ fontSize: 12 }}
+              <div className="flex items-center justify-between">
+                <span
+                  className="uppercase tracking-label-up text-fg-tertiary-2"
+                  style={{ fontSize: 12 }}
+                >
+                  {t.key} DLL
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDisabled(tierKey, !off)}
+                  aria-pressed={off}
+                  className={[
+                    "uppercase tracking-label-up rounded-btn px-1.5",
+                    off
+                      ? "border border-amber text-amber bg-tier-2"
+                      : "border border-tier-3 text-fg-tertiary-2 hover:text-fg-secondary",
+                  ].join(" ")}
+                  style={{ fontSize: 11, height: 18 }}
+                  title={
+                    off
+                      ? "DLL is OFF for this tier — only the MLL floor binds. Click to turn it back on."
+                      : "Switch the DLL OFF for this tier (only the MLL floor will bind)."
+                  }
+                >
+                  {off ? "off" : "on"}
+                </button>
+              </div>
+              <div
+                className={`flex items-center gap-1 ${off ? "opacity-40 pointer-events-none" : ""}`}
               >
-                {t.key} DLL
-              </span>
-              <div className="flex items-center gap-1">
                 <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
                   $
                 </span>
@@ -462,7 +496,11 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
                 )}
               </div>
               <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
-                {isDefault ? "default" : `default $${t.dll_amount.toLocaleString()}`}
+                {off
+                  ? "disabled — only the MLL binds"
+                  : isDefault
+                    ? "default"
+                    : `default $${t.dll_amount.toLocaleString()}`}
               </span>
             </div>
           );

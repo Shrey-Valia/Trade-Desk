@@ -41,6 +41,14 @@ class User(Base):
     dll_overrides_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="{}"
     )
+    # Per-tier DLL DISABLE flags as a JSON list of tier keys, e.g. ["50K"].
+    # When a tier is listed the Daily Loss Limit is switched OFF for that
+    # tier's combines — matching real Topstep, which dropped the DLL in 2024.
+    # With the DLL off the auto-liquidation + soft-gate skip the DLL branch
+    # entirely; the MLL floor still binds. Empty [] = DLL on everywhere.
+    dll_disabled_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
@@ -64,3 +72,20 @@ class User(Base):
     @dll_overrides.setter
     def dll_overrides(self, value: dict[str, float]) -> None:
         self.dll_overrides_json = json.dumps(value)
+
+    @property
+    def dll_disabled(self) -> list[str]:
+        """Tier keys with the Daily Loss Limit switched OFF."""
+        try:
+            raw = json.loads(self.dll_disabled_json or "[]")
+            return [str(t) for t in raw] if isinstance(raw, list) else []
+        except (ValueError, TypeError, AttributeError):
+            return []
+
+    @dll_disabled.setter
+    def dll_disabled(self, value: list[str]) -> None:
+        self.dll_disabled_json = json.dumps(list(dict.fromkeys(value)))
+
+    def dll_enabled_for(self, tier: str) -> bool:
+        """Whether the Daily Loss Limit is active for this tier (default on)."""
+        return tier not in self.dll_disabled

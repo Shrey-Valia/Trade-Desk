@@ -231,11 +231,24 @@ function TradeRow({
           if (target.closest("button, input")) return;
           onSelect();
         }}
+        onKeyDown={(e) => {
+          // Keyboard-operable to match role="button": Enter/Space select the
+          // row, with the same inner-control guard as onClick.
+          if (e.key !== "Enter" && e.key !== " ") return;
+          const target = e.target as HTMLElement;
+          if (target.closest("button, input")) return;
+          e.preventDefault();
+          onSelect();
+        }}
+        tabIndex={0}
         role="button"
         aria-pressed={active}
       >
         <Td className={`text-left ${active ? "border-l-2 border-amber pl-1.5" : ""} text-fg-primary`}>
-          {trade.symbol}
+          <span className="inline-flex items-center gap-1.5">
+            {trade.symbol}
+            {trade.screenshot_url && <ScreenshotThumb url={trade.screenshot_url} />}
+          </span>
         </Td>
         <Td className="text-left text-fg-primary">
           {STRATEGY_LABELS[trade.strategy] ?? trade.strategy}
@@ -252,10 +265,13 @@ function TradeRow({
           {trade.r_multiple == null ? "—" : formatRMultiple(trade.r_multiple)}
         </Td>
         <Td className="text-left">
-          <StatusChip status={trade.status} />
+          <StatusChip status={trade.status} closeReason={trade.close_reason} />
         </Td>
         <Td className="text-left">
-          <PaperChip isPaper={trade.is_paper} />
+          <div className="flex items-center gap-1.5">
+            <PaperChip isPaper={trade.is_paper} />
+            {isCopiedTrade(trade) && <CopyBadge />}
+          </div>
         </Td>
         <Td className="text-right">
           {!isClosedRow && (
@@ -463,11 +479,123 @@ function CloseForm({
   );
 }
 
-function StatusChip({ status }: { status: Trade["status"] }) {
+/** Small inline screenshot thumbnail. Clicking opens a full-size lightbox
+ *  overlay; the click is stopped so it never toggles the row selection. */
+function ScreenshotThumb({ url }: { url: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        className="inline-flex shrink-0 border border-hairline hover:border-amber"
+        style={{ borderRadius: 0, padding: 0, lineHeight: 0 }}
+        aria-label="View trade screenshot"
+        title="View screenshot"
+      >
+        <img
+          src={url}
+          alt="trade screenshot"
+          className="object-cover"
+          style={{ width: 18, height: 18, display: "block" }}
+        />
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Trade screenshot"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen(false);
+          }}
+        >
+          <img
+            src={url}
+            alt="trade screenshot"
+            className="max-w-[90vw] max-h-[85vh] border border-hairline-strong"
+            style={{ borderRadius: 0 }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+function StatusChip({
+  status,
+  closeReason,
+}: {
+  status: Trade["status"];
+  closeReason?: Trade["close_reason"];
+}) {
   if (status === "open") {
     return <span className="text-fg-primary">OPEN</span>;
   }
+  // Distinguish how a closed position was closed so cascaded copy closes
+  // and forced auto-liquidations are legible at a glance.
+  if (status === "closed" && closeReason === "liquidation") {
+    return (
+      <span
+        className="text-bearish uppercase tracking-label-up"
+        title="Auto-liquidated — closed by the risk engine on an MLL/DLL breach."
+      >
+        Liquidated
+      </span>
+    );
+  }
+  if (status === "closed" && closeReason === "copy") {
+    return (
+      <span
+        className="text-fg-tertiary"
+        title="Closed by the lead account's copy cascade."
+      >
+        CLOSED
+        <span className="text-cyan" style={{ fontSize: 10 }}>
+          {" "}
+          · copy
+        </span>
+      </span>
+    );
+  }
+  if (status === "cancelled") {
+    return <span className="text-fg-tertiary">CANCELLED</span>;
+  }
+  if (status === "working") {
+    return <span className="text-amber uppercase tracking-label-up">Working</span>;
+  }
   return <span className="text-fg-tertiary">CLOSED</span>;
+}
+
+/** True when this row is a copy-traded mirror of a lead account's trade.
+ *
+ * The journal trade schema does not expose `copied_from_trade_id`, but
+ * services/copy_trade tags every mirrored row with the "copy" tag (and a
+ * "copied from <lead>" note) — so the tag is the reliable, schema-exposed
+ * signal that a row is a follower copy. Closed copies additionally carry
+ * close_reason="copy". */
+function isCopiedTrade(trade: Trade): boolean {
+  return (
+    (trade.tags?.includes("copy") ?? false) || trade.close_reason === "copy"
+  );
+}
+
+/** Small badge marking a follower-copied mirror trade in the journal. */
+function CopyBadge() {
+  return (
+    <span
+      className="border-l-2 border-cyan pl-1.5 text-cyan uppercase tracking-label-up"
+      title="Copied from a lead account."
+      style={{ fontSize: 11 }}
+    >
+      Copied
+    </span>
+  );
 }
 
 function PaperChip({ isPaper }: { isPaper: boolean }) {

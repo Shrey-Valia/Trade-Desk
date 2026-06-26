@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { UIButton } from "@/components/ui/UIButton";
 import { VolRegimeStrip } from "@/components/stock/VolRegimeStrip";
@@ -6,8 +6,13 @@ import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerChart } from "@/hooks/useTickerChart";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useIndicators } from "@/stores/indicators";
+import { clampPeriod, useIndicatorPeriods } from "@/stores/indicatorPeriods";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
-import { INDICATOR_CATALOG } from "@/types/indicators";
+import {
+  INDICATOR_CATALOG,
+  MAX_INDICATOR_PERIOD,
+  MIN_INDICATOR_PERIOD,
+} from "@/types/indicators";
 
 // Seconds per candle interval — mirrors AnnotatedChart's private
 // INTERVAL_SECONDS (the synthetic-candle slot width). "1D" is absent:
@@ -119,38 +124,167 @@ function ToolbarSeparator() {
 }
 
 /**
- * Indicator toggle chips — one per entry in INDICATOR_CATALOG. Toggling
- * a chip flips the persisted indicators store; AnnotatedChart reads the
- * same store, fetches the enabled set, and attaches a LineSeries per
- * enabled indicator (SMA/EMA/VWAP on the price scale; RSI/ATR in their
- * own panes). Active chips use the amber ACTIVE/SELECTED token, matching
- * the timeframe buttons' active state.
+ * Indicator toggle chips — one per family in INDICATOR_CATALOG. Toggling a
+ * chip flips the persisted indicators store; AnnotatedChart reads the same
+ * store, builds `family:period` tokens, fetches the set, and attaches a
+ * LineSeries per enabled indicator (SMA/EMA/VWAP on the price pane; RSI/ATR
+ * in their own real panes). Active chips use the amber ACTIVE/SELECTED token.
+ *
+ * Parameterizable families (everything but VWAP) carry a tiny period badge
+ * that opens an inline numeric input — changing the window writes the
+ * persisted indicatorPeriods store, which re-keys the query and refetches
+ * just that series. The badge shows the live period so "SMA · 20" reads at a
+ * glance.
  */
 function IndicatorChips() {
   const enabled = useIndicators((s) => s.enabled);
   const toggle = useIndicators((s) => s.toggle);
+  const periodFor = useIndicatorPeriods((s) => s.periodFor);
+  // Subscribe to the periods map so the badge re-renders on a window change.
+  useIndicatorPeriods((s) => s.periods);
   return (
     <div className="flex" style={{ gap: 4 }} role="group" aria-label="Indicators">
       {INDICATOR_CATALOG.map((ind) => {
         const active = enabled.includes(ind.key);
+        const period = ind.parameterizable ? periodFor(ind.key) : null;
         return (
-          <UIButton
-            key={ind.key}
-            size="sm"
-            active={active}
-            aria-pressed={active}
-            onClick={() => toggle(ind.key)}
-            title={
-              active
-                ? `Hide ${ind.label}`
-                : `Show ${ind.label}${ind.pane !== "price" ? " (separate pane)" : ""}`
-            }
-            className="uppercase tracking-label-up"
-          >
-            <span style={{ fontSize: 11 }}>{ind.label}</span>
-          </UIButton>
+          <div key={ind.key} className="flex items-stretch" style={{ gap: 0 }}>
+            <UIButton
+              size="sm"
+              active={active}
+              aria-pressed={active}
+              onClick={() => toggle(ind.key)}
+              title={
+                active
+                  ? `Hide ${ind.label}`
+                  : `Show ${ind.label}${ind.pane !== "price" ? " (separate pane)" : ""}`
+              }
+              className="uppercase tracking-label-up"
+            >
+              <span style={{ fontSize: 11 }}>
+                {ind.label}
+                {period != null && (
+                  <span className="text-fg-tertiary-2"> {period}</span>
+                )}
+              </span>
+            </UIButton>
+            {period != null && (
+              <PeriodPopover indicatorKey={ind.key} label={ind.label} period={period} />
+            )}
+          </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Tiny period editor anchored to a parameterizable indicator chip. A "▾"
+ * trigger opens a popover with a clamped numeric input + a reset-to-default
+ * action. Writes flow straight to the persisted indicatorPeriods store; the
+ * chart re-keys its query on the next render and refetches just this series.
+ * Closes on Escape, Enter, or an outside click.
+ */
+function PeriodPopover({
+  indicatorKey,
+  label,
+  period,
+}: {
+  indicatorKey: string;
+  label: string;
+  period: number;
+}) {
+  const setPeriod = useIndicatorPeriods((s) => s.setPeriod);
+  const resetPeriod = useIndicatorPeriods((s) => s.resetPeriod);
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(String(period));
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Re-seed the draft when the popover opens or the stored period changes
+  // out from under it (e.g. reset), so the input always shows the truth.
+  useEffect(() => {
+    if (open) setDraft(String(period));
+  }, [open, period]);
+
+  // Close on outside click while open.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const commit = (raw: string) => {
+    const n = Number(raw);
+    if (Number.isFinite(n)) setPeriod(indicatorKey, clampPeriod(n));
+  };
+
+  return (
+    <div ref={wrapRef} className="relative flex">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label={`Edit ${label} period`}
+        aria-expanded={open}
+        title={`Edit ${label} period`}
+        className="px-1 border border-hairline border-l-0 text-fg-tertiary hover:text-amber hover:bg-tier-2 transition-colors duration-100"
+        style={{ fontSize: 9, borderRadius: 0 }}
+      >
+        ▾
+      </button>
+      {open && (
+        <div
+          className="absolute left-0 top-full mt-1 z-20 bg-tier-1 border border-hairline px-2 py-1.5 flex flex-col gap-1"
+          style={{ borderRadius: 0, minWidth: 124 }}
+          role="dialog"
+          aria-label={`${label} period`}
+        >
+          <span
+            className="text-tiny uppercase tracking-label-up text-fg-tertiary"
+            style={{ fontSize: 9 }}
+          >
+            {label} period
+          </span>
+          <div className="flex items-center" style={{ gap: 4 }}>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={MIN_INDICATOR_PERIOD}
+              max={MAX_INDICATOR_PERIOD}
+              value={draft}
+              autoFocus
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => commit(draft)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  commit(draft);
+                  setOpen(false);
+                } else if (e.key === "Escape") {
+                  setOpen(false);
+                }
+              }}
+              className="w-14 bg-tier-0 border border-hairline px-1 py-0.5 text-fg-primary tabular-nums focus:border-amber outline-none"
+              style={{ fontSize: 12, borderRadius: 0 }}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                resetPeriod(indicatorKey);
+                setOpen(false);
+              }}
+              title="Reset to default"
+              className="text-tiny uppercase tracking-label-up text-fg-tertiary hover:text-amber px-1 border border-hairline"
+              style={{ fontSize: 9, borderRadius: 0 }}
+            >
+              reset
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
