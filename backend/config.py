@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     db_max_overflow: int = 10
     db_pool_recycle_s: int = 1800
 
+    # Sentry error tracking. No-op when blank: main.py's lifespan skips
+    # init entirely so a dev box / CI never phones home. Set SENTRY_DSN in
+    # the deployment environment to turn it on.
+    sentry_dsn: str = ""
+    # Tags events so prod/staging/dev are separable in Sentry.
+    sentry_environment: str = "development"
+    # Fraction of transactions traced for performance monitoring (0 = off).
+    sentry_traces_sample_rate: float = 0.0
+
     # Simulated brokerage commission, $ per contract per side (entry and
     # exit each charge this × the position's contract count). The SINGLE
     # place to change the rate. Folded into cost basis / unrealized P&L in

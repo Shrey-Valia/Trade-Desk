@@ -41,6 +41,29 @@ logging.basicConfig(
 log = logging.getLogger("dashboard")
 
 
+def _init_sentry() -> None:
+    """Initialise Sentry error tracking — a clean no-op when unconfigured.
+
+    Skips entirely when `settings.sentry_dsn` is blank (the default), so a
+    dev box / CI never phones home. Also degrades gracefully if the SDK
+    isn't installed: logs and moves on rather than crashing startup. The
+    FastAPI integration is auto-enabled by sentry-sdk[fastapi] on init."""
+    if not settings.sentry_dsn:
+        log.info("sentry_dsn unset; error tracking disabled")
+        return
+    try:
+        import sentry_sdk
+    except ImportError:
+        log.warning("SENTRY_DSN set but sentry-sdk not installed; skipping")
+        return
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+    )
+    log.info("sentry initialised (env=%s)", settings.sentry_environment)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup is fast by design.
@@ -57,6 +80,10 @@ async def lifespan(app: FastAPI):
     so the frontend's existing loading states render correctly until
     the background warm completes.
     """
+    # Error tracking first so failures during the rest of startup are
+    # captured. No-op when SENTRY_DSN is unset (the default).
+    _init_sentry()
+
     init_db()
 
     # Demo seed for the Trade Desk journal — OFF by default. The app

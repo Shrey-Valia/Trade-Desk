@@ -27,6 +27,10 @@ dependencies = [
     "pyarrow>=17.0",  # parquet for OOS prediction stacking
     "bcrypt>=4.1",
     "stripe>=11.0",  # payments (opt-in; imported lazily — see services/payments.py)
+    # Error tracking (opt-in). Inert unless SENTRY_DSN is set — main.py's
+    # lifespan skips init entirely when the DSN is blank, so a dev box / CI
+    # never phones home. [fastapi] pulls the ASGI + Starlette integrations.
+    "sentry-sdk[fastapi]>=2.0",
 ]
 
 [project.optional-dependencies]
