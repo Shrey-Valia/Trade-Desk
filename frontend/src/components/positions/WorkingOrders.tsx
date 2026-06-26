@@ -58,6 +58,10 @@ function WorkingRow({
   const leg = order.legs[0];
   const side = leg?.side ?? "call";
   const action = leg?.action ?? "buy";
+  // Trigger resolution mirrors the chain overlay badge (useWorkingOrdersByStrike):
+  // a stop order's resting level is its stop_price; limit/stop_limit rest at
+  // limit_price. Falling back keeps the strip in step with the cell badge.
+  const trigger = order.limit_price ?? order.stop_price ?? null;
   return (
     <div className="flex items-center gap-2 tabular-nums" style={{ fontSize: 11 }}>
       <span
@@ -72,7 +76,7 @@ function WorkingRow({
         {action} {leg?.strike ?? ""} {side}
       </span>
       <span className="text-amber ml-auto" title="Waiting for the mark to reach this trigger">
-        waiting @ ${order.limit_price?.toFixed(2) ?? "—"}
+        waiting @ ${trigger?.toFixed(2) ?? "—"}
       </span>
       <button
         type="button"
