@@ -43,6 +43,22 @@ class Settings(BaseSettings):
     # Fraction of transactions traced for performance monitoring (0 = off).
     sentry_traces_sample_rate: float = 0.0
 
+    # CORS allowlist. Comma-separated origins in .env (CORS_ALLOW_ORIGINS);
+    # defaults to the Vite dev server so local dev keeps working with no
+    # config. NEVER "*" — credentialed (cookie) auth forbids the wildcard.
+    cors_allow_origins: tuple[str, ...] = (
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    )
+
+    # Global per-IP request throttle (every endpoint, not just auth). A
+    # coarse abuse / runaway-client guard layered on top of the
+    # auth-specific brute-force limiter. Generous so normal dashboard
+    # polling never trips it. attempts <= 0 disables it (e.g. behind an
+    # upstream limiter). /health is exempt so probes never 429.
+    global_rate_limit_attempts: int = 240
+    global_rate_limit_window_s: int = 60
+
     # Simulated brokerage commission, $ per contract per side (entry and
     # exit each charge this × the position's contract count). The SINGLE
     # place to change the rate. Folded into cost basis / unrealized P&L in

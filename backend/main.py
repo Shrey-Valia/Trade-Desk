@@ -7,11 +7,13 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config import settings
 from database import init_db
+from services.rate_limit import _client_ip, global_limiter
 from jobs.collect_options_chain import collect_options_chain
 from jobs.prewarm_hot_tickers import prewarm_hot_tickers
 from jobs.refresh_watchlist import refresh_watchlist
@@ -213,13 +215,38 @@ async def _market_data_degraded_handler(_request, exc: MarketDataDegraded):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    # Session-cookie auth. Origins must stay an explicit list (never
-    # "*") once credentials are allowed.
+    # Allowlist from settings (env CORS_ALLOW_ORIGINS), defaulting to the
+    # Vite dev server. Session-cookie auth means origins must stay an
+    # explicit list (never "*") once credentials are allowed.
+    allow_origins=list(settings.cors_allow_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Paths exempt from the global throttle: health/readiness probes must never
+# be 429'd (a load balancer would mark the box unhealthy and pull it).
+_RATE_LIMIT_EXEMPT_PATHS = frozenset({"/health"})
+
+
+@app.middleware("http")
+async def _global_rate_limit(request: Request, call_next):
+    """Coarse per-IP throttle across EVERY endpoint (not just auth).
+
+    A runaway client or basic abuse gets a 429 with Retry-After before it
+    touches a route. No-op when the limiter is disabled
+    (global_rate_limit_attempts <= 0) or for exempt probe paths. The
+    auth-specific brute-force limiter still applies on top for /api/auth."""
+    if global_limiter.enabled and request.url.path not in _RATE_LIMIT_EXEMPT_PATHS:
+        allowed, retry_after = global_limiter.hit(f"global:{_client_ip(request)}")
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "rate limit exceeded — slow down"},
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+    return await call_next(request)
 
 app.include_router(watchlist_router.router)
 app.include_router(ticker_router.router)
@@ -239,5 +266,25 @@ app.include_router(user_browse_router.router_ticker)
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> JSONResponse:
+    """Liveness + DB readiness. Probes a `SELECT 1` so a healthy 200 means
+    the app can actually reach its database, not merely that the process is
+    up. DB-down → 503 with status "degraded" so a load balancer pulls the
+    box. Exempt from the global rate limit (see _RATE_LIMIT_EXEMPT_PATHS)."""
+    from sqlalchemy import text
+
+    from database import engine
+
+    db_ok = True
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:  # noqa: BLE001
+        db_ok = False
+        log.exception("/health DB check failed")
+
+    body = {
+        "status": "ok" if db_ok else "degraded",
+        "database": "up" if db_ok else "down",
+    }
+    return JSONResponse(status_code=200 if db_ok else 503, content=body)

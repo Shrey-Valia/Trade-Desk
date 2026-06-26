@@ -159,3 +159,17 @@ def _build_auth_limiter() -> RateLimiter:
 
 
 auth_limiter = _build_auth_limiter()
+
+
+# Process-global per-IP limiter applied to EVERY request by the middleware
+# in main.py (not just auth). Same sliding-window primitive as the auth
+# limiter, just a coarser budget. Reset between tests like auth_limiter.
+def _build_global_limiter() -> RateLimiter:
+    from config import settings
+
+    return RateLimiter(
+        settings.global_rate_limit_attempts, settings.global_rate_limit_window_s
+    )
+
+
+global_limiter = _build_global_limiter()
