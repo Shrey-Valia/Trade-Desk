@@ -37,6 +37,13 @@ dev = [
     "ruff>=0.7",
     "mypy>=1.13",
 ]
+# Postgres driver. Not in core deps because SQLite is the default backend
+# and a dev box needs nothing extra; install the `pg` extra (and set
+# DATABASE_URL=postgresql+psycopg://…) to run against Postgres. psycopg v3
+# is the modern, binary-wheel driver SQLAlchemy 2.x recommends.
+pg = [
+    "psycopg[binary]>=3.2",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

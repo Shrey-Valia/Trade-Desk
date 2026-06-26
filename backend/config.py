@@ -23,6 +23,17 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{PROJECT_ROOT / 'data' / 'dashboard.db'}"
     log_level: str = "INFO"
 
+    # ---------------------------------------------------------------------
+    # WS5 — Platform hardening: Postgres connection pool (ignored on SQLite,
+    # which keeps its single-file check_same_thread shim). pool_size is the
+    # steady-state checked-out ceiling; max_overflow is burst headroom above
+    # it; pool_recycle proactively retires a connection older than N seconds
+    # so we never hand out one the server has already timed out. Additive
+    # with safe defaults — behaviour is unchanged until set in .env.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_recycle_s: int = 1800
+
     # Simulated brokerage commission, $ per contract per side (entry and
     # exit each charge this × the position's contract count). The SINGLE
     # place to change the rate. Folded into cost basis / unrealized P&L in
