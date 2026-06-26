@@ -3,9 +3,14 @@
 Follows the test_calculations.py pattern: small series with values
 worked out by hand (or against the canonical Wilder formulas) so a
 regression in the math is obvious.
+
+The endpoint-level tests at the bottom exercise the /indicators period
+syntax (WS2): a tuned period must change the returned series AND land in a
+distinct cache key, so `sma:20` and `sma:50` can never alias.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -335,3 +340,117 @@ def test_stochastic_insufficient_data_all_none():
     bars = [_Bar(high=2, low=1, close=1.5)]
     s = stochastic(bars, k=14, d=3)
     assert s == {"k": [None], "d": [None]}
+# ====================================================================
+# WS2 — /indicators endpoint: configurable periods
+#
+# These hit the real router via the TestClient, monkeypatching get_bars
+# to a deterministic series so the assertions are exact. They verify that
+# (a) a custom period changes the returned series length/values and
+# (b) the period lands in the cache key (distinct periods => distinct
+# cache entries, never aliased).
+# ====================================================================
+
+
+@dataclass
+class _TBar:
+    """Bar shaped like the Alpaca SDK bar the endpoint reads:
+    .timestamp / .open / .high / .low / .close / .volume."""
+
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 1000.0
+
+
+def _ramp_bars(n: int) -> list[_TBar]:
+    """`n` bars whose close ramps 100, 101, 102, … — a strictly monotonic
+    series so SMA warm-up length and values differ clearly by period."""
+    base = datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc)
+    out: list[_TBar] = []
+    for i in range(n):
+        c = 100.0 + i
+        out.append(
+            _TBar(
+                timestamp=base + timedelta(minutes=5 * i),
+                open=c,
+                high=c + 0.5,
+                low=c - 0.5,
+                close=c,
+            )
+        )
+    return out
+
+
+def _series_by_key(payload: dict) -> dict[str, list]:
+    return {s["key"]: s["values"] for s in payload["series"]}
+
+
+def test_indicators_custom_period_changes_series(api_client, monkeypatch):
+    """A larger SMA window produces a longer all-None warm-up prefix and a
+    LOWER trailing value (mean of a ramp lags further back) — so the period
+    demonstrably flows into the math, not just the label."""
+    import routers.ticker as ticker
+
+    monkeypatch.setattr(ticker, "get_bars", lambda symbol, timeframe: _ramp_bars(40))
+
+    r5 = api_client.get("/api/ticker/SMACUST5/indicators?timeframe=5m&set=sma:5")
+    r20 = api_client.get("/api/ticker/SMACUST20/indicators?timeframe=5m&set=sma:20")
+    assert r5.status_code == 200 and r20.status_code == 200
+
+    s5 = _series_by_key(r5.json())["sma:5"]
+    s20 = _series_by_key(r20.json())["sma:20"]
+
+    # Same number of points (1:1 with bars) but different warm-up + values.
+    assert len(s5) == len(s20) == 40
+    # Warm-up: first n-1 are None.
+    assert s5[:4] == [None, None, None, None] and s5[4] is not None
+    assert s20[:19] == [None] * 19 and s20[19] is not None
+    # On a +1/bar ramp the trailing SMA = last_close - (n-1)/2, so the wider
+    # window trails further below the last price → strictly smaller value.
+    assert s20[-1] == pytest.approx(s5[-1] - (20 - 5) / 2)
+    assert s20[-1] < s5[-1]
+
+
+def test_indicators_period_in_cache_key(api_client, monkeypatch):
+    """The period is part of the cache key: two requests that differ ONLY in
+    the SMA window must create two distinct cache entries (no aliasing). We
+    also confirm the legacy `sma20` spelling canonicalizes to the same
+    `sma:20` cache entry."""
+    import routers.ticker as ticker
+    from services.cache import cache
+
+    monkeypatch.setattr(ticker, "get_bars", lambda symbol, timeframe: _ramp_bars(40))
+
+    sym = "CACHEKEY"
+    api_client.get(f"/api/ticker/{sym}/indicators?timeframe=5m&set=sma:20")
+    api_client.get(f"/api/ticker/{sym}/indicators?timeframe=5m&set=sma:50")
+
+    keys = set(cache._store.keys())
+    assert f"indicators:{sym}:5m:sma:20" in keys
+    assert f"indicators:{sym}:5m:sma:50" in keys
+
+    # Legacy form canonicalizes onto the SAME entry as sma:20 (cache hit, no
+    # new key spelled "sma20").
+    before = set(cache._store.keys())
+    api_client.get(f"/api/ticker/{sym}/indicators?timeframe=5m&set=sma20")
+    after = set(cache._store.keys())
+    assert after == before
+    assert f"indicators:{sym}:5m:sma20" not in after
+
+
+def test_indicators_default_period_for_bare_family(api_client, monkeypatch):
+    """A bare family name resolves to its catalog default period (rsi → 14)
+    and is returned under the canonical `rsi:14` key + a fixed 0–100 pane."""
+    import routers.ticker as ticker
+
+    monkeypatch.setattr(ticker, "get_bars", lambda symbol, timeframe: _ramp_bars(40))
+
+    r = api_client.get("/api/ticker/BAREFAM/indicators?timeframe=5m&set=rsi")
+    assert r.status_code == 200
+    series = r.json()["series"]
+    assert len(series) == 1
+    assert series[0]["key"] == "rsi:14"
+    assert series[0]["label"] == "RSI 14"
+    assert series[0]["pane"] == "oscillator"

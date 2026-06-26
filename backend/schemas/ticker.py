@@ -84,7 +84,7 @@ class IndicatorSeries(BaseModel):
       - "histogram": a HistogramSeries (MACD histogram bars)
     """
 
-    key: str          # e.g. "sma20", "ema50", "vwap", "rsi14", "atr14"
+    key: str          # canonical "name:period" (e.g. "sma:20","rsi:14") or "vwap"
     label: str        # human label, e.g. "SMA 20"
     pane: str         # "price" | "oscillator" | "volatility" | "macd"
     kind: Literal["line", "histogram"] = "line"

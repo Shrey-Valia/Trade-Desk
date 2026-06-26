@@ -184,9 +184,11 @@ export const fetchTickerMetrics = (symbol: string): Promise<MetricsResponse> =>
 
 /**
  * Technical-indicator overlays. `set` is a comma-separated list of
- * indicator keys (e.g. "sma20,ema50,vwap,rsi14,atr14"); the backend
- * returns per-bar arrays aligned to the same timestamps as /chart and
- * /bars. Zod-validated like the other ticker fetchers.
+ * `family:period` tokens (e.g. "sma:20,ema:50,vwap,rsi:14,atr:14"); the
+ * backend returns per-bar arrays aligned to the same timestamps as /chart
+ * and /bars. The period is part of the cache key on both sides, so changing
+ * a window refetches just that series. Zod-validated like the other ticker
+ * fetchers.
  */
 export const fetchTickerIndicators = (
   symbol: string,
