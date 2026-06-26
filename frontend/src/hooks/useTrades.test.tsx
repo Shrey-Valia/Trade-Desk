@@ -23,6 +23,7 @@ import {
   createTrade,
   deleteTrade,
   fetchTrades,
+  type TradeListFilters,
 } from "@/lib/api";
 import {
   useCancelOrder,
@@ -56,8 +57,8 @@ describe("useTrades", () => {
   it("keys the cache on the filters so different filters fetch separately", async () => {
     const { client, wrapper } = makeQueryWrapper();
     const { result, rerender } = renderHook(
-      ({ f }) => useTrades(f),
-      { wrapper, initialProps: { f: { status: "open" as const } } },
+      ({ f }: { f: TradeListFilters }) => useTrades(f),
+      { wrapper, initialProps: { f: { status: "open" } } },
     );
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(fetchTradesMock).toHaveBeenCalledWith({ status: "open" });
