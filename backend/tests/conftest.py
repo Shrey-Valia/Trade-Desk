@@ -32,13 +32,17 @@ def _fast_bcrypt():
 
 @pytest.fixture(autouse=True)
 def _reset_auth_rate_limiter():
-    """The auth limiter is process-global; clear it between tests so hits
-    from earlier cases (all sharing the TestClient host) don't bleed over."""
-    from services.rate_limit import auth_limiter
+    """The rate limiters are process-global; clear them between tests so
+    hits from earlier cases (all sharing the TestClient host) don't bleed
+    over. Covers both the auth brute-force limiter and the global per-IP
+    throttle applied by the main.py middleware."""
+    from services.rate_limit import auth_limiter, global_limiter
 
     auth_limiter.reset()
+    global_limiter.reset()
     yield
     auth_limiter.reset()
+    global_limiter.reset()
 
 
 @pytest.fixture
