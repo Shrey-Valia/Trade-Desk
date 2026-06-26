@@ -182,7 +182,24 @@ def test_mirror_noop_when_not_lead(auth_client, session_factory):
 # --- mirror closes (cascade) ----------------------------------------------
 
 
-def test_lead_close_cascades_to_followers_scaled(auth_client, session_factory):
+def test_lead_close_cascades_to_followers_scaled(
+    auth_client, session_factory, monkeypatch
+):
+    # The lead's realized is RECOMPUTED server-side (WS1 integrity fix) — the
+    # client's realized_pnl is ignored — so pin the recompute spot via a mocked
+    # quote and assert the follower gets the LEAD'S RECOMPUTED P&L × the
+    # contract ratio (1/2), whatever that recompute is.
+    import routers.journal as journal_router
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Q:
+        price: float
+
+    monkeypatch.setattr(
+        journal_router, "get_quotes", lambda syms: {s: _Q(price=505.0) for s in syms}
+    )
+
     lead = make_combine(auth_client, "50K", name="Lead")
     f2 = make_combine(auth_client, "50K", name="Half")
     _set_config(auth_client, lead["id"], [(f2["id"], 0.5)])
@@ -193,12 +210,15 @@ def test_lead_close_cascades_to_followers_scaled(auth_client, session_factory):
         mirror_open(s, lead_c, trade)
         lead_id = trade.id
 
-    # Close the lead through the real journal endpoint → cascade.
+    # Close the lead through the real journal endpoint → cascade. realized_pnl
+    # in the body is ignored; the server recomputes.
     res = auth_client.patch(
         f"/api/journal/trades/{lead_id}",
         json={"status": "closed", "realized_pnl": 400, "exit_underlying_price": 505.0},
     )
     assert res.status_code == 200, res.text
+    lead_realized = res.json()["realized_pnl"]
+    assert lead_realized != 400  # the client's number was ignored
 
     with session_factory() as s:
         copy = s.execute(
@@ -206,7 +226,8 @@ def test_lead_close_cascades_to_followers_scaled(auth_client, session_factory):
         ).scalars().one()
         assert copy.status == "closed"
         assert copy.close_reason == "copy"
-        assert copy.realized_pnl == 200.0  # 400 × (1/2) contract ratio
+        # Follower holds 1 of the lead's 2 contracts → half the recomputed P&L.
+        assert copy.realized_pnl == round(lead_realized * 0.5, 2)
 
 
 def test_lead_cancel_cascades_to_followers(auth_client, session_factory):

@@ -103,13 +103,19 @@ class TradeIn(BaseModel):
 
 class TradeUpdate(BaseModel):
     """PATCH payload — every field optional. Pass `status='closed'` plus
-    exit_date / exit_underlying_price / realized_pnl to close a trade.
-    Notes / mistake tags / review can be edited independently after
-    close."""
+    exit_date / exit_underlying_price to close a trade. Notes / mistake tags
+    / review can be edited independently after close.
+
+    DEPRECATED — `realized_pnl`: accepted for back-compat but IGNORED on a
+    close. The server now RECOMPUTES realized P&L from the live mark
+    (server-side integrity fix — the client can no longer book an arbitrary
+    number). The field is retained so older clients still validate; its value
+    is discarded."""
 
     status: TradeStatus | None = None
     exit_date: datetime | None = None
     exit_underlying_price: float | None = Field(default=None, gt=0)
+    # DEPRECATED / IGNORED on close — see the class docstring. Server recomputes.
     realized_pnl: float | None = None
     notes: str | None = None
     # Self-applied intent tags (planned / good setup / …). Distinct from
@@ -119,23 +125,30 @@ class TradeUpdate(BaseModel):
     review_note: str | None = None
 
 
+class ScaleOutRequest(BaseModel):
+    """POST payload for a PARTIAL close (scale-out) of an OPEN position.
+    Closes `qty` contracts (strictly fewer than the position holds); the
+    position stays open with the remainder. `exit_underlying_price` records
+    the spot at the scale-out for the journal.
+
+    DEPRECATED — `realized_pnl`: accepted for back-compat but IGNORED. The
+    server RECOMPUTES the slice's realized P&L from the live mark
+    (`unrealized × closed_qty / held` − a proportional exit commission), the
+    same integrity fix applied to a full close. Retained so older clients
+    still validate; its value is discarded."""
+
+    qty: int = Field(gt=0)
+    # DEPRECATED / IGNORED — see the class docstring. Server recomputes the slice.
+    realized_pnl: float | None = None
+    exit_underlying_price: float | None = Field(default=None, gt=0)
+
+
 class BracketsUpdate(BaseModel):
     """PUT payload for SL/TP brackets — underlying price levels. Send BOTH
     each time (PUT semantics): a null/omitted side CLEARS that bracket."""
 
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
-
-
-class ScaleOutRequest(BaseModel):
-    """POST payload for a PARTIAL close (scale-out) of an OPEN position.
-    Closes `qty` contracts (strictly fewer than the position holds), booking
-    `realized_pnl` for that slice; the position stays open with the remainder.
-    `exit_underlying_price` records the spot at the scale-out for the journal."""
-
-    qty: int = Field(gt=0)
-    realized_pnl: float
-    exit_underlying_price: float | None = Field(default=None, gt=0)
 
 
 class TradeOut(BaseModel):
@@ -254,6 +267,7 @@ __all__ = [
     "EXPECTED_LEG_COUNT",
     "MISTAKE_TAG_VOCABULARY",
     "STRATEGY_TYPES",
+    "ScaleOutRequest",
     "TradeAnalyticsOut",
     "TradeIn",
     "TradeLeg",
