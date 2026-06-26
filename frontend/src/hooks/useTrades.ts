@@ -7,6 +7,7 @@ import {
   fetchTrades,
   setBrackets,
   updateTrade,
+  uploadTradeScreenshot,
   type TradeListFilters,
 } from "@/lib/api";
 import { toast } from "@/stores/toast";
@@ -54,6 +55,18 @@ export function useDeleteTrade() {
     mutationFn: (id: number) => deleteTrade(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: TRADES_KEY }),
     onError: (e) => toast.error((e as Error)?.message || "Could not delete trade"),
+  });
+}
+
+/** Upload a screenshot for an existing trade (multipart). Invalidates the
+ *  trade list so the new thumbnail appears. */
+export function useUploadScreenshot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { id: number; file: File }) =>
+      uploadTradeScreenshot(args.id, args.file),
+    onSuccess: () => qc.invalidateQueries({ queryKey: TRADES_KEY }),
+    onError: (e) => toast.error((e as Error)?.message || "Could not upload screenshot"),
   });
 }
 

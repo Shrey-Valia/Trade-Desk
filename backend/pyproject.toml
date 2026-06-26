@@ -31,6 +31,7 @@ dependencies = [
     # lifespan skips init entirely when the DSN is blank, so a dev box / CI
     # never phones home. [fastapi] pulls the ASGI + Starlette integrations.
     "sentry-sdk[fastapi]>=2.0",
+    "python-multipart>=0.0.9",  # WS4: journal screenshot multipart uploads (UploadFile)
 ]
 
 [project.optional-dependencies]

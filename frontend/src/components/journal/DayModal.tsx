@@ -192,6 +192,7 @@ function TradeDetail({ trade }: { trade: Trade }) {
         <SecHead>Note</SecHead>
         <NoteEditor trade={trade} />
         <TagEditor trade={trade} />
+        {trade.screenshot_url && <ScreenshotThumb url={trade.screenshot_url} />}
       </section>
 
       {/* intratrade — honest summary, not a fabricated path */}
@@ -418,6 +419,48 @@ function NetMoveLine({ pnl }: { pnl: number }) {
         strokeWidth="1.5"
       />
     </svg>
+  );
+}
+
+/** Trade screenshot thumbnail for the day-detail. Click opens a full-size
+ *  lightbox overlay. */
+function ScreenshotThumb({ url }: { url: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="block border border-hairline hover:border-amber"
+        style={{ borderRadius: 0, padding: 0, lineHeight: 0 }}
+        aria-label="View trade screenshot"
+        title="View screenshot"
+      >
+        <img
+          src={url}
+          alt="trade screenshot"
+          className="object-cover"
+          style={{ width: 96, height: 60, display: "block" }}
+        />
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Trade screenshot"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6"
+          onClick={() => setOpen(false)}
+        >
+          <img
+            src={url}
+            alt="trade screenshot"
+            className="max-w-[90vw] max-h-[85vh] border border-hairline-strong"
+            style={{ borderRadius: 0 }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
