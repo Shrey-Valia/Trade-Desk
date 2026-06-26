@@ -267,6 +267,36 @@ export const createTrade = (input: TradeInput): Promise<Trade> =>
     body: JSON.stringify(input),
   });
 
+/**
+ * Attach a screenshot to an existing trade (multipart). The backend
+ * validates size (≤5MB) + format (PNG/JPEG), stores the file, and returns
+ * the refreshed trade with `screenshot_url` set. We do NOT set a
+ * Content-Type header — the browser sets the multipart boundary itself.
+ */
+export const uploadTradeScreenshot = async (
+  id: number,
+  file: File,
+): Promise<Trade> => {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/api/journal/trades/${id}/screenshot`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = `Upload failed: ${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* non-JSON body */
+    }
+    throw new Error(detail);
+  }
+  return TradeOutSchema.parse(await res.json());
+};
+
 export const fetchAccountState = (): Promise<AccountState> =>
   request("/api/account/state", AccountStateSchema);
 

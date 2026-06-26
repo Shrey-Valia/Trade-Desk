@@ -27,6 +27,7 @@ dependencies = [
     "pyarrow>=17.0",  # parquet for OOS prediction stacking
     "bcrypt>=4.1",
     "stripe>=11.0",  # payments (opt-in; imported lazily — see services/payments.py)
+    "python-multipart>=0.0.9",  # WS4: journal screenshot multipart uploads (UploadFile)
 ]
 
 [project.optional-dependencies]

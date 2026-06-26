@@ -235,7 +235,10 @@ function TradeRow({
         aria-pressed={active}
       >
         <Td className={`text-left ${active ? "border-l-2 border-amber pl-1.5" : ""} text-fg-primary`}>
-          {trade.symbol}
+          <span className="inline-flex items-center gap-1.5">
+            {trade.symbol}
+            {trade.screenshot_url && <ScreenshotThumb url={trade.screenshot_url} />}
+          </span>
         </Td>
         <Td className="text-left text-fg-primary">
           {STRATEGY_LABELS[trade.strategy] ?? trade.strategy}
@@ -460,6 +463,54 @@ function CloseForm({
         </div>
       </td>
     </tr>
+  );
+}
+
+/** Small inline screenshot thumbnail. Clicking opens a full-size lightbox
+ *  overlay; the click is stopped so it never toggles the row selection. */
+function ScreenshotThumb({ url }: { url: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        className="inline-flex shrink-0 border border-hairline hover:border-amber"
+        style={{ borderRadius: 0, padding: 0, lineHeight: 0 }}
+        aria-label="View trade screenshot"
+        title="View screenshot"
+      >
+        <img
+          src={url}
+          alt="trade screenshot"
+          className="object-cover"
+          style={{ width: 18, height: 18, display: "block" }}
+        />
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Trade screenshot"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen(false);
+          }}
+        >
+          <img
+            src={url}
+            alt="trade screenshot"
+            className="max-w-[90vw] max-h-[85vh] border border-hairline-strong"
+            style={{ borderRadius: 0 }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </>
   );
 }
 
