@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -318,7 +318,12 @@ def _build_single(
 
 @router.get("/{symbol}/indicators", response_model=IndicatorsResponse)
 def get_ticker_indicators(
-    symbol: str, timeframe: str = "5m", set: str = _DEFAULT_INDICATOR_SET
+    symbol: str,
+    timeframe: str = "5m",
+    # Wire name stays `set` (the frontend + existing tests send `?set=…`),
+    # but the Python param is renamed so it doesn't shadow the `set` builtin
+    # used inside the function.
+    indicator_set: str = Query(_DEFAULT_INDICATOR_SET, alias="set"),
 ) -> IndicatorsResponse:
     """Per-bar technical-indicator arrays aligned to the SAME bars the
     /chart and /bars endpoints return.
@@ -339,7 +344,7 @@ def get_ticker_indicators(
     # `sma:50` never collide.
     parsed: list[tuple[str, str, int | None]] = []  # (canonical_key, family, period)
     seen: set[str] = set()
-    for raw in set.split(","):
+    for raw in indicator_set.split(","):
         token = _parse_token(raw)
         if token is None:
             continue
