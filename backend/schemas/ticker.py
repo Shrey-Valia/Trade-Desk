@@ -72,7 +72,7 @@ class IndicatorSeries(BaseModel):
       - "volatility": its own absolute-value pane (ATR)
     """
 
-    key: str          # e.g. "sma20", "ema50", "vwap", "rsi14", "atr14"
+    key: str          # canonical "name:period" (e.g. "sma:20","rsi:14") or "vwap"
     label: str        # human label, e.g. "SMA 20"
     pane: str         # "price" | "oscillator" | "volatility"
     values: list[float | None]

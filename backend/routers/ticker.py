@@ -218,44 +218,102 @@ def get_ticker_bars(symbol: str, timeframe: str = "5m") -> ChartResponse:
 
 # -- Phase: technical indicator overlays ------------------------------------
 
-# Supported indicator keys. Each maps to a (label, pane, builder) where
-# builder(closes, bars) -> list[float | None] aligned to the bars. Window
-# sizes are encoded in the key (sma20 -> 20) so the toggle set is the only
-# query param the frontend sends.
-_INDICATOR_SPECS: dict[str, tuple[str, str]] = {
-    "sma20": ("SMA 20", "price"),
-    "sma50": ("SMA 50", "price"),
-    "ema20": ("EMA 20", "price"),
-    "ema50": ("EMA 50", "price"),
-    "vwap": ("VWAP", "price"),
-    "rsi14": ("RSI 14", "oscillator"),
-    "atr14": ("ATR 14", "volatility"),
+# Supported indicator FAMILIES. Each maps to
+#   (label prefix, pane, parameterizable, default_period)
+# where `parameterizable` says whether the period can be tuned per-request
+# and `default_period` is used when the caller sends a bare family name.
+# VWAP is cumulative (no window), so it carries no period.
+_INDICATOR_FAMILIES: dict[str, tuple[str, str, bool, int | None]] = {
+    "sma": ("SMA", "price", True, 20),
+    "ema": ("EMA", "price", True, 50),
+    "vwap": ("VWAP", "price", False, None),
+    "rsi": ("RSI", "oscillator", True, 14),
+    "atr": ("ATR", "volatility", True, 14),
 }
 
-_DEFAULT_INDICATOR_SET = "sma20,ema50,vwap,rsi14,atr14"
+# Window bounds — keep a tuned period sane and bound the work the math does.
+_MIN_PERIOD = 2
+_MAX_PERIOD = 400
+
+_DEFAULT_INDICATOR_SET = "sma:20,ema:50,vwap,rsi:14,atr:14"
 
 
-def _build_indicator(key: str, closes: list[float], bars: list) -> list | None:
-    """Dispatch one indicator key to its calculation. Returns the per-bar
-    series, or None if the key is unrecognized."""
-    if key == "vwap":
-        return vwap(bars)
-    if key == "atr14":
-        return atr(bars, 14)
-    if key == "rsi14":
-        return rsi(closes, 14)
-    if key.startswith("sma"):
-        return sma(closes, _window_of(key, "sma"))
-    if key.startswith("ema"):
-        return ema(closes, _window_of(key, "ema"))
+def _parse_token(token: str) -> tuple[str, int | None] | None:
+    """Parse one indicator token into (family, period).
+
+    Accepts both the new `name:period` form (e.g. `sma:20`, `rsi:9`) and the
+    legacy `name<digits>` form (e.g. `sma20`, `rsi14`) plus a bare family
+    name (`vwap`, or `sma` → default period). Returns None for unknown or
+    malformed tokens (the caller skips them).
+    """
+    token = token.strip().lower()
+    if not token:
+        return None
+
+    # name:period
+    if ":" in token:
+        name, _, raw = token.partition(":")
+        family = _INDICATOR_FAMILIES.get(name)
+        if family is None:
+            return None
+        _, _, parameterizable, default = family
+        if not parameterizable:
+            # e.g. "vwap:30" — ignore the bogus period, keep the family.
+            return (name, None)
+        try:
+            period = int(raw)
+        except ValueError:
+            period = default if default is not None else 0
+        return (name, _window_of(period))
+
+    # bare family name (no period) → its default
+    if token in _INDICATOR_FAMILIES:
+        _, _, _, default = _INDICATOR_FAMILIES[token]
+        return (token, default)
+
+    # legacy name<digits> (e.g. sma20, rsi14)
+    for name in _INDICATOR_FAMILIES:
+        if token.startswith(name) and token[len(name):].isdigit():
+            _, _, parameterizable, default = _INDICATOR_FAMILIES[name]
+            if not parameterizable:
+                return (name, None)
+            return (name, _window_of(int(token[len(name):])))
+
     return None
 
 
-def _window_of(key: str, prefix: str) -> int:
-    try:
-        return int(key[len(prefix):])
-    except ValueError:
-        return 0
+def _window_of(period: int) -> int:
+    """Clamp a requested period into the supported window range."""
+    return max(_MIN_PERIOD, min(_MAX_PERIOD, period))
+
+
+def _canonical_key(family: str, period: int | None) -> str:
+    """The stable per-series key that goes in the cache key AND the returned
+    `series[*].key`. Parameterizable families encode the period as
+    `name:period`; VWAP stays bare. Keeping ONE canonical spelling makes the
+    cache key insensitive to caller formatting (sma20 == sma:20) and gives
+    the frontend a deterministic react-query key + color-family token."""
+    if period is None:
+        return family
+    return f"{family}:{period}"
+
+
+def _build_single(
+    family: str, period: int | None, closes: list[float], bars: list
+) -> list | None:
+    """Dispatch one (family, period) to its calculation, using the
+    REQUESTED period. Returns the per-bar series, or None if unrecognized."""
+    if family == "vwap":
+        return vwap(bars)
+    if family == "sma":
+        return sma(closes, period or 0)
+    if family == "ema":
+        return ema(closes, period or 0)
+    if family == "rsi":
+        return rsi(closes, period or 0)
+    if family == "atr":
+        return atr(bars, period or 0)
+    return None
 
 
 @router.get("/{symbol}/indicators", response_model=IndicatorsResponse)
@@ -265,17 +323,34 @@ def get_ticker_indicators(
     """Per-bar technical-indicator arrays aligned to the SAME bars the
     /chart and /bars endpoints return.
 
-    `set` is a comma-separated list of indicator keys (e.g.
-    `sma20,ema50,vwap,rsi14,atr14`). Unknown keys are skipped. Each
-    returned series is the same length as the bar array, with `None` in
-    the warm-up region. Cached per (symbol, timeframe, set) reusing the
-    per-timeframe bars TTL."""
+    `set` is a comma-separated list of indicator tokens. Each token is
+    either `name:period` (e.g. `sma:20,ema:50,rsi:9`) or the legacy
+    `name<digits>` form (`sma20`,`rsi14`) or a bare family name (`vwap`,
+    or `sma` → its default period). Unknown/malformed tokens are skipped.
+    Each returned series is the same length as the bar array, with `None`
+    in the warm-up region. Cached per (symbol, timeframe, normalized set):
+    the PERIODS are part of the normalized set, so `sma:20` and `sma:50`
+    are distinct cache entries."""
     symbol = symbol.upper()
-    requested = [k.strip().lower() for k in set.split(",") if k.strip()]
-    # Normalize to the canonical, supported, de-duplicated order so the
-    # cache key is stable regardless of how the caller spelled the set.
-    keys = [k for k in _INDICATOR_SPECS if k in requested]
-    norm_set = ",".join(keys)
+
+    # Parse + canonicalize every token, dropping unknowns and de-duplicating
+    # while preserving first-seen order. The canonical key encodes the period
+    # so the cache key (built below) varies with the period — `sma:20` and
+    # `sma:50` never collide.
+    parsed: list[tuple[str, str, int | None]] = []  # (canonical_key, family, period)
+    seen: set[str] = set()
+    for raw in set.split(","):
+        token = _parse_token(raw)
+        if token is None:
+            continue
+        family, period = token
+        key = _canonical_key(family, period)
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed.append((key, family, period))
+
+    norm_set = ",".join(k for k, _, _ in parsed)
 
     cache_key = f"indicators:{symbol}:{timeframe}:{norm_set}"
     cached = cache.get(cache_key)
@@ -299,11 +374,12 @@ def get_ticker_indicators(
     times = [b.timestamp.isoformat() for b in bars]
 
     series: list[IndicatorSeries] = []
-    for key in keys:
-        values = _build_indicator(key, closes, bars)
+    for key, family, period in parsed:
+        values = _build_single(family, period, closes, bars)
         if values is None:
             continue
-        label, pane = _INDICATOR_SPECS[key]
+        label_prefix, pane, _, _ = _INDICATOR_FAMILIES[family]
+        label = label_prefix if period is None else f"{label_prefix} {period}"
         series.append(
             IndicatorSeries(key=key, label=label, pane=pane, values=values)
         )
