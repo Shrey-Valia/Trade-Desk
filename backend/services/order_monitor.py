@@ -50,6 +50,45 @@ log = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
+# --- last-known-good spot fallback (auto-liquidation safety) -----------------
+#
+# Auto-liquidation FORCE-CLOSES a book when the live balance breaches the MLL
+# floor / DLL budget. A single None spot (transient feed gap / rate-limit)
+# previously SKIPPED the whole combine — meaning a breach could go un-flattened
+# for one or more ticks, letting the loss overshoot the floor. To bound that
+# overshoot we keep the last successfully-fetched spot per symbol and reuse it
+# for a short TTL when the live fetch returns None.
+#
+# Keyed by symbol → (spot, observed_at). `observed_at` is the deterministic
+# `now` threaded through the monitor — NEVER datetime.now() — so age is
+# reproducible in tests and free of wall-clock surprises.
+_LAST_GOOD_SPOT: dict[str, tuple[float, datetime]] = {}
+
+# Max age a fallback spot may be and still be trusted for a liquidation price.
+_SPOT_FALLBACK_TTL_SECONDS = 60.0
+
+
+def _record_good_spot(symbol: str, spot: float, now: datetime) -> None:
+    """Remember a freshly-fetched spot as the last-known-good for `symbol`,
+    stamped with the deterministic monitor clock `now`."""
+    _LAST_GOOD_SPOT[symbol] = (float(spot), now)
+
+
+def _fallback_spot(symbol: str, now: datetime) -> tuple[float | None, float | None]:
+    """Return (spot, age_seconds) from the last-known-good store if it is fresh
+    (age ≤ TTL), else (None, age_or_None). Age is measured against the
+    deterministic `now` so it never depends on wall-clock."""
+    entry = _LAST_GOOD_SPOT.get(symbol)
+    if entry is None:
+        return None, None
+    spot, observed_at = entry
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    age = (now - observed_at).total_seconds()
+    if 0.0 <= age <= _SPOT_FALLBACK_TTL_SECONDS:
+        return spot, age
+    return None, age
+
 
 # --- default (production) injectables ---------------------------------------
 
@@ -251,7 +290,12 @@ def run_order_monitor(
             ):
                 continue
             if trade.symbol not in spot_cache:
-                spot_cache[trade.symbol] = spot_for(trade.symbol)
+                fetched = spot_for(trade.symbol)
+                if fetched is not None:
+                    # Warm the last-known-good store so a later auto-liquidation
+                    # tick can fall back to this price across a brief feed gap.
+                    _record_good_spot(trade.symbol, fetched, now)
+                spot_cache[trade.symbol] = fetched
             spot = spot_cache[trade.symbol]
             if spot is None:
                 continue
@@ -288,6 +332,58 @@ def run_order_monitor(
         }
     finally:
         session.close()
+
+
+def _liquidation_spot(
+    symbol: str, spot_for, now: datetime, spot_cache: dict[str, float | None]
+) -> float | None:
+    """Resolve the spot to PRICE a liquidation, preferring the live feed and
+    falling back to the last-known-good price across a brief feed gap.
+
+    Order of preference:
+      1. A live spot already cached this tick (the main loop or an earlier
+         position resolved it) — used as-is and recorded as last-known-good.
+      2. A fresh live fetch — recorded as last-known-good.
+      3. The last-known-good fallback IF it is fresh (age ≤ TTL) — logged with
+         `liquidation_spot_age_seconds` so a stale-but-used price is visible.
+
+    Returns None only when there is no live price AND no fresh fallback, in
+    which case the caller SKIPS the combine (no liquidation on partial info)."""
+    cached = spot_cache.get(symbol)
+    if cached is not None:
+        _record_good_spot(symbol, cached, now)
+        return cached
+
+    fetched = spot_for(symbol)
+    if fetched is not None:
+        _record_good_spot(symbol, fetched, now)
+        spot_cache[symbol] = fetched
+        return fetched
+
+    # Live feed is cold for this symbol — try the last-known-good fallback.
+    fallback, age = _fallback_spot(symbol, now)
+    if fallback is not None:
+        log.warning(
+            "order_monitor: liquidation using last-known-good spot for %s "
+            "(liquidation_spot_age_seconds=%.1f, spot=%.4f)",
+            symbol,
+            age if age is not None else -1.0,
+            fallback,
+        )
+        spot_cache[symbol] = fallback
+        return fallback
+
+    if age is not None:
+        # A fallback existed but was too stale to trust — log why we skip.
+        log.warning(
+            "order_monitor: liquidation fallback for %s is stale "
+            "(liquidation_spot_age_seconds=%.1f > %.1f) — skipping",
+            symbol,
+            age,
+            _SPOT_FALLBACK_TTL_SECONDS,
+        )
+    spot_cache[symbol] = None
+    return None
 
 
 def _auto_liquidate(
@@ -353,17 +449,17 @@ def _auto_liquidate(
             marks: dict[int, tuple[float, float]] = {}  # trade.id -> (spot, unreal)
             usable = True
             for t in positions:
-                if t.symbol not in spot_cache:
-                    spot_cache[t.symbol] = spot_for(t.symbol)
-                spot = spot_cache[t.symbol]
+                spot = _liquidation_spot(t.symbol, spot_for, now, spot_cache)
                 if spot is None:
+                    # No live price AND no fresh fallback — can't price the book
+                    # this tick. Don't liquidate on partial info (overshoot is
+                    # bounded by the fallback when one exists; here it doesn't).
                     usable = False
                     break
                 unreal = unrealized_for(t, spot)
                 marks[t.id] = (spot, unreal)
                 urpl += unreal
             if not usable:
-                # Can't price the book this tick — don't liquidate on partial info.
                 continue
 
             snap = combine_snapshot(session, combine)

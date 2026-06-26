@@ -6,9 +6,12 @@ unrealized_for / market_open. Trades are seeded straight into the DB.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 import models.combine_event  # noqa: F401 — ensure combine_events table exists
+import services.order_monitor as order_monitor
 from models.trade import Trade
 from services.order_monitor import (
     _bracket_triggered,
@@ -18,6 +21,16 @@ from services.order_monitor import (
 from tests.conftest import make_combine
 
 _TODAY = datetime.now(timezone.utc).date()
+
+
+@pytest.fixture(autouse=True)
+def _clear_last_good_spot():
+    """The last-known-good spot store is module-level and persists across
+    ticks by design — clear it between tests so one test's warm spot doesn't
+    leak into another's feed-gap assertions."""
+    order_monitor._LAST_GOOD_SPOT.clear()
+    yield
+    order_monitor._LAST_GOOD_SPOT.clear()
 
 
 def _seed(session_factory, combine_id, **kw):
@@ -605,6 +618,95 @@ def test_auto_liquidation_skips_when_spot_unavailable(auth_client, session_facto
     assert s.get(Trade, tid).status == "open"
     assert s.get(Combine, c["id"]).outcome == "active"
     s.close()
+
+
+# --- auto-liquidation last-known-good spot fallback -------------------------
+
+
+def test_liquidation_uses_fresh_fallback_spot_on_feed_gap(auth_client, session_factory):
+    """A None live spot does NOT skip the liquidation when a FRESH last-known-
+    good spot exists — the book is priced off the fallback so a breach is still
+    flattened (bounds MLL overshoot across a transient feed gap)."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open")
+
+    now = datetime.now(timezone.utc)
+    # Warm the store with a good spot observed 30s ago (< 60s TTL).
+    order_monitor._LAST_GOOD_SPOT["SPY"] = (99.0, now - timedelta(seconds=30))
+
+    summary = _run(
+        session_factory,
+        now=now,
+        spot_for=lambda sym: None,            # live feed is cold this tick
+        unrealized_for=lambda t, s: -2_600.0,  # breaches the 48,000 MLL floor
+    )
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed"
+    assert t.close_reason == "liquidation"
+    assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
+def test_liquidation_skips_when_fallback_spot_is_stale(auth_client, session_factory):
+    """A None live spot WITH a STALE fallback (> 60s) still skips — we don't
+    liquidate on a price we no longer trust."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open")
+
+    now = datetime.now(timezone.utc)
+    # Fallback observed 120s ago — beyond the 60s TTL.
+    order_monitor._LAST_GOOD_SPOT["SPY"] = (99.0, now - timedelta(seconds=120))
+
+    summary = _run(
+        session_factory,
+        now=now,
+        spot_for=lambda sym: None,
+        unrealized_for=lambda t, s: -2_600.0,
+    )
+    assert summary["liquidated"] == 0
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    assert s.get(Combine, c["id"]).outcome == "active"
+    s.close()
+
+
+def test_liquidation_prefers_live_spot_over_fallback(auth_client, session_factory):
+    """When the live feed IS available, the live spot is used (and recorded as
+    the new last-known-good) — the fallback is only a gap filler."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    _seed(session_factory, c["id"], status="open")
+
+    now = datetime.now(timezone.utc)
+    # A stale fallback is present, but the live feed returns a value this tick,
+    # so the stale fallback must NOT be consulted.
+    order_monitor._LAST_GOOD_SPOT["SPY"] = (50.0, now - timedelta(seconds=999))
+
+    captured: dict[str, float] = {}
+
+    def _unreal(t, s):
+        captured["spot"] = s
+        return -2_600.0
+
+    summary = _run(
+        session_factory,
+        now=now,
+        spot_for=lambda sym: 99.0,  # live feed available
+        unrealized_for=_unreal,
+    )
+    assert summary["liquidated"] == 1
+    # Priced off the LIVE 99.0, not the stale fallback 50.0.
+    assert captured["spot"] == 99.0
+    # And the store was refreshed to the live value at `now`.
+    assert order_monitor._LAST_GOOD_SPOT["SPY"][0] == 99.0
+    assert order_monitor._LAST_GOOD_SPOT["SPY"][1] == now
 
 
 def test_auto_liquidation_cascades_to_follower_copies(auth_client, session_factory):
