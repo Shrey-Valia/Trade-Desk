@@ -1,10 +1,22 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useAccountState } from "@/hooks/useAccountState";
 import { useChainTable } from "@/hooks/useChainTable";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useMarketStatus } from "@/hooks/useMarket";
+import { useTrades, useCancelOrder } from "@/hooks/useTrades";
+import {
+  cellKey,
+  useWorkingOrdersByStrike,
+  type WorkingOrderAtCell,
+} from "@/hooks/useWorkingOrdersByStrike";
 import { useTradeTicket } from "@/stores/tradeTicket";
 import type { ChainStrikeRow } from "@/types/zerodte";
+
+import { QuickOrder, type QuickOrderTarget } from "./QuickOrder";
+
+/** Long-press threshold (ms) for opening the quick-order popover on touch. */
+const LONG_PRESS_MS = 450;
 
 /**
  * Upper-right column option chain — dense Bloomberg-style layout
@@ -57,6 +69,79 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
 
   const chainErrMsg = isError ? (error as Error)?.message ?? "" : "";
   const noZeroDteToday = chainErrMsg.startsWith("No 0DTE for");
+
+  // DOM-lite overlay: resting working orders for THIS symbol, keyed by
+  // strike+side, plus the existing cancel-order mutation reused inline.
+  const { byCell: workingByCell } = useWorkingOrdersByStrike(
+    data?.underlying ?? symbol,
+  );
+  const cancelOrder = useCancelOrder();
+
+  // Scaling-cap remaining capacity for the quick-order popover — mirrors the
+  // TradeTicket math so a one-click order can't exceed what the server accepts.
+  const { data: accountState } = useAccountState();
+  const { data: tradesData } = useTrades();
+  const maxContracts = accountState?.max_contracts ?? 99;
+  const activeTier = accountState?.active_tier ?? "50K";
+  const openContracts = useMemo(() => {
+    const ts = tradesData?.trades ?? [];
+    return ts
+      .filter(
+        (t) =>
+          (t.status === "open" || t.status === "working") &&
+          (t.tier ?? "50K") === activeTier,
+      )
+      .reduce(
+        (sum, t) =>
+          sum +
+          (t.legs.length ? Math.max(...t.legs.map((l) => l.contracts ?? 1)) : 1),
+        0,
+      );
+  }, [tradesData, activeTier]);
+  const remainingCap = Math.max(0, maxContracts - openContracts);
+
+  // Quick-order popover target (right-click / long-press) + the row to flash
+  // amber on a successful fire (keyed by strike).
+  const [quickTarget, setQuickTarget] = useState<QuickOrderTarget | null>(null);
+  const [flashStrike, setFlashStrike] = useState<number | null>(null);
+  const flashTimer = useRef<number | null>(null);
+
+  const flashRow = useCallback((strike: number) => {
+    setFlashStrike(strike);
+    if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlashStrike(null), 650);
+  }, []);
+  useEffect(
+    () => () => {
+      if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    },
+    [],
+  );
+
+  // Open the quick-order popover for a cell, anchored at the pointer. No-op
+  // when there's no tradeable chain (market closed is allowed — the server
+  // gates the actual fire; here we only block the empty/error states).
+  const openQuick = useCallback(
+    (
+      row: ChainStrikeRow,
+      side: "call" | "put",
+      anchor: { x: number; y: number },
+    ) => {
+      if (!data || noZeroDteToday) return;
+      const price = side === "call" ? row.call_price : row.put_price;
+      if (price <= 0) return;
+      setQuickTarget({
+        symbol: data.underlying,
+        side,
+        strike: row.strike,
+        price,
+        expiry: data.expiry,
+        anchor,
+      });
+    },
+    [data, noZeroDteToday],
+  );
+
   // With symbol-scoped placeholderData (useChainTable) `data` is already null
   // on a fresh symbol's error; guard explicitly so rows/header never render
   // from a stale or errored payload for the CURRENT symbol (also covers the
@@ -186,6 +271,12 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
                   selectedCall={selectedCall}
                   selectedPut={selectedPut}
                   showBottomRule={(idx + 1) % 5 === 0}
+                  flashing={flashStrike === row.strike}
+                  callOrders={workingByCell.get(cellKey(row.strike, "call"))}
+                  putOrders={workingByCell.get(cellKey(row.strike, "put"))}
+                  cancelOrder={(id) => cancelOrder.mutate(id)}
+                  cancelling={cancelOrder.isPending}
+                  onQuickOrder={openQuick}
                   onClickCall={() => onClickCall(row)}
                   onClickPut={() => onClickPut(row)}
                   onClickStrike={() => onClickStrike(row)}
@@ -195,6 +286,14 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
           </div>
         )}
       </div>
+      {quickTarget && (
+        <QuickOrder
+          target={quickTarget}
+          maxContracts={remainingCap}
+          onClose={() => setQuickTarget(null)}
+          onFired={() => flashRow(quickTarget.strike)}
+        />
+      )}
     </section>
   );
 }
@@ -278,6 +377,12 @@ function Row({
   selectedCall,
   selectedPut,
   showBottomRule,
+  flashing,
+  callOrders,
+  putOrders,
+  cancelOrder,
+  cancelling,
+  onQuickOrder,
   onClickCall,
   onClickPut,
   onClickStrike,
@@ -288,6 +393,19 @@ function Row({
   selectedPut: boolean;
   /** Hairline divider below this row — only every 5th, for ladder grouping. */
   showBottomRule: boolean;
+  /** Brief amber wash after a successful one-click order on this strike. */
+  flashing: boolean;
+  /** Resting working orders on the call / put cell (overlay badges). */
+  callOrders?: WorkingOrderAtCell[];
+  putOrders?: WorkingOrderAtCell[];
+  cancelOrder: (id: number) => void;
+  cancelling: boolean;
+  /** Open the quick-order popover for a cell, anchored at the pointer. */
+  onQuickOrder: (
+    row: ChainStrikeRow,
+    side: "call" | "put",
+    anchor: { x: number; y: number },
+  ) => void;
   onClickCall: () => void;
   onClickPut: () => void;
   onClickStrike: () => void;
@@ -306,7 +424,9 @@ function Row({
   return (
     <div
       data-strike={row.strike}
-      className={`grid items-center tabular-nums ${baseClass} ${bottomBorder}`}
+      className={`grid items-center tabular-nums ${baseClass} ${bottomBorder}${
+        flashing ? " td-quick-flash" : ""
+      }`}
       style={{
         gridTemplateColumns: GRID,
         height: ROW_HEIGHT,
@@ -323,7 +443,11 @@ function Row({
         strike={row.strike}
         isAtm={row.is_atm}
         selected={selectedCall}
+        orders={callOrders}
+        cancelOrder={cancelOrder}
+        cancelling={cancelling}
         onClick={onClickCall}
+        onQuickOrder={(anchor) => onQuickOrder(row, "call", anchor)}
       />
       <button
         type="button"
@@ -364,7 +488,11 @@ function Row({
         strike={row.strike}
         isAtm={row.is_atm}
         selected={selectedPut}
+        orders={putOrders}
+        cancelOrder={cancelOrder}
+        cancelling={cancelling}
         onClick={onClickPut}
+        onQuickOrder={(anchor) => onQuickOrder(row, "put", anchor)}
       />
     </div>
   );
@@ -381,7 +509,11 @@ function Cell({
   strike,
   isAtm,
   selected,
+  orders,
+  cancelOrder,
+  cancelling,
   onClick,
+  onQuickOrder,
 }: {
   align: "left" | "right";
   price: number;
@@ -393,8 +525,25 @@ function Cell({
   strike: number;
   isAtm: boolean;
   selected: boolean;
+  /** Resting working orders on this cell (overlay badge + inline cancel). */
+  orders?: WorkingOrderAtCell[];
+  cancelOrder: (id: number) => void;
+  cancelling: boolean;
   onClick: () => void;
+  /** Right-click / long-press → quick-order popover, anchored at the pointer. */
+  onQuickOrder: (anchor: { x: number; y: number }) => void;
 }) {
+  // Long-press (touch) → quick order. A timer armed on touchstart fires the
+  // popover unless the finger lifts/moves first; we also suppress the
+  // synthetic click that follows so a long-press never also selects the cell.
+  const pressTimer = useRef<number | null>(null);
+  const longFired = useRef(false);
+  const clearPress = () => {
+    if (pressTimer.current) {
+      window.clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+  };
   const dim = source === "bs";
   // ATM row keeps its amber values even in disabled state (the row
   // identity should remain visible while market is closed).
@@ -435,38 +584,144 @@ function Cell({
       Δ{delta.toFixed(2)} Θ{theta.toFixed(2)}
     </span>
   );
-  return (
+  const badge = orders && orders.length > 0 && (
+    <WorkingBadge
+      key="badge"
+      orders={orders}
+      cancelOrder={cancelOrder}
+      cancelling={cancelling}
+    />
+  );
+  const cellButton = (
     <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
+        key="cell"
+        type="button"
+        onClick={() => {
+          // Swallow the click synthesized right after a long-press.
+          if (longFired.current) {
+            longFired.current = false;
+            return;
+          }
+          onClick();
+        }}
+        onContextMenu={(e) => {
+          if (disabled) return;
+          e.preventDefault();
+          onQuickOrder({ x: e.clientX, y: e.clientY });
+        }}
+        onTouchStart={(e) => {
+          if (disabled) return;
+          longFired.current = false;
+          const t = e.touches[0];
+          const x = t?.clientX ?? 0;
+          const y = t?.clientY ?? 0;
+          clearPress();
+          pressTimer.current = window.setTimeout(() => {
+            longFired.current = true;
+            onQuickOrder({ x, y });
+          }, LONG_PRESS_MS);
+        }}
+        onTouchEnd={clearPress}
+        onTouchMove={clearPress}
+        onTouchCancel={clearPress}
+        disabled={disabled}
+        className={[
+          "h-full px-2 tabular-nums font-medium flex items-baseline gap-1.5",
+          align === "right" ? "justify-end" : "justify-start",
+          baseColor,
+          disabled ? "" : "hover:text-amber",
+        ].join(" ")}
+        style={{ fontSize: 12, fontWeight: 500 }}
+        title={
+          disabled
+            ? "Market closed or no 0DTE today"
+            : `Select ${side} at ${strike} · ${
+                source === "bs" ? "BS-model price (no live quote)" : "indicative quote"
+              } · Δ ${delta.toFixed(2)} · Θ ${theta.toFixed(2)}/day · right-click to quick-order`
+        }
+      >
+        {align === "right" ? (
+          <>
+            {greeksEl}
+            {priceEl}
+          </>
+        ) : (
+          <>
+            {priceEl}
+            {greeksEl}
+          </>
+        )}
+      </button>
+  );
+  // Badge sits OUTBOARD of the price (away from the strike column): left of
+  // the price on the call side, right of it on the put side.
+  return (
+    <div
       className={[
-        "h-full px-2 tabular-nums font-medium flex items-baseline gap-1.5",
+        "h-full flex items-center gap-1",
         align === "right" ? "justify-end" : "justify-start",
-        baseColor,
-        disabled ? "" : "hover:text-amber",
       ].join(" ")}
-      style={{ fontSize: 12, fontWeight: 500 }}
-      title={
-        disabled
-          ? "Market closed or no 0DTE today"
-          : `Select ${side} at ${strike} · ${
-              source === "bs" ? "BS-model price (no live quote)" : "indicative quote"
-            } · Δ ${delta.toFixed(2)} · Θ ${theta.toFixed(2)}/day`
-      }
     >
-      {align === "right" ? (
-        <>
-          {greeksEl}
-          {priceEl}
-        </>
-      ) : (
-        <>
-          {priceEl}
-          {greeksEl}
-        </>
-      )}
-    </button>
+      {align === "right" ? [badge, cellButton] : [cellButton, badge]}
+    </div>
+  );
+}
+
+/**
+ * Resting-order overlay badge — qty + trigger price of the working order(s)
+ * on a call/put cell, with an inline cancel "×" that calls the existing
+ * cancel-order mutation. When multiple orders stack on one cell the qty is
+ * summed and the cancel hits the most recent; the title lists each.
+ */
+function WorkingBadge({
+  orders,
+  cancelOrder,
+  cancelling,
+}: {
+  orders: WorkingOrderAtCell[];
+  cancelOrder: (id: number) => void;
+  cancelling: boolean;
+}) {
+  const totalQty = orders.reduce((s, o) => s + o.contracts, 0);
+  // Show the first order's trigger; the title spells out each when stacked.
+  const first = orders[0];
+  const trig = first.trigger;
+  const label = trig != null ? `${totalQty}@${trig.toFixed(2)}` : `${totalQty}`;
+  const detail = orders
+    .map(
+      (o) =>
+        `${o.action} ${o.contracts} ${o.orderType}${
+          o.trigger != null ? ` @ $${o.trigger.toFixed(2)}` : ""
+        }`,
+    )
+    .join(" · ");
+  return (
+    <span
+      className="inline-flex items-center gap-0.5 border border-amber text-amber rounded-hair leading-none shrink-0"
+      style={{ fontSize: 10, paddingInline: 2, paddingBlock: 1 }}
+      title={`Resting: ${detail} — awaiting fill`}
+    >
+      <span
+        className="inline-block rounded-full bg-amber animate-pulse"
+        style={{ width: 4, height: 4 }}
+        aria-hidden
+      />
+      <span className="tabular-nums uppercase tracking-label-up">{label}</span>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          // Cancel the most recently placed order on this cell.
+          cancelOrder(orders[orders.length - 1].trade.id);
+        }}
+        disabled={cancelling}
+        aria-label={`Cancel ${totalQty > 1 ? "an " : ""}order at this strike`}
+        className="text-amber hover:text-bearish disabled:opacity-50 leading-none"
+        style={{ fontSize: 12 }}
+      >
+        ×
+      </button>
+    </span>
   );
 }
 

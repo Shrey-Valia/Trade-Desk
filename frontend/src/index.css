@@ -125,6 +125,24 @@ html:not([data-bg-gradient="off"]) body {
   50% { opacity: 0.3; }
 }
 
+/* DOM-lite quick-order confirmation — a brief amber wash on the chain row
+ * after a one-click order fires from a call/put cell. Reduced-motion users
+ * get a static (non-pulsing) tint via the clamp at the bottom of this file;
+ * the box-shadow inset keeps the row's grid layout from shifting. */
+.td-quick-flash {
+  animation: td-quick-flash 600ms ease-out;
+}
+@keyframes td-quick-flash {
+  0% {
+    background-color: rgba(240, 160, 48, 0.45);
+    box-shadow: inset 0 0 0 1px rgba(240, 160, 48, 0.9);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+
 /* Theta-decay scrubber — the centerpiece of the Trade Desk demo gets a
  * dedicated style block. Native <input type=range> is themed across
  * WebKit + Firefox to use our amber-on-hairline tokens. Magenta thumb
