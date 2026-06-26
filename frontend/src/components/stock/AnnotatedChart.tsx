@@ -25,6 +25,7 @@ import { MarketDataUnavailableError } from "@/lib/api"; // WS3: degraded-state d
 import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { enabledSetParam, useIndicators } from "@/stores/indicators";
+import { useIndicatorPeriods } from "@/stores/indicatorPeriods";
 import { useUserSettings } from "@/stores/userSettings";
 import {
   CHART_TIMEFRAMES,
@@ -118,7 +119,15 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
   // Enabled indicator set (persisted store) -> query -> per-bar series.
   // Drawn as LineSeries by a dedicated effect inside LightweightChart.
   const enabledIndicators = useIndicators((s) => s.enabled);
-  const indicatorSet = enabledSetParam(enabledIndicators);
+  // WS2: per-family period overrides feed the `family:period` query tokens.
+  // Subscribing to the `periods` map (not just the getter) re-renders this
+  // component when a window changes, so the query key updates and refetches.
+  const indicatorPeriodsMap = useIndicatorPeriods((s) => s.periods);
+  const periodFor = useIndicatorPeriods((s) => s.periodFor);
+  const indicatorSet = enabledSetParam(enabledIndicators, periodFor);
+  // `indicatorPeriodsMap` is read for its subscription side-effect (above);
+  // reference it so lint sees the dependency that drives `indicatorSet`.
+  void indicatorPeriodsMap;
   const indicators = useTickerIndicators(symbol, timeframe, indicatorSet);
   const indicatorSeries = indicators.data?.series ?? EMPTY_INDICATOR_SERIES;
   // --- end WS1 -----------------------------------------------------------
