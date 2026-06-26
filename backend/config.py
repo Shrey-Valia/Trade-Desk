@@ -17,6 +17,26 @@ class Settings(BaseSettings):
     alpaca_paper: bool = True
     alpaca_options_feed: str = "indicative"
 
+    # ---------------------------------------------------------------------
+    # WS6 — real-time data feed (built behind a flag; ships DORMANT).
+    #
+    # OFF by default: with the flag False, `get_realtime_feed()` returns the
+    # NoOp feed (whose accessors all return None), so `get_quotes`/`get_bars`
+    # fall straight through to the unchanged REST + TokenBucket +
+    # CircuitBreaker + TTLCache path — byte-for-byte today's behavior. Flip
+    # to True ONLY once a paid Alpaca key (Algo Trader Plus) is entitled; the
+    # lifespan then starts a background `StockDataStream` consumer over the
+    # watchlist and the read paths serve fresh streamed quotes/bars first.
+    # See docs/realtime-data-feed-spike.md.
+    realtime_feed_enabled: bool = False
+    # Staleness windows (seconds) for the in-memory last-value-wins store. A
+    # streamed value older than this reads as None → the hot path falls back
+    # to REST. The TTL *is* the stall detector: a silently half-open socket
+    # stops writing, entries age out, polling resumes. Quotes get a short
+    # window (fresh ticks); bars match the streamed 1m grain plus slack.
+    realtime_quote_ttl_s: float = 3.0
+    realtime_bar_ttl_s: float = 75.0
+
     finnhub_api_key: str = ""
     fred_api_key: str = ""
 

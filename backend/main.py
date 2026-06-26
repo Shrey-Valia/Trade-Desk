@@ -164,11 +164,49 @@ async def lifespan(app: FastAPI):
     warm_task = asyncio.create_task(_background_warm())
     log.info("startup complete; warm in background")
 
+    # WS6 — real-time data-feed consumer. Started ONLY when the flag is on
+    # (default OFF → this whole block is skipped and nothing changes). When
+    # on, it runs the WebSocket stream + subscribes the watchlist universe,
+    # writing into the in-memory store that get_quotes/get_bars read first.
+    # `get_realtime_feed()` returns the process-wide singleton the read-through
+    # also consults, so no wiring is needed beyond starting run().
+    feed_task = None
+    feed = None
+    if settings.realtime_feed_enabled:
+        from services.realtime_feed import get_realtime_feed
+
+        feed = get_realtime_feed()
+        feed.subscribe(settings.watchlist_universe)
+
+        async def _run_feed() -> None:
+            log.info(
+                "realtime feed: starting stream consumer over %d symbols",
+                len(settings.watchlist_universe),
+            )
+            try:
+                await feed.run()  # blocks; internal reconnect loop
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("realtime feed consumer crashed")
+
+        feed_task = asyncio.create_task(_run_feed())
+        log.info("realtime feed consumer task started (REALTIME_FEED_ENABLED=1)")
+    else:
+        log.info(
+            "realtime_feed_enabled=False; stream consumer not started "
+            "(read paths use REST polling)"
+        )
+
     try:
         yield
     finally:
         # Cancel any still-running warm so shutdown is fast too.
         warm_task.cancel()
+        if feed is not None:
+            feed.stop()
+        if feed_task is not None:
+            feed_task.cancel()
         scheduler.shutdown(wait=False)
         log.info("scheduler stopped")
 
