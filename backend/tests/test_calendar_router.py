@@ -49,8 +49,10 @@ def test_calendar_base_shape(api_client):
     for d in days:
         assert isinstance(d["events"], list)
         assert isinstance(d["is_today"], bool)
-    # Exactly one day flagged today (today is always the first session).
-    assert sum(1 for d in days if d["is_today"]) == 1
+    # At most one day flagged today — exactly one on a trading day, but ZERO on
+    # a weekend/holiday (when the first session is the next trading day, so no
+    # listed session equals the actual calendar date).
+    assert sum(1 for d in days if d["is_today"]) <= 1
 
 
 def test_calendar_injects_earnings_for_universe_symbol(api_client, monkeypatch):
