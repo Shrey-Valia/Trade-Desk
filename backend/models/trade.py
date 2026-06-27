@@ -18,6 +18,7 @@ from sqlalchemy import Boolean, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
+from services.money import Money
 
 
 class Trade(Base):
@@ -31,11 +32,13 @@ class Trade(Base):
     legs_json: Mapped[str] = mapped_column(Text, nullable=False)
     entry_date: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     entry_underlying_price: Mapped[float] = mapped_column(Float, nullable=False)
-    net_debit_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Money columns use the Money type (NUMERIC(12,2) on disk, float in Python).
+    # See services/money.py for the boundary decision.
+    net_debit_credit: Mapped[float] = mapped_column(Money, nullable=False, default=0.0)
     status: Mapped[str] = mapped_column(String(8), nullable=False, default="open")
     exit_date: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     exit_underlying_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl: Mapped[float | None] = mapped_column(Money, nullable=True)
     is_paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 

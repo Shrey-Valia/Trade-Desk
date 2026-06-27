@@ -102,6 +102,7 @@ def init_db() -> None:
     _additive_migrate_trades()
     _additive_migrate_combines()
     _additive_migrate_users()
+    _migrate_money_columns()
     _create_missing_indexes()
     # AccountState seeding retired with the multi-user shell — the table
     # stays on disk purely as the migration source for legacy HWMs.
@@ -260,6 +261,60 @@ def _additive_migrate_combines() -> None:
                 text(
                     "UPDATE combines SET funded_activated_at = funded_at "
                     "WHERE funded_at IS NOT NULL"
+                )
+            )
+        conn.commit()
+
+
+# Money columns migrated from FLOAT → NUMERIC(12,2) (services/money.py). A
+# fresh DB gets the right type straight from create_all (the column uses the
+# `Money` TypeDecorator whose impl is NUMERIC(12,2)); this ALTER only matters
+# for an EXISTING Postgres DB whose columns were created as double precision.
+# (table, column) pairs to widen.
+_MONEY_COLUMNS: list[tuple[str, str]] = [
+    ("trades", "realized_pnl"),
+    ("trades", "net_debit_credit"),
+    ("combines", "hwm"),
+    ("combines", "settled_hwm"),
+    ("payments", "amount"),
+    ("combine_events", "amount"),
+]
+
+
+def _migrate_money_columns() -> None:
+    """Widen the money columns to NUMERIC(12,2) on an existing Postgres DB.
+
+    Guarded to NON-SQLite: SQLite has no static column types (NUMERIC affinity
+    stores whatever is bound, and the `Money` type already binds an exact
+    Decimal), so an ALTER … TYPE there is both unnecessary and unsupported for
+    this shape — it's a no-op. On Postgres the cast is explicit and idempotent:
+    we only ALTER a column whose data type isn't already `numeric`, so re-running
+    on every boot does nothing once migrated. A fresh Postgres DB (the CI leg)
+    never enters the loop because create_all already made the columns numeric.
+    """
+    if engine.dialect.name == "sqlite":
+        return
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    with engine.connect() as conn:
+        for table, column in _MONEY_COLUMNS:
+            if table not in table_names:
+                continue
+            cols = {c["name"]: c for c in inspector.get_columns(table)}
+            col = cols.get(column)
+            if col is None:
+                continue
+            type_name = str(col["type"]).lower()
+            if "numeric" in type_name or "decimal" in type_name:
+                continue  # already migrated
+            # USING casts the existing float values into the new type so no data
+            # is lost; rounding to scale 2 is exactly the cent-quantization we
+            # want for the historical rows.
+            conn.execute(
+                text(
+                    f"ALTER TABLE {table} "
+                    f"ALTER COLUMN {column} TYPE NUMERIC(12, 2) "
+                    f"USING ROUND({column}::numeric, 2)"
                 )
             )
         conn.commit()
