@@ -100,6 +100,59 @@ jobs:
       - name: Run pytest against Postgres
         run: pytest -q -m "not network"
 
+  # WS2 quality gates (backend): lint + type check + dependency vuln scan.
+  #
+  # These are intentionally NON-BLOCKING for now (continue-on-error: true).
+  # The repo carries pre-existing ruff (UP/B/I) and mypy findings in
+  # routers/services that WS2 does not own and must not touch. Running the
+  # gates here SURFACES those findings in the Actions log on every push
+  # without red-flagging the build on day one. Once the backlog is paid
+  # down (a follow-up cleanup pass), flip `continue-on-error` to false on
+  # each step to make it a hard gate.
+  backend-quality:
+    name: Backend (ruff + mypy + pip-audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # The `dev` extra carries ruff + mypy (see [project.optional-dependencies]).
+      - name: Install backend dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      # Lint. ruff config (line-length, select/ignore) lives in pyproject.toml.
+      - name: Ruff lint
+        continue-on-error: true
+        run: ruff check .
+
+      # Type check. --ignore-missing-imports keeps third-party libs without
+      # stubs (alpaca-py, finnhub, pandas_market_calendars, …) from drowning
+      # the signal; we don't own pyproject's [tool.mypy], so it's a flag, not
+      # config. Explicit Python version pins the inference target.
+      - name: Mypy type check
+        continue-on-error: true
+        run: mypy --ignore-missing-imports --python-version 3.11 .
+
+      # Dependency vulnerability scan. Non-blocking (the plan's guidance) so a
+      # flagged transitive dep doesn't red the build before triage; uvx runs
+      # pip-audit in an ephemeral env without polluting the install above.
+      - name: pip-audit (dependency vuln scan)
+        continue-on-error: true
+        run: uvx pip-audit || true
+
   frontend:
     name: Frontend (typecheck + build)
     runs-on: ubuntu-latest
@@ -122,6 +175,25 @@ jobs:
 
       - name: Typecheck
         run: npx tsc --noEmit
+
+      # WS2 quality gate (frontend): ESLint flat config (eslint.config.js).
+      # Non-blocking for now for the same reason as the backend gates — it
+      # surfaces lint findings without breaking the build until the existing
+      # ones are cleared. Flip continue-on-error to false to harden it.
+      - name: ESLint
+        continue-on-error: true
+        run: npx eslint .
+
+      # WS2 quality gate (frontend): unit tests.
+      #
+      # DEPENDS ON WS1: the `test` script (vitest) + its config land with the
+      # frontend-tests workstream. `npm run test --if-present` is a NO-OP
+      # until that script exists, so this step is green on merge and starts
+      # actually running the suite the moment WS1 lands — no second CI edit
+      # needed. Once WS1 is in, drop `--if-present` to make a missing script
+      # (or a red suite) fail the job.
+      - name: Unit tests (vitest — active once WS1 lands)
+        run: npm run test --if-present
 
       - name: Build
         run: npm run build
