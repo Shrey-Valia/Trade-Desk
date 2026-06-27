@@ -14,10 +14,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, String
+from sqlalchemy import ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
+from services.money import Money
 
 
 class Payment(Base):
@@ -35,8 +36,9 @@ class Payment(Base):
     combine_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tier: Mapped[str] = mapped_column(String(8), nullable=False)
     # Dollar amount (simulated). Set to the matrix price for purchases /
-    # activations; NULL only for migration_grant backfill rows.
-    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # activations; NULL only for migration_grant backfill rows. Money type:
+    # NUMERIC(12,2) on disk, float in Python (services/money.py).
+    amount: Mapped[float | None] = mapped_column(Money, nullable=True)
     # paid | activation_paid | pending | failed | migration_grant
     status: Mapped[str] = mapped_column(
         String(24), nullable=False, default="paid"
