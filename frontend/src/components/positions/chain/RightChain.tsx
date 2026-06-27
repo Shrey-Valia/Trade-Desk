@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { useAccountState } from "@/hooks/useAccountState";
 import { useChainTable } from "@/hooks/useChainTable";
@@ -10,7 +11,7 @@ import {
   useWorkingOrdersByStrike,
   type WorkingOrderAtCell,
 } from "@/hooks/useWorkingOrdersByStrike";
-import { useTradeTicket } from "@/stores/tradeTicket";
+import { useTradeTicket, type TicketSelection } from "@/stores/tradeTicket";
 import type { ChainStrikeRow } from "@/types/zerodte";
 
 import { QuickOrder, type QuickOrderTarget } from "./QuickOrder";
@@ -53,6 +54,11 @@ const CALL_W = 168;
 const STRIKE_W = 88;
 const PUT_W = 168;
 const GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
+
+/** Above this many strikes the ladder is windowed (only on-screen rows
+ *  mount). The default chain pulls ~11 rows, so day-to-day rendering is the
+ *  plain path and unchanged; only wide chains (deep strike spans) virtualize. */
+const VIRTUALIZE_THRESHOLD = 30;
 
 export function RightChain({ symbol, onPickSymbol }: Props) {
   // Pull 5 strikes above + 5 below ATM ⇒ ~11 rows visible without
@@ -247,43 +253,23 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
           <EmptyMessage tone="bearish">{chainErrMsg}</EmptyMessage>
         )}
         {showChain && data && data.rows.length > 0 && (
-          <div className="flex flex-col items-center">
-            {data.rows.map((row, idx) => {
-              const selStrike =
-                currentSelection?.symbol === data.underlying
-                  ? currentSelection.strike
-                  : null;
-              const selKind = currentSelection?.kind ?? null;
-              const selSide = currentSelection?.side ?? null;
-              const selectedCall =
-                selStrike === row.strike &&
-                (selKind === "straddle" ||
-                  (selKind === "leg" && selSide === "call"));
-              const selectedPut =
-                selStrike === row.strike &&
-                (selKind === "straddle" ||
-                  (selKind === "leg" && selSide === "put"));
-              return (
-                <Row
-                  key={row.strike}
-                  row={row}
-                  disabled={noZeroDteToday}
-                  selectedCall={selectedCall}
-                  selectedPut={selectedPut}
-                  showBottomRule={(idx + 1) % 5 === 0}
-                  flashing={flashStrike === row.strike}
-                  callOrders={workingByCell.get(cellKey(row.strike, "call"))}
-                  putOrders={workingByCell.get(cellKey(row.strike, "put"))}
-                  cancelOrder={(id) => cancelOrder.mutate(id)}
-                  cancelling={cancelOrder.isPending}
-                  onQuickOrder={openQuick}
-                  onClickCall={() => onClickCall(row)}
-                  onClickPut={() => onClickPut(row)}
-                  onClickStrike={() => onClickStrike(row)}
-                />
-              );
-            })}
-          </div>
+          <ChainRows
+            rows={data.rows}
+            underlying={data.underlying}
+            atmStrike={data.atm_strike ?? null}
+            selection={currentSelection}
+            disabled={noZeroDteToday}
+            flashStrike={flashStrike}
+            workingByCell={workingByCell}
+            cancelOrder={(id) => cancelOrder.mutate(id)}
+            cancelling={cancelOrder.isPending}
+            onQuickOrder={openQuick}
+            onClickCall={onClickCall}
+            onClickPut={onClickPut}
+            onClickStrike={onClickStrike}
+            scrollParentRef={bodyRef}
+            scrollKey={symbol}
+          />
         )}
       </div>
       {quickTarget && (
@@ -295,6 +281,160 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
         />
       )}
     </section>
+  );
+}
+
+/** Per-row selection flags, shared by the plain and virtual render paths so
+ *  the two stay byte-identical in behavior. */
+function rowSelection(
+  row: ChainStrikeRow,
+  underlying: string,
+  selection: TicketSelection | null,
+): { selectedCall: boolean; selectedPut: boolean } {
+  const selStrike =
+    selection?.symbol === underlying ? selection.strike : null;
+  const selKind = selection?.kind ?? null;
+  const selSide = selection?.side ?? null;
+  const atStrike = selStrike === row.strike;
+  return {
+    selectedCall:
+      atStrike &&
+      (selKind === "straddle" || (selKind === "leg" && selSide === "call")),
+    selectedPut:
+      atStrike &&
+      (selKind === "straddle" || (selKind === "leg" && selSide === "put")),
+  };
+}
+
+interface ChainRowsProps {
+  rows: ChainStrikeRow[];
+  underlying: string;
+  atmStrike: number | null;
+  selection: TicketSelection | null;
+  disabled: boolean;
+  flashStrike: number | null;
+  workingByCell: Map<string, WorkingOrderAtCell[]>;
+  cancelOrder: (id: number) => void;
+  cancelling: boolean;
+  onQuickOrder: (
+    row: ChainStrikeRow,
+    side: "call" | "put",
+    anchor: { x: number; y: number },
+  ) => void;
+  onClickCall: (row: ChainStrikeRow) => void;
+  onClickPut: (row: ChainStrikeRow) => void;
+  onClickStrike: (row: ChainStrikeRow) => void;
+  scrollParentRef: React.RefObject<HTMLDivElement>;
+  /** Re-center the ATM row when the charted symbol changes (virtual path). */
+  scrollKey: string | null;
+}
+
+/**
+ * Strike-ladder body. Short chains (the common ~11-row case) render plainly —
+ * markup and the parent's data-strike ATM auto-scroll are unchanged. Wide
+ * chains (> VIRTUALIZE_THRESHOLD strikes) window the rows: only the visible
+ * span mounts, fixed ROW_HEIGHT so no measurement is needed, and the ATM row
+ * is centered via scrollToIndex (the data-strike querySelector the parent uses
+ * can't find an unmounted row). Click-to-select, quick-order popovers, and the
+ * working-order overlay badges are identical across both paths.
+ */
+function ChainRows(props: ChainRowsProps) {
+  const {
+    rows,
+    underlying,
+    atmStrike,
+    selection,
+    disabled,
+    flashStrike,
+    workingByCell,
+    cancelOrder,
+    cancelling,
+    onQuickOrder,
+    onClickCall,
+    onClickPut,
+    onClickStrike,
+    scrollParentRef,
+    scrollKey,
+  } = props;
+
+  const virtualize = rows.length > VIRTUALIZE_THRESHOLD;
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollParentRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
+    enabled: virtualize,
+    getItemKey: (index) => rows[index].strike,
+  });
+
+  // Virtual path: center the ATM row on symbol change. The parent's
+  // data-strike scrollIntoView no-ops here because the row may be unmounted,
+  // so drive the scroll through the virtualizer instead.
+  useEffect(() => {
+    if (!virtualize || atmStrike == null) return;
+    const idx = rows.findIndex((r) => r.strike === atmStrike);
+    if (idx >= 0) virtualizer.scrollToIndex(idx, { align: "center" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [virtualize, atmStrike, scrollKey]);
+
+  const renderRow = (row: ChainStrikeRow, idx: number) => {
+    const { selectedCall, selectedPut } = rowSelection(
+      row,
+      underlying,
+      selection,
+    );
+    return (
+      <Row
+        key={row.strike}
+        row={row}
+        disabled={disabled}
+        selectedCall={selectedCall}
+        selectedPut={selectedPut}
+        showBottomRule={(idx + 1) % 5 === 0}
+        flashing={flashStrike === row.strike}
+        callOrders={workingByCell.get(cellKey(row.strike, "call"))}
+        putOrders={workingByCell.get(cellKey(row.strike, "put"))}
+        cancelOrder={cancelOrder}
+        cancelling={cancelling}
+        onQuickOrder={onQuickOrder}
+        onClickCall={() => onClickCall(row)}
+        onClickPut={() => onClickPut(row)}
+        onClickStrike={() => onClickStrike(row)}
+      />
+    );
+  };
+
+  if (!virtualize) {
+    return (
+      <div className="flex flex-col items-center">
+        {rows.map((row, idx) => renderRow(row, idx))}
+      </div>
+    );
+  }
+
+  // Windowed: a spacer div holds the full ladder height; visible rows are
+  // absolutely positioned at their virtual offset. Centered horizontally to
+  // match the plain path's items-center layout.
+  const items = virtualizer.getVirtualItems();
+  return (
+    <div
+      style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+    >
+      {items.map((vi) => (
+        <div
+          key={vi.key}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: "50%",
+            transform: `translate(-50%, ${vi.start}px)`,
+          }}
+        >
+          {renderRow(rows[vi.index], vi.index)}
+        </div>
+      ))}
+    </div>
   );
 }
 

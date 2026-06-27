@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { useUpdateTrade } from "@/hooks/useTrades";
 import { useActivePosition } from "@/stores/activePosition";
@@ -20,6 +21,16 @@ interface Props {
   loadFailed?: boolean;
   onRetry?: () => void;
 }
+
+/** Above this many trades the body is windowed (only on-screen rows mount).
+ *  Below it the list renders plainly so short journals are byte-for-byte
+ *  unchanged — virtualization is a pure perf optimization for long lists. */
+const VIRTUALIZE_THRESHOLD = 30;
+
+/** Collapsed-row height estimate (px) used to size the virtual window before
+ *  rows are measured. Each row gets re-measured via measureElement so an
+ *  expanded inline close-form (a taller row group) still windows correctly. */
+const ESTIMATED_ROW_HEIGHT = 29;
 
 /**
  * Compact, hairline-bordered table of journaled trades.
@@ -43,6 +54,7 @@ export function TradeList({
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const toggleActive = useActivePosition((s) => s.toggle);
   const setSelectedSymbol = useSelectedTicker((s) => s.setSymbol);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const onRowClick = (trade: Trade) => {
     // Auto-switch the chart to the trade's symbol so the position
@@ -63,7 +75,7 @@ export function TradeList({
         selectedSymbol={selectedSymbol}
         onAddTrade={onAddTrade}
       />
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
         {loadFailed ? (
           <div className="px-3 py-6 text-tiny text-center flex flex-col items-center gap-2">
             <span className="text-bearish">Couldn&rsquo;t load trades.</span>
@@ -98,24 +110,107 @@ export function TradeList({
                 <Th />
               </tr>
             </thead>
-            <tbody>
-              {trades.map((t) => (
-                <TradeRow
-                  key={t.id}
-                  trade={t}
-                  active={activeTradeId === t.id}
-                  isClosing={closingId === t.id}
-                  onSelect={() => onRowClick(t)}
-                  onStartClose={() => setClosingId(t.id)}
-                  onCancelClose={() => setClosingId(null)}
-                  onClosed={() => setClosingId(null)}
-                />
-              ))}
-            </tbody>
+            {trades.length > VIRTUALIZE_THRESHOLD ? (
+              <VirtualBody
+                trades={trades}
+                scrollRef={scrollRef}
+                activeTradeId={activeTradeId}
+                closingId={closingId}
+                onRowClick={onRowClick}
+                setClosingId={setClosingId}
+              />
+            ) : (
+              <tbody>
+                {trades.map((t) => (
+                  <TradeRow
+                    key={t.id}
+                    trade={t}
+                    active={activeTradeId === t.id}
+                    isClosing={closingId === t.id}
+                    onSelect={() => onRowClick(t)}
+                    onStartClose={() => setClosingId(t.id)}
+                    onCancelClose={() => setClosingId(null)}
+                    onClosed={() => setClosingId(null)}
+                  />
+                ))}
+              </tbody>
+            )}
           </table>
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Windowed <tbody> for long journals. Only the rows in (and just around) the
+ * viewport mount; the rest are accounted for with two spacer rows that hold
+ * the scroll height. Row behavior is identical to the plain path — the same
+ * <TradeRow> renders, so click-to-select, the inline close form, and the
+ * working-order overlays all carry over unchanged. Heights are measured per
+ * row (measureElement) so an expanded close form still scrolls correctly.
+ */
+function VirtualBody({
+  trades,
+  scrollRef,
+  activeTradeId,
+  closingId,
+  onRowClick,
+  setClosingId,
+}: {
+  trades: Trade[];
+  scrollRef: React.RefObject<HTMLDivElement>;
+  activeTradeId: number | null;
+  closingId: number | null;
+  onRowClick: (trade: Trade) => void;
+  setClosingId: (id: number | null) => void;
+}) {
+  const virtualizer = useVirtualizer({
+    count: trades.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    overscan: 8,
+    // Stable identity so selection/close state survives reorders & the
+    // viewport stays anchored to the same trade across data refreshes.
+    getItemKey: (index) => trades[index].id,
+  });
+
+  const items = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+  const paddingTop = items.length > 0 ? items[0].start : 0;
+  const paddingBottom =
+    items.length > 0 ? totalSize - items[items.length - 1].end : 0;
+
+  return (
+    <tbody>
+      {paddingTop > 0 && (
+        <tr aria-hidden>
+          <td colSpan={10} style={{ height: paddingTop, padding: 0 }} />
+        </tr>
+      )}
+      {items.map((vi) => {
+        const t = trades[vi.index];
+        return (
+          <TradeRow
+            key={vi.key}
+            trade={t}
+            dataIndex={vi.index}
+            measureRef={virtualizer.measureElement}
+            active={activeTradeId === t.id}
+            isClosing={closingId === t.id}
+            onSelect={() => onRowClick(t)}
+            onStartClose={() => setClosingId(t.id)}
+            onCancelClose={() => setClosingId(null)}
+            onClosed={() => setClosingId(null)}
+          />
+        );
+      })}
+      {paddingBottom > 0 && (
+        <tr aria-hidden>
+          <td colSpan={10} style={{ height: paddingBottom, padding: 0 }} />
+        </tr>
+      )}
+    </tbody>
   );
 }
 
@@ -204,6 +299,8 @@ function TradeRow({
   onStartClose,
   onCancelClose,
   onClosed,
+  measureRef,
+  dataIndex,
 }: {
   trade: Trade;
   active: boolean;
@@ -212,6 +309,11 @@ function TradeRow({
   onStartClose: () => void;
   onCancelClose: () => void;
   onClosed: () => void;
+  /** Virtualized path only: attaches the virtualizer's resize observer to
+   *  the primary row so dynamic heights re-measure. Omitted (plain render)
+   *  for short lists, leaving the markup identical. */
+  measureRef?: (el: HTMLElement | null) => void;
+  dataIndex?: number;
 }) {
   // DTE is a management number for OPEN positions; on closed rows it
   // just counts days since expiry (negative), which reads like a bug.
@@ -223,6 +325,8 @@ function TradeRow({
   return (
     <>
       <tr
+        ref={measureRef}
+        data-index={dataIndex}
         className={rowClass}
         onClick={(e) => {
           // Don't toggle selection when the user clicked the inline

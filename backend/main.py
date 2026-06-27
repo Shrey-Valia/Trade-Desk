@@ -1,7 +1,11 @@
 import asyncio
+import json
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from contextvars import ContextVar
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -37,10 +41,67 @@ from routers import user_browse as user_browse_router
 from routers import watchlist as watchlist_router
 from routers import zerodte as zerodte_router
 
-logging.basicConfig(
-    level=settings.log_level,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+# Per-request correlation id. Set by the request-id middleware on each
+# inbound request and read by the log filter below so EVERY log line emitted
+# while handling a request carries its id — even from deep service code that
+# never sees the Request object. Defaults to "-" outside a request (startup,
+# scheduler jobs, shutdown).
+request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+class RequestIdFilter(logging.Filter):
+    """Inject the current request id onto every record as `request_id` so both
+    the JSON and text formatters can reference it. A filter (not a formatter)
+    is used so the field is present on records from any logger in the tree."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_ctx.get()
+        return True
+
+
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line: timestamp (UTC ISO-8601), level, logger,
+    message, request_id, plus the exception text when present. Stable key set
+    so a log aggregator can index on them."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.fromtimestamp(
+                record.created, tz=timezone.utc
+            ).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "request_id": getattr(record, "request_id", "-"),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str)
+
+
+def _configure_logging() -> None:
+    """Install a single root handler with either the JSON formatter (LOG_JSON=1
+    — for prod log aggregators) or the human-readable text format (default —
+    local dev). Both carry the request id. Replaces the previous
+    logging.basicConfig so request-correlation works everywhere."""
+    handler = logging.StreamHandler()
+    handler.addFilter(RequestIdFilter())
+    if settings.log_json:
+        handler.setFormatter(JsonFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s [%(name)s] "
+                "(req=%(request_id)s) %(message)s"
+            )
+        )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(settings.log_level)
+
+
+_configure_logging()
 log = logging.getLogger("dashboard")
 
 
@@ -286,6 +347,45 @@ async def _global_rate_limit(request: Request, call_next):
                 headers={"Retry-After": str(int(retry_after) + 1)},
             )
     return await call_next(request)
+
+
+# Header clients/proxies use to carry a correlation id. Honor an inbound one
+# (so a request traced from the edge keeps its id) and generate one otherwise.
+_REQUEST_ID_HEADER = "X-Request-ID"
+
+
+@app.middleware("http")
+async def _request_id(request: Request, call_next):
+    """Assign every request a correlation id, bind it to the logging context
+    for the duration of the request, and echo it back as `X-Request-ID`.
+
+    Added last → outermost middleware, so the id is set before the rate-limit
+    layer runs and the response header is attached even to a 429 it returns.
+    The ContextVar token is reset in finally so ids never leak across the
+    worker's reused tasks. A slow request (>1s) is logged at WARNING with its
+    timing so ops can spot latency without a separate APM."""
+    incoming = request.headers.get(_REQUEST_ID_HEADER)
+    rid = incoming or uuid.uuid4().hex
+    token = request_id_ctx.set(rid)
+    # Expose on request.state so handlers/exception handlers can read it.
+    request.state.request_id = rid
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+        response.headers[_REQUEST_ID_HEADER] = rid
+        return response
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        if elapsed_ms > 1000.0:
+            log.warning(
+                "slow request %s %s took %.0fms",
+                request.method,
+                request.url.path,
+                elapsed_ms,
+            )
+        # Reset last so the slow-request log above still carries this id.
+        request_id_ctx.reset(token)
+
 
 app.include_router(watchlist_router.router)
 app.include_router(ticker_router.router)
