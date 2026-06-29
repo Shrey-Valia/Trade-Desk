@@ -133,6 +133,18 @@ class Settings(BaseSettings):
     auth_rate_limit_window_s: int = 60
 
     # ---------------------------------------------------------------------
+    # Per-USER throttle on the FINANCIAL endpoints (payout request, account
+    # activation, combine purchase / Stripe checkout). Keyed by user_id +
+    # endpoint scope (not IP) — these are authenticated actions, so the signed-in
+    # user is the right subject and one user can't be blocked by another behind
+    # the same NAT/proxy. A funded-account holder never needs to fire these more
+    # than a handful of times a minute, so the default is deliberately tight to
+    # blunt double-click / scripted abuse without ever tripping real use. Set
+    # attempts <= 0 to disable.
+    financial_rate_limit_attempts: int = 5
+    financial_rate_limit_window_s: int = 60
+
+    # ---------------------------------------------------------------------
     # 0DTE-eligible universe — the ONLY symbols Trade Desk allows users
     # to open positions on. Same-day-expiry options are limited to a
     # narrow set in practice; this allowlist gates the symbol search and

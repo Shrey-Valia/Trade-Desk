@@ -28,6 +28,7 @@ from models.user import User
 from services import payments
 from services.auth import get_current_user
 from services.combine_provision import assert_slot_available, provision_combine
+from services.rate_limit import enforce_user, financial_limiter
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +71,11 @@ def create_checkout(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CheckoutOut:
+    # Per-user throttle — same budget/scope as the placeholder purchase path it
+    # mirrors, so the limit holds however the user buys (checkout writes a
+    # pending Payment + creates a Stripe session). Applied before the Stripe-off
+    # short-circuit so the limit is consistent regardless of configuration.
+    enforce_user(financial_limiter, user.id, "purchase")
     if not payments.stripe_enabled():
         # Stripe off → tell the frontend to use the free flow.
         return CheckoutOut(mode="placeholder")

@@ -34,15 +34,28 @@ def _fast_bcrypt():
 def _reset_auth_rate_limiter():
     """The rate limiters are process-global; clear them between tests so
     hits from earlier cases (all sharing the TestClient host) don't bleed
-    over. Covers both the auth brute-force limiter and the global per-IP
-    throttle applied by the main.py middleware."""
-    from services.rate_limit import auth_limiter, global_limiter
+    over. Covers the auth brute-force limiter, the global per-IP throttle
+    applied by the main.py middleware, and the per-user financial limiter.
+
+    The financial limiter's real default (a few purchases/payouts per minute)
+    is intentionally tight, which would trip the lifecycle tests that
+    legitimately buy 5-6 combines in a loop. So we LIFT its budget to a high
+    ceiling for the test run by default; the dedicated rate-limit tests lower
+    `max_attempts` themselves (monkeypatch) to exercise the 429, exactly like
+    the auth/global limiter tests do."""
+    from services.rate_limit import auth_limiter, financial_limiter, global_limiter
+
+    prior_financial = financial_limiter.max_attempts
+    financial_limiter.max_attempts = 1000
 
     auth_limiter.reset()
     global_limiter.reset()
+    financial_limiter.reset()
     yield
     auth_limiter.reset()
     global_limiter.reset()
+    financial_limiter.reset()
+    financial_limiter.max_attempts = prior_financial
 
 
 @pytest.fixture

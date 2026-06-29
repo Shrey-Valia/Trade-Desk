@@ -34,6 +34,7 @@ from services.account_tiers import TIERS
 from services.auth import get_current_user
 from services.combine_provision import MAX_COMBINES, provision_combine
 from services.combine_state import combine_snapshot, record_event
+from services.rate_limit import enforce_user, financial_limiter
 
 router = APIRouter(prefix="/api/combines", tags=["combines"])
 
@@ -336,6 +337,9 @@ def purchase_combine(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
+    # Per-user throttle: provisioning a combine writes a payment + a combine row;
+    # a double-click or scripted loop shouldn't be able to spin up many at once.
+    enforce_user(financial_limiter, user.id, "purchase")
     # Simulated paid purchase: no real money moves, but the recorded amount
     # is the real matrix monthly price (provision_combine fills it from the
     # chosen path + split). When Stripe is on the frontend routes through
@@ -462,6 +466,10 @@ def request_payout(
          within PAYOUT_IDEMPOTENCY_WINDOW_S seconds (double-click / retry / two
          tabs), turning it into a clean 409 rather than a second event.
     """
+    # Per-user throttle — a second belt over the idempotency window below: caps
+    # how often one user can fire payout requests regardless of which combine, so
+    # a scripted loop can't hammer the booking path across many accounts.
+    enforce_user(financial_limiter, user.id, "payout")
     # Snapshot first (outside the lock) — this may COMMIT a pending settlement,
     # which would release any lock we held, so we compute the gating booleans +
     # the gross eligible amount here, then re-lock for the booking below.
@@ -532,6 +540,8 @@ def activate_account(
     the $149 fee on the activation path and $0 on the no-activation path
     (simulated), records the activation event, and unlocks payouts. 409 if
     the account isn't funded or is already activated."""
+    # Per-user throttle: activation charges a fee + writes a payment row.
+    enforce_user(financial_limiter, user.id, "activation")
     combine = _owned_combine(session, user, combine_id)
     snap = combine_snapshot(session, combine)
     if not snap.funded:
