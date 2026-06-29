@@ -20,11 +20,11 @@ from database import get_session
 from models.user import User
 from services.auth import (
     SESSION_COOKIE,
-    SESSION_TTL,
     create_session,
     get_current_user,
     hash_password,
     revoke_session,
+    session_ttl,
     verify_password,
 )
 from services.rate_limit import auth_limiter, enforce
@@ -65,7 +65,7 @@ def _set_session_cookie(response: Response, raw_token: str) -> None:
         httponly=True,
         samesite="lax",
         secure=settings.cookie_secure,
-        max_age=int(SESSION_TTL.total_seconds()),
+        max_age=int(session_ttl().total_seconds()),
         path="/",
     )
 

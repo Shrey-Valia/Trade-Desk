@@ -8,10 +8,12 @@ Design choices:
     the DB stores only its sha256, so a DB leak yields nothing live.
   * Expired session rows are deleted lazily on lookup.
 
-Cookie: td_session, HttpOnly, SameSite=Lax, 30 days. localhost:5173 →
-localhost:8000 is same-SITE (port is excluded from site comparisons),
-so Lax flows on the dev cross-origin XHR — and the Vite proxy makes it
-plain same-origin anyway.
+Cookie: td_session, HttpOnly, SameSite=Lax, lifetime from settings
+(session_ttl_days, default 14). localhost:5173 → localhost:8000 is
+same-SITE (port is excluded from site comparisons), so Lax flows on the
+dev cross-origin XHR — and the Vite proxy makes it plain same-origin
+anyway. The Secure flag is settings.cookie_secure (prod-safe by default;
+see config.py).
 """
 
 from __future__ import annotations
@@ -32,7 +34,13 @@ from models.combine import Combine
 from models.user import User
 
 SESSION_COOKIE = "td_session"
-SESSION_TTL = timedelta(days=30)
+
+
+def session_ttl() -> timedelta:
+    """Session lifetime, read from settings at call time so an override (e.g. a
+    test or a per-deployment SESSION_TTL_DAYS) takes effect without a reimport.
+    Drives both the auth_sessions row TTL and the cookie Max-Age."""
+    return settings.session_ttl
 
 
 # -- passwords ---------------------------------------------------------------
@@ -64,7 +72,7 @@ def create_session(db: Session, user_id: int) -> str:
         AuthSession(
             token_hash=_hash_token(raw),
             user_id=user_id,
-            expires_at=datetime.now(timezone.utc) + SESSION_TTL,
+            expires_at=datetime.now(timezone.utc) + session_ttl(),
         )
     )
     db.commit()
