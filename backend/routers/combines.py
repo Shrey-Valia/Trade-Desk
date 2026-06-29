@@ -21,7 +21,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database import get_session
@@ -34,6 +34,7 @@ from services.account_tiers import TIERS
 from services.auth import get_current_user
 from services.combine_provision import MAX_COMBINES, provision_combine
 from services.combine_state import combine_snapshot, record_event
+from services.rate_limit import enforce_user, financial_limiter
 
 router = APIRouter(prefix="/api/combines", tags=["combines"])
 
@@ -178,9 +179,38 @@ def _payouts_requested(session: Session, combine_id: int) -> float:
     return float(sum((r[0] or 0.0) for r in rows))
 
 
-def _to_out(session: Session, combine: Combine) -> CombineOut:
+def _payouts_requested_by_combine(
+    session: Session, combine_ids: list[int]
+) -> dict[int, float]:
+    """Per-combine sum of requested payouts for MANY combines in ONE grouped
+    query — the batched form of `_payouts_requested`, used by list_combines to
+    kill its N+1 (was one sum query per card). Combines with no payout events
+    are simply absent from the map; callers default them to 0.0."""
+    if not combine_ids:
+        return {}
+    rows = session.execute(
+        select(
+            CombineEvent.combine_id,
+            func.coalesce(func.sum(CombineEvent.amount), 0),
+        )
+        .where(
+            CombineEvent.combine_id.in_(combine_ids),
+            CombineEvent.type == "payout",
+        )
+        .group_by(CombineEvent.combine_id)
+    ).all()
+    return {cid: float(total or 0.0) for cid, total in rows}
+
+
+def _to_out(
+    session: Session, combine: Combine, *, requested: float | None = None
+) -> CombineOut:
     snap = combine_snapshot(session, combine)
-    requested = _payouts_requested(session, combine.id)
+    # `requested` may be precomputed by a batched grouped query (list_combines)
+    # to avoid a per-combine round-trip; fall back to the single-combine sum
+    # when called in isolation (purchase/rename/archive/etc.).
+    if requested is None:
+        requested = _payouts_requested(session, combine.id)
     available = max(0.0, snap.payout_eligible - requested)
     return CombineOut(
         id=combine.id,
@@ -240,8 +270,14 @@ def list_combines(
         .where(Combine.user_id == user.id)
         .order_by(Combine.created_at.desc(), Combine.id.desc())
     ).scalars().all()
+    # N+1 fix: one grouped query for every combine's requested-payout sum,
+    # instead of `_payouts_requested` firing once per card inside `_to_out`.
+    requested_by_id = _payouts_requested_by_combine(session, [c.id for c in combines])
     return CombinesOut(
-        combines=[_to_out(session, c) for c in combines],
+        combines=[
+            _to_out(session, c, requested=requested_by_id.get(c.id, 0.0))
+            for c in combines
+        ],
         active_combine_id=user.active_combine_id,
         slots_used=sum(1 for c in combines if c.status != "archived"),
         slots_total=MAX_COMBINES,
@@ -336,6 +372,9 @@ def purchase_combine(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
+    # Per-user throttle: provisioning a combine writes a payment + a combine row;
+    # a double-click or scripted loop shouldn't be able to spin up many at once.
+    enforce_user(financial_limiter, user.id, "purchase")
     # Simulated paid purchase: no real money moves, but the recorded amount
     # is the real matrix monthly price (provision_combine fills it from the
     # chosen path + split). When Stripe is on the frontend routes through
@@ -462,6 +501,10 @@ def request_payout(
          within PAYOUT_IDEMPOTENCY_WINDOW_S seconds (double-click / retry / two
          tabs), turning it into a clean 409 rather than a second event.
     """
+    # Per-user throttle — a second belt over the idempotency window below: caps
+    # how often one user can fire payout requests regardless of which combine, so
+    # a scripted loop can't hammer the booking path across many accounts.
+    enforce_user(financial_limiter, user.id, "payout")
     # Snapshot first (outside the lock) — this may COMMIT a pending settlement,
     # which would release any lock we held, so we compute the gating booleans +
     # the gross eligible amount here, then re-lock for the booking below.
@@ -532,6 +575,8 @@ def activate_account(
     the $149 fee on the activation path and $0 on the no-activation path
     (simulated), records the activation event, and unlocks payouts. 409 if
     the account isn't funded or is already activated."""
+    # Per-user throttle: activation charges a fee + writes a payment row.
+    enforce_user(financial_limiter, user.id, "activation")
     combine = _owned_combine(session, user, combine_id)
     snap = combine_snapshot(session, combine)
     if not snap.funded:
