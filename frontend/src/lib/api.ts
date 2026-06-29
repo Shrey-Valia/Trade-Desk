@@ -25,10 +25,14 @@ import {
 import {
   ChainTableSchema,
   ContractPreviewSchema,
+  MonteCarloResultSchema,
   ZeroDteChainSchema,
   type ChainTable,
   type ContractPreview,
   type ContractPreviewInput,
+  type MonteCarloInput,
+  type MonteCarloResult,
+  type OpenMultiLegInput,
   type ZeroDteChain,
 } from "@/types/zerodte";
 import {
@@ -559,6 +563,22 @@ export const openZeroDteStraddle = (
   mutate("/api/zerodte/open", TradeOutSchema, {
     method: "POST",
     body: JSON.stringify({ symbol, action, contracts }),
+  });
+
+/** WS5: open a multi-leg 0DTE structure (vertical / condor / butterfly /
+ *  custom) as a single Trade carrying all legs. */
+export const openZeroDteMultiLeg = (input: OpenMultiLegInput): Promise<Trade> =>
+  mutate("/api/zerodte/open-multi", TradeOutSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+/** WS5: run a terminal-value Monte-Carlo for an open position (trade_id) or
+ *  a hypothetical structure (legs). Returns the P&L distribution + P(profit). */
+export const runMonteCarlo = (input: MonteCarloInput): Promise<MonteCarloResult> =>
+  mutate("/api/analytics/montecarlo", MonteCarloResultSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 
 export const fetchJournalCalendar = (
