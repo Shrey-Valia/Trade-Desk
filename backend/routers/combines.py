@@ -16,7 +16,7 @@ over the charge and this endpoint becomes a fallback.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -36,6 +36,20 @@ from services.combine_provision import MAX_COMBINES, provision_combine
 from services.combine_state import combine_snapshot, record_event
 
 router = APIRouter(prefix="/api/combines", tags=["combines"])
+
+# Idempotency window for payout requests: a second payout on the same combine
+# within this many seconds is rejected as a likely duplicate (double-click, a
+# retried request, or two racing tabs). The FOR UPDATE lock below already makes
+# double-booking impossible; this is the belt to that suspenders, turning a
+# duplicate into a clear 409 instead of two legitimate-looking events.
+PAYOUT_IDEMPOTENCY_WINDOW_S = 10
+
+# Idempotency window for payout requests: a second payout on the same combine
+# within this many seconds is rejected as a likely duplicate (double-click, a
+# retried request, or two racing tabs). The FOR UPDATE lock below already makes
+# double-booking impossible; this is the belt to that suspenders, turning a
+# duplicate into a clear 409 instead of two legitimate-looking events.
+PAYOUT_IDEMPOTENCY_WINDOW_S = 10
 
 
 class CombineOut(BaseModel):
@@ -429,7 +443,28 @@ def request_payout(
 ) -> PayoutOut:
     """Request a payout on a FUNDED, ACTIVATED account: the trader's split
     (80/20 or 50/50) of realized profit, net of prior requests. Simulated —
-    records a payout event but moves no money."""
+    records a payout event but moves no money.
+
+    CONCURRENCY (P0): two payout requests racing on the same combine used to
+    each read `available` before either booked an event, so both could book the
+    full balance — a double-spend. Fixed two ways here:
+
+      1. We take a ROW LOCK on the combine (`SELECT … FOR UPDATE`) and read
+         `available` (eligible − prior requests) UNDER that lock, in the SAME
+         transaction that books the payout event. A concurrent request blocks on
+         the lock until the first commits, then sees the just-booked event in its
+         own `_payouts_requested` sum — so the second can never re-book the same
+         balance. (On SQLite FOR UPDATE is a documented no-op, but SQLite's
+         single-writer transaction model already serializes writers, so the
+         invariant holds on both backends.)
+
+      2. An idempotency guard rejects a duplicate payout on the same combine
+         within PAYOUT_IDEMPOTENCY_WINDOW_S seconds (double-click / retry / two
+         tabs), turning it into a clean 409 rather than a second event.
+    """
+    # Snapshot first (outside the lock) — this may COMMIT a pending settlement,
+    # which would release any lock we held, so we compute the gating booleans +
+    # the gross eligible amount here, then re-lock for the booking below.
     combine = _owned_combine(session, user, combine_id)
     snap = combine_snapshot(session, combine)
     if not snap.funded:
@@ -440,13 +475,45 @@ def request_payout(
             f"funded account not activated — pay the ${snap.activation_fee:,.0f} "
             "activation fee to unlock payouts",
         )
+
+    # Re-acquire the combine row WITH a write lock, opening the booking
+    # transaction. Everything from here to the commit is serialized per combine.
+    locked = session.execute(
+        select(Combine)
+        .where(Combine.id == combine.id, Combine.user_id == user.id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if locked is None:
+        raise HTTPException(404, f"combine {combine_id} not found")
+
+    now = datetime.now(timezone.utc)
+
+    # Idempotency: a recent payout on this combine is treated as a duplicate.
+    cutoff = now - timedelta(seconds=PAYOUT_IDEMPOTENCY_WINDOW_S)
+    recent = session.execute(
+        select(CombineEvent.id)
+        .where(
+            CombineEvent.combine_id == combine.id,
+            CombineEvent.type == "payout",
+            CombineEvent.created_at >= cutoff,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if recent is not None:
+        raise HTTPException(
+            409,
+            "a payout was just requested on this account — please wait a moment "
+            "before requesting another",
+        )
+
+    # `available` is read UNDER the lock so a racing request can't have booked
+    # against the same balance without us seeing it.
     available = max(0.0, snap.payout_eligible - _payouts_requested(session, combine.id))
     if available <= 0:
         raise HTTPException(409, "no payout currently available")
-    now = datetime.now(timezone.utc)
     record_event(
         session,
-        combine,
+        locked,
         "payout",
         f"Payout requested — ${available:,.2f}.",
         amount=available,

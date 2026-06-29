@@ -20,6 +20,7 @@ from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
+from services.money import Money
 
 
 class Combine(Base):
@@ -40,11 +41,12 @@ class Combine(Base):
     # balance at purchase; advanced monotonically intraday by the same
     # frozen update_hwm() the single-account model used. Tracks the day
     # high; drives the SETTLED HWM at settlement, not the MLL floor directly.
-    hwm: Mapped[float] = mapped_column(Float, nullable=False)
+    # Dollar account value — Money type (NUMERIC(12,2) on disk, float in Python).
+    hwm: Mapped[float] = mapped_column(Money, nullable=False)
     # Per-combine SETTLED high-water mark — the basis of the MLL floor.
     # Advances ONLY at the 5pm-PT settlement (settled = max(settled,
     # running)), so the floor is FIXED intraday and re-baselines UP only.
-    settled_hwm: Mapped[float] = mapped_column(Float, nullable=False)
+    settled_hwm: Mapped[float] = mapped_column(Money, nullable=False)
     # Last 5pm-PT settlement. None = never settled (settle on first read).
     last_settled_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True

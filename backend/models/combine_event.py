@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, String
+from sqlalchemy import ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
+from services.money import Money
 
 
 class CombineEvent(Base):
@@ -38,8 +39,10 @@ class CombineEvent(Base):
     # "funded" | "failed" | "settled" | "reset" | "payout"
     type: Mapped[str] = mapped_column(String(16), nullable=False)
     message: Mapped[str] = mapped_column(String(160), nullable=False)
-    # Only payout events carry a dollar amount.
-    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Only payout (and activation) events carry a dollar amount. Money type:
+    # NUMERIC(12,2) on disk, float in Python (services/money.py) — so the booked
+    # payout amount is exact to the cent, the basis of the double-spend guard.
+    amount: Mapped[float | None] = mapped_column(Money, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         nullable=False,

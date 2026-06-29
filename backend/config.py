@@ -42,6 +42,11 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{PROJECT_ROOT / 'data' / 'dashboard.db'}"
     log_level: str = "INFO"
+    # Emit logs as one JSON object per line (timestamp/level/logger/message +
+    # request_id when in a request) instead of the human-readable text format.
+    # OFF by default so local dev stays readable; flip LOG_JSON=1 in prod where
+    # a log aggregator (Datadog/Loki/CloudWatch) parses structured fields.
+    log_json: bool = False
 
     # ---------------------------------------------------------------------
     # WS5 — Platform hardening: Postgres connection pool (ignored on SQLite,
