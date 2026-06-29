@@ -132,14 +132,16 @@ def test_checkout_throttled_returns_429(auth_client, stripe_on, monkeypatch):
     assert "Retry-After" in res.headers
 
 
-def test_checkout_and_purchase_share_one_budget(auth_client, monkeypatch):
-    """Checkout (Stripe off → placeholder) and the placeholder purchase both
-    consume the same 'purchase' scope, so they can't be used to double the
-    effective budget."""
-    monkeypatch.setattr(financial_limiter, "max_attempts", 2)
-    # One placeholder checkout call (Stripe off → 200 placeholder, counts a hit).
-    assert auth_client.post("/api/payments/checkout", json={"tier": "50K"}).status_code == 200
-    # One real purchase (counts the 2nd hit on the shared scope).
+def test_placeholder_checkout_is_free_only_purchase_consumes(auth_client, monkeypatch):
+    """A placeholder checkout (Stripe OFF → just a config probe that tells the
+    frontend to use the free flow) must NOT consume the 'purchase' budget — only
+    the real /purchase does. Charging the probe too would halve the effective
+    purchase budget for the off-Stripe flow (the frontend calls checkout THEN
+    purchase for a single logical buy)."""
+    monkeypatch.setattr(financial_limiter, "max_attempts", 1)
+    # Many placeholder checkout probes — all free, never throttled.
+    for _ in range(3):
+        assert auth_client.post("/api/payments/checkout", json={"tier": "50K"}).status_code == 200
+    # The single-unit budget is spent only by a REAL purchase.
     assert auth_client.post("/api/combines/purchase", json={"tier": "50K"}).status_code == 201
-    # Budget of 2 is now spent → the next purchase is throttled.
     assert auth_client.post("/api/combines/purchase", json={"tier": "50K"}).status_code == 429

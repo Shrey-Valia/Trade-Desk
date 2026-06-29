@@ -69,7 +69,10 @@ export function useRearmAlert() {
 export function useAlertEvaluator(enabled: boolean = true) {
   const qc = useQueryClient();
   const { data } = useAlerts();
-  const firedRef = useRef<Set<number>>(new Set());
+  // Dedupe key is `${id}:${triggered_at}` (not just id) so a RE-ARMED alert
+  // that trips again — same row id, fresh triggered_at — counts as a new event
+  // and re-notifies, instead of being permanently swallowed for the session.
+  const firedRef = useRef<Set<string>>(new Set());
 
   const hasActivePrice = (data?.alerts ?? []).some(
     (a) => a.status === "active" && a.kind === "price",
@@ -84,8 +87,9 @@ export function useAlertEvaluator(enabled: boolean = true) {
         const res = await evaluateAlerts();
         if (cancelled || res.triggered.length === 0) return;
         for (const a of res.triggered) {
-          if (firedRef.current.has(a.id)) continue;
-          firedRef.current.add(a.id);
+          const key = `${a.id}:${a.triggered_at}`;
+          if (firedRef.current.has(key)) continue;
+          firedRef.current.add(key);
           toast.warning(alertFiredMessage(a), 0); // sticky — user dismisses
         }
         qc.invalidateQueries({ queryKey: ALERTS_KEY });

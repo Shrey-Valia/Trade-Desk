@@ -995,15 +995,15 @@ function RiskPreview({
           risk preview
         </span>
         <span
-          className="uppercase tracking-label-up text-fg-tertiary-2"
+          className="uppercase tracking-label-up text-warning"
           style={{ fontSize: 10 }}
-          title="If bought (long), loss is capped at the full debit. A short's loss is not premium-bounded."
+          title="If bought (long), loss is capped at the full debit. A SHORT's (SELL) loss is NOT premium-bounded — this figure does not apply to a sell."
         >
-          if long
+          long only
         </span>
       </div>
       <div className="flex items-baseline gap-x-4 gap-y-0.5 flex-wrap mt-0.5">
-        <Stat label="max loss" value={`$${maxLoss.toFixed(2)}`} tone="text-bearish" />
+        <Stat label="max loss (long)" value={`$${maxLoss.toFixed(2)}`} tone="text-bearish" />
         {breakevens && <Stat label="breakeven" value={breakevens} tone="text-position" />}
         {target1R != null && (
           <Stat

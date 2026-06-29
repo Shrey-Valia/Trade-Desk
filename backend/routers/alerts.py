@@ -223,7 +223,10 @@ def evaluate_alerts(
     now = datetime.now(timezone.utc)
     for alert in active:
         quote = quotes.get(alert.symbol)
-        if quote is None:
+        # A missing OR non-positive price (a bad/empty streamed quote) is NOT a
+        # real cross — skip it. Otherwise price=0 trips every "below" alert and
+        # permanently marks it triggered.
+        if quote is None or not (quote.price > 0):
             continue
         if price_alert_tripped(alert.direction, alert.threshold, quote.price):
             alert.status = "triggered"

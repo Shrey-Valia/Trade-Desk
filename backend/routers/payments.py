@@ -75,10 +75,13 @@ def create_checkout(
     # mirrors, so the limit holds however the user buys (checkout writes a
     # pending Payment + creates a Stripe session). Applied before the Stripe-off
     # short-circuit so the limit is consistent regardless of configuration.
-    enforce_user(financial_limiter, user.id, "purchase")
     if not payments.stripe_enabled():
-        # Stripe off → tell the frontend to use the free flow.
+        # Stripe off → tell the frontend to use the free flow. Don't consume a
+        # 'purchase' rate-limit hit here: this is just a config probe, and the
+        # real buy goes through /purchase (which has its own 'purchase' hit) —
+        # charging both would halve the effective purchase budget.
         return CheckoutOut(mode="placeholder")
+    enforce_user(financial_limiter, user.id, "purchase")
 
     price_id = payments.price_id_for(payload.tier)
     if not price_id:

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   keepPreviousData,
@@ -452,19 +452,29 @@ function OpenPositionCol({
   });
 
   // WS6 power-UX: the "C" hotkey (and the palette's "Close active position")
-  // close the selected position at the live mark. We consume the intent here —
-  // the panel owns the close mutation — and no-op when nothing's open or a
-  // close is already in flight.
+  // close the selected position at the live mark. SAFETY: closing realizes
+  // round-trip P&L, so — like the B/S arm pattern — a single keystroke must
+  // NOT fire. The first press ARMS (a sticky toast); a confirming second press
+  // within 3s actually closes. The panel owns the close mutation; no-op when
+  // nothing's open or a close is already in flight.
   const hotkeyIntent = useHotkeyActions((s) => s.intent);
   const hotkeyNonce = useHotkeyActions((s) => s.nonce);
   const consumeHotkey = useHotkeyActions((s) => s.consume);
+  const closeArmRef = useRef<number>(0);
   useEffect(() => {
     if (hotkeyIntent !== "closeActive") return;
     consumeHotkey();
-    if (trade && liveAnalytics && !close.isPending && !scaleOut.isPending) {
-      if (isPartial) scaleOut.mutate();
-      else close.mutate();
+    if (!trade || !liveAnalytics || close.isPending || scaleOut.isPending) return;
+    const now = Date.now();
+    if (now - closeArmRef.current > 3000) {
+      // First press → arm; require a confirming second press.
+      closeArmRef.current = now;
+      toast.warning(`Press C again to close ${trade.symbol}`, 3000);
+      return;
     }
+    closeArmRef.current = 0;
+    if (isPartial) scaleOut.mutate();
+    else close.mutate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hotkeyIntent, hotkeyNonce]);
 
