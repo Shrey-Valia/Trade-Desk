@@ -330,6 +330,26 @@ def _create_missing_indexes() -> None:
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_trades_oco_group ON trades(oco_group)")
         )
+        # exit_date drives the 5pm-PT trading-day windows (DLL, daily RPL,
+        # per-day buckets) in combine_state — all filter/sort closed trades by
+        # exit_date, so this backs the hottest read path.
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_trades_exit_date ON trades(exit_date)")
+        )
+        # Composite (user_id, status): list_combines filters by user_id and the
+        # slot-cap / active-set logic filters on status — the leading column
+        # also serves user_id-only lookups. The Combine model already declares
+        # this index (ix_combines_user_status), so create_all builds it on a
+        # FRESH DB; we re-assert it here with the SAME name (a no-op there) so a
+        # LEGACY adopted DB whose table predates the model index also gets it —
+        # the same belt-and-suspenders the trades indexes above use for columns
+        # added by ALTER TABLE.
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_combines_user_status "
+                "ON combines(user_id, status)"
+            )
+        )
         conn.commit()
 
 
