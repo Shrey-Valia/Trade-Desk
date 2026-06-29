@@ -300,6 +300,9 @@ export function PositionsPage() {
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-y-auto md:overflow-hidden">
+      {/* a11y (WS6): a visually-hidden <h1> gives this dense chart terminal a
+          heading landmark — the visible header is pills/search, not a title. */}
+      <h1 className="sr-only">Trade Desk — positions terminal{symbol ? ` (${symbol})` : ""}</h1>
       <TradeDeskHeader symbol={symbol} onSymbolChange={setSymbol} />
       {/* Desktop: chart | rail side-by-side. Mobile: chart stacked over the
           chain/ticket rail, the whole page scrolling vertically. */}

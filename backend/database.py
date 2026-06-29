@@ -85,6 +85,7 @@ def init_db() -> None:
     # Import models so SQLAlchemy registers them before create_all.
     from models import (  # noqa: F401
         account_state,
+        alert,
         auth_session,
         combine,
         combine_event,

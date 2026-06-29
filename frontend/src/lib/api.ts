@@ -76,6 +76,15 @@ import {
   type StarsResponse,
   type TickerSearchResponse,
 } from "@/types/search";
+import {
+  AlertSchema,
+  AlertsResponseSchema,
+  EvaluateResponseSchema,
+  type Alert,
+  type AlertInput,
+  type AlertsResponse,
+  type EvaluateResponse,
+} from "@/types/alert";
 
 const API_BASE = "";
 
@@ -608,3 +617,31 @@ export const fetchJournalAnalytics = (
   const q = p.toString();
   return request(`/api/analytics${q ? `?${q}` : ""}`, AnalyticsResponseSchema);
 };
+
+// -- Alerts (WS6) -----------------------------------------------------------
+
+export const fetchAlerts = (): Promise<AlertsResponse> =>
+  request("/api/alerts", AlertsResponseSchema);
+
+export const createAlert = (input: AlertInput): Promise<Alert> =>
+  mutate("/api/alerts", AlertSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+export const deleteAlert = async (id: number): Promise<void> => {
+  const res = await fetch(`${API_BASE}/api/alerts/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`Delete failed: ${res.status} ${res.statusText}`);
+};
+
+export const rearmAlert = (id: number): Promise<Alert> =>
+  mutate(`/api/alerts/${id}/rearm`, AlertSchema, { method: "POST" });
+
+/** Server-side evaluation of active price alerts against live quotes. The
+ *  frontend also evaluates client-side against its quote poll, but POSTs
+ *  here so a trip persists (status → triggered) authoritatively. */
+export const evaluateAlerts = (): Promise<EvaluateResponse> =>
+  mutate("/api/alerts/evaluate", EvaluateResponseSchema, { method: "POST" });
