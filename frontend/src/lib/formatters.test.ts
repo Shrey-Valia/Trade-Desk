@@ -11,7 +11,7 @@ import {
 
 // Non-breaking spaces appear in Intl compact output; normalize for stable
 // string assertions across Node ICU versions.
-const nbsp = (s: string) => s.replace(/ /g, " ");
+const nbsp = (s: string) => s.replace(/\u00A0/g, " ");
 
 describe("formatPrice", () => {
   it("formats USD with two fraction digits", () => {
