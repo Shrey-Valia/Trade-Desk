@@ -17,7 +17,7 @@ remains frozen.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -36,12 +36,12 @@ from calculations.intraday_analytics import (
 from calculations.position_analytics import DEFAULT_IV
 from database import get_session
 from models.combine import Combine
-from services.auth import get_active_combine
-from services.combine_state import combine_snapshot
-from services.copy_trade import mirror_close, mirror_open
 from models.trade import Trade
 from schemas.journal import TradeLeg, TradeOut, compute_net_debit_credit
 from services.alpaca_client import get_chain_snapshot, get_quotes
+from services.auth import get_active_combine
+from services.combine_state import combine_snapshot
+from services.copy_trade import mirror_close, mirror_open
 from services.fred_client import DEFAULT_RATE_FALLBACK, latest_dgs3mo_rate
 from services.market_calendar import is_market_open
 
@@ -512,6 +512,27 @@ def _open_contracts_for_combine(session: Session, combine_id: int) -> int:
     return total
 
 
+# ── WS5: server-side contract clamping (folded from WS3) ────────────────────
+def _clamp_contracts_to_cap(
+    session: Session, combine: Combine, requested: int
+) -> int:
+    """Defense-in-depth size clamp. `_require_tradeable` already REJECTS an
+    over-cap request with a 422, but this clamps the per-order size to the
+    remaining scaling-plan capacity as a belt-and-suspenders guard so a leg
+    can never be persisted above the cap even if the gate is bypassed or the
+    snapshot shifts under us. Returns the size to actually use (>=1).
+
+    The cap is per-COMBINE aggregate: remaining = max_contracts − already-open.
+    With nothing open and a cap of N this is a no-op (returns `requested`)."""
+    snap = combine_snapshot(session, combine)
+    open_now = _open_contracts_for_combine(session, combine.id)
+    remaining = max(0, snap.max_contracts - open_now)
+    # Never clamp below 1 — a 0-contract order is meaningless; the reject path
+    # in _require_tradeable owns the "no room at all" case (open_now >= cap).
+    return max(1, min(int(requested), remaining)) if remaining > 0 else int(requested)
+# ── end WS5 ─────────────────────────────────────────────────────────────────
+
+
 def _require_tradeable(
     session: Session, combine: Combine, contracts: int | None = None
 ) -> None:
@@ -606,17 +627,18 @@ def open_zerodte_straddle(
     Refuses to open if the NYSE session is not OPEN."""
     _require_market_open()
     _require_tradeable(session, combine, contracts=payload.contracts)
+    # WS5: defense-in-depth — clamp the persisted size to the scaling cap even
+    # though _require_tradeable already 422s an over-cap request.
+    contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
     _require_today_expiry(expiry)
 
     action = payload.action
-    call_price = _pick_fill_price(call_q, action, payload.contracts)
-    put_price = _pick_fill_price(put_q, action, payload.contracts)
+    call_price = _pick_fill_price(call_q, action, contracts)
+    put_price = _pick_fill_price(put_q, action, contracts)
     if call_price == 0 or put_price == 0:
         raise HTTPException(503, f"{sym} indicative quotes unavailable at ATM {atm}")
     _validate_brackets(spot, payload.stop_loss, payload.take_profit)
-
-    contracts = payload.contracts
     legs_json: list[dict] = [
         {
             "side": "call",
@@ -649,7 +671,7 @@ def open_zerodte_straddle(
     trade = Trade(
         symbol=sym,
         strategy=strategy,
-        entry_date=datetime.now(timezone.utc),
+        entry_date=datetime.now(UTC),
         entry_underlying_price=spot,
         net_debit_credit=net,
         status="open",
@@ -689,6 +711,8 @@ def open_zerodte_leg(
     open if the NYSE session is not OPEN."""
     _require_market_open()
     _require_tradeable(session, combine, contracts=payload.contracts)
+    # WS5: defense-in-depth — clamp the persisted size to the scaling cap.
+    contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
     sym = payload.symbol.upper().strip()
     chain = get_chain_snapshot(sym, with_volume=False)
     if not chain:
@@ -750,7 +774,7 @@ def open_zerodte_leg(
         "action": action,
         "strike": float(payload.strike),
         "expiry": target_expiry.isoformat(),
-        "contracts": payload.contracts,
+        "contracts": contracts,
         "entry_price": fill_ref,
     }
     from schemas.journal import TradeLeg
@@ -759,7 +783,7 @@ def open_zerodte_leg(
     trade = Trade(
         symbol=sym,
         strategy=strategy,
-        entry_date=datetime.now(timezone.utc),
+        entry_date=datetime.now(UTC),
         entry_underlying_price=spot,
         net_debit_credit=net,
         status="working" if is_working else "open",
@@ -791,6 +815,154 @@ def open_zerodte_leg(
     # Copy trading: mirror to follower combines if this is the lead (best-effort).
     mirror_open(session, combine, trade)
 
+    return _trade_to_out(trade)
+
+
+# ---------------------------------------------------------------------------
+# WS5 — Multi-leg strategy builder open endpoint
+# ---------------------------------------------------------------------------
+#
+# Generalizes the straddle open: accept N legs (verticals / iron condors /
+# butterflies / any custom multi-leg), validate each is 0DTE-tradeable, price
+# each at the indicative MARKET fill (reusing _pick_fill_price), gate via
+# _require_tradeable + clamp via _clamp_contracts_to_cap, and persist ONE
+# Trade carrying all legs. The existing analytics/chart-overlay path renders
+# multi-leg positions unchanged (it already iterates trade.legs).
+
+
+class MultiLegSpec(BaseModel):
+    """One leg of a multi-leg structure. action=buy (long) / sell (short)."""
+
+    side: Literal["call", "put"]
+    action: Literal["buy", "sell"]
+    strike: float = Field(gt=0)
+    # Per-leg ratio multiplier (1 for most legs; e.g. butterfly body = 2). The
+    # actual contract count for the leg is contracts × the request's `contracts`.
+    ratio: int = Field(gt=0, le=10, default=1)
+
+
+class OpenMultiLegRequest(BaseModel):
+    """Open a multi-leg structure expiring TODAY as a single paper Trade.
+
+    `legs` is 2..6 legs; `contracts` is the base size (each leg gets
+    ratio × contracts). `strategy` is an optional label (e.g. "vertical",
+    "iron_condor", "butterfly", "custom"); when omitted we infer a generic
+    "custom" tag. Always a MARKET fill — like the straddle quick-entry."""
+
+    symbol: str = Field(min_length=1, max_length=16, default="SPY")
+    contracts: int = Field(gt=0, le=100, default=1)
+    legs: list[MultiLegSpec] = Field(min_length=2, max_length=6)
+    strategy: str | None = Field(default=None, max_length=32)
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
+
+
+def _resolve_same_day_quotes(symbol: str) -> tuple[str, float, date, dict]:
+    """Resolve the strict-0DTE chain + a {(strike, side): ContractRow} map for
+    pricing arbitrary legs. Raises the same 409/503 the leg path does so the
+    UI's error handling is consistent. Returns (sym, spot, expiry, by_key)."""
+    sym = symbol.upper().strip()
+    chain = get_chain_snapshot(sym, with_volume=False)
+    if not chain:
+        raise HTTPException(503, f"{sym} options chain unavailable")
+    today = datetime.now(_ET).date()
+    same_day = [c for c in chain if c.expiry == today]
+    if not same_day:
+        raise HTTPException(
+            status_code=409,
+            detail=f"0DTE-only: {sym} has no contracts expiring today ({today.isoformat()}).",
+        )
+    quote = get_quotes([sym]).get(sym)
+    if quote is None:
+        raise HTTPException(503, f"{sym} quote unavailable")
+    spot = float(quote.price)
+    by_key = {(round(float(c.strike), 2), c.type): c for c in same_day}
+    return sym, spot, today, by_key
+
+
+@router.post("/open-multi", response_model=TradeOut, status_code=201)
+def open_zerodte_multi_leg(
+    payload: OpenMultiLegRequest,
+    combine: Combine = Depends(get_active_combine),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Open a multi-leg 0DTE structure (vertical / condor / butterfly / custom).
+
+    Each leg is priced at the indicative MARKET fill against today's chain;
+    the whole structure becomes one Trade with N legs. Gated by the combine
+    rules and the scaling cap (the base `contracts` is what's checked against
+    the cap; per-leg ratios scale within the structure). Strict 0DTE +
+    session-open, like the straddle/leg paths."""
+    _require_market_open()
+    _require_tradeable(session, combine, contracts=payload.contracts)
+    # Defense-in-depth: clamp the base size to remaining scaling capacity.
+    base_contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
+
+    sym, spot, expiry, by_key = _resolve_same_day_quotes(payload.symbol)
+    _require_today_expiry(expiry)
+    _validate_brackets(spot, payload.stop_loss, payload.take_profit)
+
+    legs_json: list[dict] = []
+    for spec in payload.legs:
+        leg_qty = spec.ratio * base_contracts
+        contract_row = by_key.get((round(spec.strike, 2), spec.side))
+        if contract_row is None:
+            raise HTTPException(
+                422,
+                f"No {spec.side} at strike {spec.strike:g} for {sym} 0DTE today.",
+            )
+        q = _LegQuote(
+            symbol=f"{sym} {spec.side}",
+            strike=spec.strike,
+            side=spec.side,
+            bid=getattr(contract_row, "bid", None),
+            ask=getattr(contract_row, "ask", None),
+            last=getattr(contract_row, "last", None),
+        )
+        price = _pick_fill_price(q, spec.action, leg_qty)
+        if price == 0:
+            raise HTTPException(
+                503, f"{sym} indicative quote unavailable at {spec.side} {spec.strike:g}"
+            )
+        legs_json.append(
+            {
+                "side": spec.side,
+                "action": spec.action,
+                "strike": float(spec.strike),
+                "expiry": expiry.isoformat(),
+                "contracts": leg_qty,
+                "entry_price": round(price, 4),
+            }
+        )
+
+    typed_legs = [TradeLeg(**leg) for leg in legs_json]
+    net = compute_net_debit_credit(typed_legs)
+
+    strategy = (payload.strategy or "custom").strip().lower() or "custom"
+    notes = f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · indicative fill"
+
+    trade = Trade(
+        symbol=sym,
+        strategy=strategy,
+        entry_date=datetime.now(UTC),
+        entry_underlying_price=spot,
+        net_debit_credit=net,
+        status="open",
+        stop_loss=payload.stop_loss,
+        take_profit=payload.take_profit,
+        is_paper=True,
+        notes=notes,
+        tier=combine.tier,
+        combine_id=combine.id,
+    )
+    trade.legs = legs_json
+    trade.tags = ["0dte", "multi-leg"]
+    trade.mistake_tags = []
+    session.add(trade)
+    session.commit()
+    session.refresh(trade)
+
+    mirror_open(session, combine, trade)
     return _trade_to_out(trade)
 
 
@@ -1020,7 +1192,7 @@ def flatten_positions(
     (unrealized − exit commission) and cascades each close through
     copy_trade.mirror_close. Idempotent: with nothing open it books nothing.
     A position whose underlying quote is cold is left open (can't price it)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     positions = _open_positions_for_combine(session, combine.id)
     closed: list[int] = []
     total = 0.0
@@ -1048,7 +1220,7 @@ def reverse_positions(
     placed). Reuses the single-close path + mirror cascade for the close half,
     and mirror_open for the new reversed positions."""
     _require_market_open()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     positions = _open_positions_for_combine(session, combine.id)
     closed: list[int] = []
     opened: list[int] = []
