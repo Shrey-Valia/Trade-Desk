@@ -114,6 +114,29 @@ def test_multileg_butterfly_ratio_doubles_body(auth_client, session_factory, mon
     assert legs[100.0] == 4
 
 
+def test_multileg_ratio_cannot_bypass_scaling_cap(auth_client, session_factory, monkeypatch):
+    """The aggregate scaling cap counts a trade as its LARGEST leg. A butterfly
+    with base = cap and a body ratio=2 would persist a 2x-cap body leg — the gate
+    must reject it. Regression: the cap was checked on the BASE, not base x ratio,
+    so a ratio>1 leg could be persisted at double the cap."""
+    make_combine(auth_client, "50K")  # scaling cap = 5 contracts at $0 built equity
+    _stub_chain(monkeypatch, strikes=(95.0, 100.0, 105.0))
+    res = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={
+            "symbol": "SPY",
+            "contracts": 5,  # base=5; body ratio=2 -> effective body = 10 > cap 5
+            "strategy": "butterfly",
+            "legs": [
+                {"side": "call", "action": "buy", "strike": 95, "ratio": 1},
+                {"side": "call", "action": "sell", "strike": 100, "ratio": 2},
+                {"side": "call", "action": "buy", "strike": 105, "ratio": 1},
+            ],
+        },
+    )
+    assert res.status_code == 422, res.text  # rejected on the EFFECTIVE largest-leg size
+
+
 def test_multileg_rejects_missing_strike(auth_client, session_factory, monkeypatch):
     make_combine(auth_client, "50K")
     _stub_chain(monkeypatch, strikes=(100.0,))

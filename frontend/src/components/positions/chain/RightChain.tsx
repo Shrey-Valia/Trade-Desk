@@ -86,9 +86,13 @@ export function applyChainFilters(
   rows: ChainStrikeRow[],
   atmStrike: number,
   f: ChainFilters,
+  keepStrike?: number | null,
 ): ChainStrikeRow[] {
   return rows.filter((r) => {
     if (r.strike === atmStrike) return true; // anchor row always survives
+    // Never hide the row the user has SELECTED in the ticket, even if a tight
+    // band / high min-OI would otherwise filter it out.
+    if (keepStrike != null && r.strike === keepStrike) return true;
     if (f.band > 0) {
       // Count how many strike steps away this row is by index distance from
       // ATM in the (sorted) list — approximate with price distance / step.
@@ -282,8 +286,11 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
   // interest / live-quotes-only). Pure narrowing — keeps the ATM row so the
   // ladder stays anchored — so it composes with the virtualization below.
   const filteredRows = useMemo(
-    () => (data ? applyChainFilters(data.rows, data.atm_strike, filters) : []),
-    [data, filters],
+    () =>
+      data
+        ? applyChainFilters(data.rows, data.atm_strike, filters, currentSelection?.strike ?? null)
+        : [],
+    [data, filters, currentSelection?.strike],
   );
   const filteredOut = (data?.rows.length ?? 0) - filteredRows.length;
   // ── end WS5

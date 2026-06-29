@@ -894,9 +894,15 @@ def open_zerodte_multi_leg(
     the cap; per-leg ratios scale within the structure). Strict 0DTE +
     session-open, like the straddle/leg paths."""
     _require_market_open()
-    _require_tradeable(session, combine, contracts=payload.contracts)
-    # Defense-in-depth: clamp the base size to remaining scaling capacity.
-    base_contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
+    # The aggregate scaling cap counts a trade as its LARGEST leg
+    # (_open_contracts_for_combine uses max(leg.contracts) = base × max_ratio).
+    # So gate AND clamp on that EFFECTIVE size, not the base — otherwise a leg
+    # with ratio > 1 (e.g. the butterfly body's ratio=2) persists past the cap
+    # that only validated the base, doubling the real open size.
+    max_ratio = max(int(spec.ratio) for spec in payload.legs)
+    _require_tradeable(session, combine, contracts=payload.contracts * max_ratio)
+    effective = _clamp_contracts_to_cap(session, combine, payload.contracts * max_ratio)
+    base_contracts = max(1, effective // max_ratio)
 
     sym, spot, expiry, by_key = _resolve_same_day_quotes(payload.symbol)
     _require_today_expiry(expiry)
