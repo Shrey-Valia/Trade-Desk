@@ -732,10 +732,33 @@ function Cell({
       cancelling={cancelling}
     />
   );
+  // a11y (WS6): the cell is already a <button> (Enter/Space select it
+  // natively), but a screen reader hears only the bare numbers without a
+  // label. Spell out side + strike + action, mark the selected cell with
+  // aria-pressed, and add a keyboard path to the quick-order popover (the
+  // mouse-only right-click / long-press is otherwise unreachable): Shift+Enter
+  // or the ContextMenu key opens it, anchored at the cell's center.
+  const actionLabel = disabled
+    ? `${side} ${strike} — unavailable (market closed or no 0DTE today)`
+    : `Select ${side} option at strike ${strike}, premium ${price.toFixed(
+        2,
+      )}. Shift+Enter for a quick order.`;
+  const cellRef = useRef<HTMLButtonElement>(null);
+  const openQuickFromKeyboard = () => {
+    if (disabled) return;
+    const r = cellRef.current?.getBoundingClientRect();
+    onQuickOrder({
+      x: r ? r.left + r.width / 2 : 0,
+      y: r ? r.top + r.height / 2 : 0,
+    });
+  };
   const cellButton = (
     <button
         key="cell"
+        ref={cellRef}
         type="button"
+        aria-label={actionLabel}
+        aria-pressed={selected}
         onClick={() => {
           // Swallow the click synthesized right after a long-press.
           if (longFired.current) {
@@ -743,6 +766,13 @@ function Cell({
             return;
           }
           onClick();
+        }}
+        onKeyDown={(e) => {
+          // Keyboard equivalent of right-click → quick order.
+          if (e.key === "ContextMenu" || (e.key === "Enter" && e.shiftKey)) {
+            e.preventDefault();
+            openQuickFromKeyboard();
+          }
         }}
         onContextMenu={(e) => {
           if (disabled) return;

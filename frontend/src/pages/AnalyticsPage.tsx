@@ -100,7 +100,9 @@ function Toolbar({
       style={{ height: 36 }}
     >
       <TradeDeskLogo size="compact" />
-      <span className="text-xs2 uppercase tracking-label-up text-fg-secondary">Analytics</span>
+      <h1 className="text-xs2 uppercase tracking-label-up text-fg-secondary font-normal m-0">
+        Analytics
+      </h1>
       {tier && (
         <span
           className="inline-flex items-center h-6 px-2.5 border border-tier-3 bg-tier-2 text-fg-secondary uppercase tracking-label-up"

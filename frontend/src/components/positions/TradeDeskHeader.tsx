@@ -412,6 +412,12 @@ function MetricPill({
         {label}
       </span>
       <span
+        // a11y (WS6): the live risk/P&L readouts update on the account poll;
+        // aria-live=polite so a screen reader announces a changed balance, MLL
+        // cushion, or P&L without stealing focus mid-task. The label is read
+        // alongside the value so "BAL $52,310" is announced, not a bare number.
+        aria-live="polite"
+        aria-label={`${label} ${value}`}
         className={`tabular-nums font-medium whitespace-nowrap ${valueClass}`}
         style={{ fontSize: 13, marginTop: 2 }}
       >

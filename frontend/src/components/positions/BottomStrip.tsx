@@ -668,7 +668,7 @@ function PositionGlyph() {
         height: 0,
         borderLeft: "4px solid transparent",
         borderRight: "4px solid transparent",
-        borderBottom: "6px solid #D946EF",
+        borderBottom: "6px solid #E673F5",
       }}
     />
   );
@@ -1124,7 +1124,7 @@ function BeDriftPreview({
       >
         <path
           d={lowerPath.join(" ")}
-          stroke="#D946EF"
+          stroke="#E673F5"
           strokeWidth="0.8"
           strokeOpacity="0.55"
           fill="none"
@@ -1132,7 +1132,7 @@ function BeDriftPreview({
         />
         <path
           d={upperPath.join(" ")}
-          stroke="#D946EF"
+          stroke="#E673F5"
           strokeWidth="0.8"
           strokeOpacity="0.55"
           fill="none"

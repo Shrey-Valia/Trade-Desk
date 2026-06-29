@@ -30,9 +30,12 @@ export function RailShell() {
         Skip to content
       </a>
       <LeftRail />
-      <main id="main-content" className="flex-1 min-w-0 min-h-0 flex flex-col">
+      {/* Skip-link target. A plain <div>, not <main>: most rail pages render
+          their own <main> landmark, so the wrapper stays a generic container
+          to avoid two main landmarks per route. */}
+      <div id="main-content" className="flex-1 min-w-0 min-h-0 flex flex-col">
         <Outlet />
-      </main>
+      </div>
       <MobileBottomNav />
       <HelpOverlay />
       <OnboardingTour />
