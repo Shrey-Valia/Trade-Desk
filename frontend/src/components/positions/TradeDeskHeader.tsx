@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQueries } from "@tanstack/react-query";
+import { AlertsBell } from "@/components/alerts/AlertsBell";
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
 import { useAccountState } from "@/hooks/useAccountState";
@@ -68,6 +69,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
       />
       <PriceReadout symbol={symbol} />
       <div className="ml-auto flex items-center" style={{ gap: 6 }}>
+        <AlertsBell symbol={symbol} />
         <MetricPills />
       </div>
       <SymbolSearchModal

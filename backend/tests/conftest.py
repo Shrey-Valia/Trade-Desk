@@ -49,6 +49,7 @@ def _reset_auth_rate_limiter():
 def db_engine():
     # Import models so they register on Base.metadata before create_all.
     import models.account_state  # noqa: F401
+    import models.alert  # noqa: F401
     import models.auth_session  # noqa: F401
     import models.combine  # noqa: F401
     import models.payment  # noqa: F401

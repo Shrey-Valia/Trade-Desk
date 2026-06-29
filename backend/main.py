@@ -26,6 +26,7 @@ from jobs.monitor_orders import monitor_orders
 from jobs.settle_combines import settle_combines
 from routers.ticker import MarketDataDegraded
 from routers import account as account_router
+from routers import alerts as alerts_router
 from routers import analytics as analytics_router
 from routers import auth as auth_router
 from routers import combines as combines_router
@@ -403,6 +404,7 @@ app.include_router(payments_router.router)
 app.include_router(ticker_search_router.router)
 app.include_router(user_browse_router.router_user)
 app.include_router(user_browse_router.router_ticker)
+app.include_router(alerts_router.router)  # WS6: price/earnings/fill alerts
 
 
 @app.get("/health")

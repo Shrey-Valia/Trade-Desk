@@ -222,6 +222,15 @@ export function TradeTicket() {
         openContracts={openContracts}
       />
       <DllRiskHint selection={selection} contracts={contracts} />
+      {/* ── WS6 RISK PREVIEW (BEGIN) ──────────────────────────────────────
+          Owned by WS6. Self-contained block: reads only `selection` +
+          `contracts` (both already in scope) and the shared breakeven/
+          pricing math below. WS5 (multi-leg builder) edits this file too and
+          merges FIRST — to integrate, keep this <RiskPreview/> call and its
+          component + helpers as one unit; if WS5 generalizes `selection` to
+          multi-leg, extend `riskPreviewFor()` rather than inlining here. */}
+      <RiskPreview selection={selection} contracts={contracts} />
+      {/* ── WS6 RISK PREVIEW (END) ───────────────────────────────────────── */}
       <Actions
         selection={selection}
         contracts={contracts}
@@ -798,6 +807,133 @@ function Actions({
     </div>
   );
 }
+
+/* ── WS6 RISK PREVIEW component + helpers (BEGIN) ──────────────────────────
+ *
+ * Pre-trade risk summary for the configured order. Reuses the existing
+ * `computeBreakevens()` (above) and the same `price × 100 × contracts` debit
+ * math the Summary/Actions already use — no new pricing source. Reads only
+ * `selection` + `contracts`, so it stays decoupled from the rest of the ticket
+ * (and from WS5's multi-leg work, which merges first — see the delimited call
+ * site above).
+ *
+ * Definitions shown:
+ *   - MAX LOSS : a long (the BUY direction) caps loss at the full debit. A
+ *     short's loss is unbounded, so for shorts we say so rather than print a
+ *     misleading number — mirroring DllRiskHint's deliberate-silence stance.
+ *   - BREAKEVEN: the underlying price(s) at expiry (magenta band on the chart).
+ *   - R-MULTIPLE: with risk R = the debit, the underlying targets that return
+ *     +1R / +2R on the position (premium doubles / triples for a long). Gives
+ *     the trader a reward-in-underlying-terms reference before they fire.
+ */
+interface RiskPreviewData {
+  maxLoss: number;
+  breakevens: string | null;
+  /** Underlying price at +1R / +2R profit (premium 2× / 3×), long only. */
+  target1R: number | null;
+  target2R: number | null;
+}
+
+export function riskPreviewFor(
+  selection: TicketSelection,
+  contracts: number,
+): RiskPreviewData {
+  const debit = selection.price * 100 * contracts;
+  const breakevens = computeBreakevens(selection);
+
+  // R-multiple in underlying terms: the long pays `price` premium; at +1R the
+  // option is worth 2×price (one R of profit), at +2R it's 3×price. For a
+  // single call/put that maps to an underlying move of `nR × price` past the
+  // breakeven in the option's favorable direction. Straddles move either way,
+  // so we don't print a single directional target.
+  let target1R: number | null = null;
+  let target2R: number | null = null;
+  if (selection.kind === "leg") {
+    const be =
+      selection.side === "call"
+        ? selection.strike + selection.price
+        : selection.strike - selection.price;
+    const step = selection.price; // one R of underlying move past BE
+    if (selection.side === "call") {
+      target1R = be + step;
+      target2R = be + 2 * step;
+    } else {
+      target1R = be - step;
+      target2R = be - 2 * step;
+    }
+  }
+
+  return { maxLoss: debit, breakevens, target1R, target2R };
+}
+
+function RiskPreview({
+  selection,
+  contracts,
+}: {
+  selection: TicketSelection;
+  contracts: number;
+}) {
+  const { maxLoss, breakevens, target1R, target2R } = riskPreviewFor(
+    selection,
+    contracts,
+  );
+  if (!Number.isFinite(maxLoss) || maxLoss <= 0) return null;
+
+  return (
+    <div
+      className="mx-3 mb-1 px-2 py-1.5 bg-tier-1 border border-hairline rounded-btn tabular-nums"
+      style={{ fontSize: 12 }}
+      aria-label="Risk preview for this order"
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 10 }}>
+          risk preview
+        </span>
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2"
+          style={{ fontSize: 10 }}
+          title="If bought (long), loss is capped at the full debit. A short's loss is not premium-bounded."
+        >
+          if long
+        </span>
+      </div>
+      <div className="flex items-baseline gap-x-4 gap-y-0.5 flex-wrap mt-0.5">
+        <Stat label="max loss" value={`$${maxLoss.toFixed(2)}`} tone="text-bearish" />
+        {breakevens && <Stat label="breakeven" value={breakevens} tone="text-position" />}
+        {target1R != null && (
+          <Stat
+            label="+1R / +2R"
+            value={`$${target1R.toFixed(2)} · $${(target2R ?? target1R).toFixed(2)}`}
+            tone="text-fg-secondary"
+            title="Underlying price where the option returns +1R / +2R (R = the debit risked)."
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  tone,
+  title,
+}: {
+  label: string;
+  value: string;
+  tone: string;
+  title?: string;
+}) {
+  return (
+    <span className="inline-flex items-baseline gap-1" title={title}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 10 }}>
+        {label}
+      </span>
+      <span className={tone}>{value}</span>
+    </span>
+  );
+}
+/* ── WS6 RISK PREVIEW component + helpers (END) ────────────────────────────── */
 
 function ActionButton({
   intent,
