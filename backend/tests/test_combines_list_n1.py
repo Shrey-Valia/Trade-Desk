@@ -17,7 +17,7 @@ These tests prove two things:
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import event, select
@@ -36,7 +36,7 @@ def _noon_pt_on(day_offset: int) -> datetime:
     from datetime import timedelta
 
     d = (datetime.now(_PT) - timedelta(days=day_offset)).date()
-    return datetime.combine(d, time(12, 0), tzinfo=_PT).astimezone(timezone.utc)
+    return datetime.combine(d, time(12, 0), tzinfo=_PT).astimezone(UTC)
 
 
 def _seed_closed(session, combine_id: int, realized: float, exit_at: datetime) -> None:
@@ -69,7 +69,7 @@ def _fund_and_activate(client, combine_id: int, total_profit: float) -> None:
     _seed_closed(session, combine_id, half, _noon_pt_on(2))
     _seed_closed(session, combine_id, round(total_profit - half, 2), _noon_pt_on(1))
     combine = session.get(Combine, combine_id)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     combine.funded_at = now
     combine.funded_activated_at = now
     session.add(combine)
