@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQueries } from "@tanstack/react-query";
+import { AlertsBell } from "@/components/alerts/AlertsBell";
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
 import { useAccountState } from "@/hooks/useAccountState";
@@ -34,10 +35,11 @@ interface Props {
 export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
   const [searchOpen, setSearchOpen] = useState(false);
 
-  // Global keyboard shortcuts: "/" or Cmd/Ctrl+K opens the modal from
-  // anywhere on the page. We skip the shortcut if the user is typing
-  // in another input (e.g. the trade-entry form) so "/" still types a
-  // literal slash where it should.
+  // Symbol-search shortcut: "/" opens the modal from anywhere on the page.
+  // We skip it while the user is typing in another input (e.g. the trade-entry
+  // form) so "/" still types a literal slash there. ⌘K/Ctrl-K is now owned by
+  // the WS6 command palette (whose first entry is symbol search), so it's no
+  // longer handled here.
   useEffect(() => {
     function handle(e: KeyboardEvent) {
       const targetTag = (e.target as HTMLElement | null)?.tagName ?? "";
@@ -45,10 +47,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
         targetTag === "INPUT" ||
         targetTag === "TEXTAREA" ||
         (e.target as HTMLElement | null)?.isContentEditable === true;
-      const isCmdK =
-        (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k";
-      const isSlash = e.key === "/" && !isEditable;
-      if (isCmdK || isSlash) {
+      if (e.key === "/" && !isEditable) {
         e.preventDefault();
         setSearchOpen(true);
       }
@@ -68,6 +67,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
       />
       <PriceReadout symbol={symbol} />
       <div className="ml-auto flex items-center" style={{ gap: 6 }}>
+        <AlertsBell symbol={symbol} />
         <MetricPills />
       </div>
       <SymbolSearchModal
@@ -410,6 +410,12 @@ function MetricPill({
         {label}
       </span>
       <span
+        // a11y (WS6): the live risk/P&L readouts update on the account poll;
+        // aria-live=polite so a screen reader announces a changed balance, MLL
+        // cushion, or P&L without stealing focus mid-task. The label is read
+        // alongside the value so "BAL $52,310" is announced, not a bare number.
+        aria-live="polite"
+        aria-label={`${label} ${value}`}
         className={`tabular-nums font-medium whitespace-nowrap ${valueClass}`}
         style={{ fontSize: 13, marginTop: 2 }}
       >

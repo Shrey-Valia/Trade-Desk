@@ -27,10 +27,14 @@ export const colors = {
   // CONTENT tiers were lifted so any real text clears WCAG AA on the
   // shipped #131722 ground (the old #5A5A52 tertiary was ~2.5:1 — a fail).
   // fgDisabled stays dim: it is for decorative / disabled only, never words.
+  // WS6 a11y: fgTertiary lifted #83837A → #9A9A90 so it clears AA (≥4.5:1)
+  // even on the lifted tier-2 / tier-3 surfaces where it was ~3.85:1 (a fail
+  // for normal-size text). It is used as real label/placeholder text in 300+
+  // spots, so it must meet the normal-text bar, not just AA-large.
   fgPrimary: "#E8E8E0",
   fgSecondary: "#C4C4BC",
   fgTertiary2: "#9B9B92",
-  fgTertiary: "#83837A",
+  fgTertiary: "#9A9A90",
   fgDisabled: "#3F3F3A",
 
   // Borders — bumped up so they read against the lifted background.
@@ -38,16 +42,23 @@ export const colors = {
   borderStrong: "#3A4258",
 
   // Price semantics — reserved for +/- price moves + P&L coloring.
+  // WS6 a11y: bearish lifted #E85C5C → #F06A6A. As text it sat at ~4.29:1 on
+  // tier-2 (an AA fail for normal text); the lift clears AA-large everywhere
+  // and AA on the tier-0/1/2 surfaces where most P&L text renders. (Candle
+  // bearish is a SEPARATE, user-tunable token in userSettings — unchanged.)
   bullish: "#4DD17C",
-  bearish: "#E85C5C",
+  bearish: "#F06A6A",
 
   // Accents.
   accentAmber: "#F0A030", // ACTIVE / SELECTED only.
   accentCyan: "#4FB8C8",  // neutral / quiet annotation accent.
-  warning: "#C97A3A",     // alerts / "market closed" notices.
+  // WS6 a11y: warning lifted #C97A3A → #D98A4A to clear AA (≥4.5:1) on the
+  // lifted tiers (was ~4.44 on tier-2).
+  warning: "#D98A4A",     // alerts / "market closed" notices.
 
   // User position highlight (entry triangle + breakeven lines).
-  positionMagenta: "#D946EF",
+  // WS6 a11y: lifted #D946EF → #E673F5 to clear AA as text + 3:1 as a graphic.
+  positionMagenta: "#E673F5",
 
   // Action affordance colors — BUY / SELL filled buttons.
   // Deliberately distinct from BULLISH / BEARISH (price/P&L semantics).

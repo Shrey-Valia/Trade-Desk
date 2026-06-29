@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useHotkeyActions } from "@/stores/hotkeyActions";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useTrades } from "@/hooks/useTrades";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
@@ -11,6 +12,13 @@ import {
   type TicketSelection,
   type TicketOrderType,
 } from "@/stores/tradeTicket";
+// ── WS5 (Trading depth): builder / sizer / Monte-Carlo tools ────────────────
+// These mount in a collapsible TOOLS section below the Actions row (see the
+// WS5 block in the render). Self-contained components; WS6 shares this file.
+import { StrategyBuilder } from "@/components/positions/tools/StrategyBuilder";
+import { PositionSizer } from "@/components/positions/tools/PositionSizer";
+import { MonteCarloPanel } from "@/components/positions/tools/MonteCarloPanel";
+// ── end WS5 ─────────────────────────────────────────────────────────────────
 
 /**
  * Lower-right TRADE TICKET (184px tall).
@@ -132,6 +140,31 @@ export function TradeTicket() {
   // before react has rendered the disabled state.
   const submittingRef = useRef(false);
 
+  // ── WS5: collapsible TOOLS tab (builder / sizer / Monte-Carlo). null = closed.
+  const [activeTool, setActiveTool] = useState<ToolTab | null>(null);
+  // ── end WS5
+
+  // WS6 power-UX: the B/S hotkeys "pre-arm" by focusing the matching action
+  // button (not auto-firing — a stray keypress must never place an order). The
+  // global hotkey hook publishes the intent on the action bus; we consume it
+  // here and move focus so the user confirms with Enter/Space.
+  const buyBtnRef = useRef<HTMLButtonElement>(null);
+  const sellBtnRef = useRef<HTMLButtonElement>(null);
+  const hotkeyIntent = useHotkeyActions((s) => s.intent);
+  const hotkeyNonce = useHotkeyActions((s) => s.nonce);
+  const consumeHotkey = useHotkeyActions((s) => s.consume);
+  useEffect(() => {
+    if (hotkeyIntent === "armBuy") {
+      buyBtnRef.current?.focus();
+      consumeHotkey();
+    } else if (hotkeyIntent === "armSell") {
+      sellBtnRef.current?.focus();
+      consumeHotkey();
+    }
+    // closeActive is handled by the active-position panel, not the ticket.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hotkeyIntent, hotkeyNonce]);
+
   const fire = (action: "buy" | "sell") => {
     if (submittingRef.current || !canFire || !selection) return;
     submittingRef.current = true;
@@ -222,6 +255,15 @@ export function TradeTicket() {
         openContracts={openContracts}
       />
       <DllRiskHint selection={selection} contracts={contracts} />
+      {/* ── WS6 RISK PREVIEW (BEGIN) ──────────────────────────────────────
+          Owned by WS6. Self-contained block: reads only `selection` +
+          `contracts` (both already in scope) and the shared breakeven/
+          pricing math below. WS5 (multi-leg builder) edits this file too and
+          merges FIRST — to integrate, keep this <RiskPreview/> call and its
+          component + helpers as one unit; if WS5 generalizes `selection` to
+          multi-leg, extend `riskPreviewFor()` rather than inlining here. */}
+      <RiskPreview selection={selection} contracts={contracts} />
+      {/* ── WS6 RISK PREVIEW (END) ───────────────────────────────────────── */}
       <Actions
         selection={selection}
         contracts={contracts}
@@ -230,15 +272,81 @@ export function TradeTicket() {
         marketOpen={marketOpen}
         onBuy={() => fire("buy")}
         onSell={() => fire("sell")}
+        buyRef={buyBtnRef}
+        sellRef={sellBtnRef}
       />
       {lastError && (
         <div className="px-3 pb-1 text-tiny text-bearish truncate" title={lastError}>
           {lastError}
         </div>
       )}
+      {/* ── WS5: collapsible TOOLS — multi-leg builder / position sizer /
+          Monte-Carlo. Additive; renders below the single/straddle ticket so
+          the core BUY/SELL flow is unchanged. WS6 shares this file. ── */}
+      <ToolsSection
+        symbol={selection.symbol}
+        active={activeTool}
+        onSelect={(t) => setActiveTool((prev) => (prev === t ? null : t))}
+      />
+      {/* ── end WS5 ── */}
     </section>
   );
 }
+
+// ── WS5: TOOLS section (tab bar + active tool panel) ────────────────────────
+type ToolTab = "builder" | "sizer" | "montecarlo";
+
+function ToolsSection({
+  symbol,
+  active,
+  onSelect,
+}: {
+  symbol: string;
+  active: ToolTab | null;
+  onSelect: (t: ToolTab) => void;
+}) {
+  const tabs: Array<{ key: ToolTab; label: string }> = [
+    { key: "builder", label: "build" },
+    { key: "sizer", label: "size" },
+    { key: "montecarlo", label: "sim" },
+  ];
+  return (
+    <div className="border-t border-hairline">
+      <div className="flex items-center gap-1 px-3 py-1">
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2 mr-1"
+          style={{ fontSize: 10 }}
+        >
+          tools
+        </span>
+        {tabs.map((t) => {
+          const on = active === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => onSelect(t.key)}
+              aria-pressed={on}
+              className={[
+                "uppercase tracking-label-up rounded-btn px-2 transition-colors duration-100 select-none",
+                on
+                  ? "bg-tier-3 border border-amber text-amber"
+                  : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+              ].join(" ")}
+              style={{ height: 20, fontSize: 10 }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      {active === "builder" && <StrategyBuilder symbol={symbol} />}
+      {active === "sizer" && <PositionSizer />}
+      {active === "montecarlo" && <MonteCarloPanel />}
+    </div>
+  );
+}
+// ── end WS5 ─────────────────────────────────────────────────────────────────
 
 function CompactEmpty({ marketOpen }: { marketOpen: boolean }) {
   const label = marketOpen ? "Click a strike in the chain ↑" : "market closed";
@@ -747,6 +855,8 @@ function Actions({
   marketOpen,
   onBuy,
   onSell,
+  buyRef,
+  sellRef,
 }: {
   selection: TicketSelection | null;
   contracts: number;
@@ -755,6 +865,8 @@ function Actions({
   marketOpen: boolean;
   onBuy: () => void;
   onSell: () => void;
+  buyRef?: React.Ref<HTMLButtonElement>;
+  sellRef?: React.Ref<HTMLButtonElement>;
 }) {
   // Topstep idiom: "BUY +N" / "SELL -N" main label, small action sub
   // line below. While a mutation is in flight both subs read
@@ -787,6 +899,7 @@ function Actions({
         sub={buySub}
         disabled={disabled}
         onClick={onBuy}
+        buttonRef={buyRef}
       />
       <ActionButton
         intent="sell"
@@ -794,10 +907,138 @@ function Actions({
         sub={sellSub}
         disabled={disabled}
         onClick={onSell}
+        buttonRef={sellRef}
       />
     </div>
   );
 }
+
+/* ── WS6 RISK PREVIEW component + helpers (BEGIN) ──────────────────────────
+ *
+ * Pre-trade risk summary for the configured order. Reuses the existing
+ * `computeBreakevens()` (above) and the same `price × 100 × contracts` debit
+ * math the Summary/Actions already use — no new pricing source. Reads only
+ * `selection` + `contracts`, so it stays decoupled from the rest of the ticket
+ * (and from WS5's multi-leg work, which merges first — see the delimited call
+ * site above).
+ *
+ * Definitions shown:
+ *   - MAX LOSS : a long (the BUY direction) caps loss at the full debit. A
+ *     short's loss is unbounded, so for shorts we say so rather than print a
+ *     misleading number — mirroring DllRiskHint's deliberate-silence stance.
+ *   - BREAKEVEN: the underlying price(s) at expiry (magenta band on the chart).
+ *   - R-MULTIPLE: with risk R = the debit, the underlying targets that return
+ *     +1R / +2R on the position (premium doubles / triples for a long). Gives
+ *     the trader a reward-in-underlying-terms reference before they fire.
+ */
+interface RiskPreviewData {
+  maxLoss: number;
+  breakevens: string | null;
+  /** Underlying price at +1R / +2R profit (premium 2× / 3×), long only. */
+  target1R: number | null;
+  target2R: number | null;
+}
+
+export function riskPreviewFor(
+  selection: TicketSelection,
+  contracts: number,
+): RiskPreviewData {
+  const debit = selection.price * 100 * contracts;
+  const breakevens = computeBreakevens(selection);
+
+  // R-multiple in underlying terms: the long pays `price` premium; at +1R the
+  // option is worth 2×price (one R of profit), at +2R it's 3×price. For a
+  // single call/put that maps to an underlying move of `nR × price` past the
+  // breakeven in the option's favorable direction. Straddles move either way,
+  // so we don't print a single directional target.
+  let target1R: number | null = null;
+  let target2R: number | null = null;
+  if (selection.kind === "leg") {
+    const be =
+      selection.side === "call"
+        ? selection.strike + selection.price
+        : selection.strike - selection.price;
+    const step = selection.price; // one R of underlying move past BE
+    if (selection.side === "call") {
+      target1R = be + step;
+      target2R = be + 2 * step;
+    } else {
+      target1R = be - step;
+      target2R = be - 2 * step;
+    }
+  }
+
+  return { maxLoss: debit, breakevens, target1R, target2R };
+}
+
+function RiskPreview({
+  selection,
+  contracts,
+}: {
+  selection: TicketSelection;
+  contracts: number;
+}) {
+  const { maxLoss, breakevens, target1R, target2R } = riskPreviewFor(
+    selection,
+    contracts,
+  );
+  if (!Number.isFinite(maxLoss) || maxLoss <= 0) return null;
+
+  return (
+    <div
+      className="mx-3 mb-1 px-2 py-1.5 bg-tier-1 border border-hairline rounded-btn tabular-nums"
+      style={{ fontSize: 12 }}
+      aria-label="Risk preview for this order"
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 10 }}>
+          risk preview
+        </span>
+        <span
+          className="uppercase tracking-label-up text-warning"
+          style={{ fontSize: 10 }}
+          title="If bought (long), loss is capped at the full debit. A SHORT's (SELL) loss is NOT premium-bounded — this figure does not apply to a sell."
+        >
+          long only
+        </span>
+      </div>
+      <div className="flex items-baseline gap-x-4 gap-y-0.5 flex-wrap mt-0.5">
+        <Stat label="max loss (long)" value={`$${maxLoss.toFixed(2)}`} tone="text-bearish" />
+        {breakevens && <Stat label="breakeven" value={breakevens} tone="text-position" />}
+        {target1R != null && (
+          <Stat
+            label="+1R / +2R"
+            value={`$${target1R.toFixed(2)} · $${(target2R ?? target1R).toFixed(2)}`}
+            tone="text-fg-secondary"
+            title="Underlying price where the option returns +1R / +2R (R = the debit risked)."
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  tone,
+  title,
+}: {
+  label: string;
+  value: string;
+  tone: string;
+  title?: string;
+}) {
+  return (
+    <span className="inline-flex items-baseline gap-1" title={title}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 10 }}>
+        {label}
+      </span>
+      <span className={tone}>{value}</span>
+    </span>
+  );
+}
+/* ── WS6 RISK PREVIEW component + helpers (END) ────────────────────────────── */
 
 function ActionButton({
   intent,
@@ -805,12 +1046,14 @@ function ActionButton({
   sub,
   disabled,
   onClick,
+  buttonRef,
 }: {
   intent: "buy" | "sell";
   label: string;
   sub: string;
   disabled: boolean;
   onClick: () => void;
+  buttonRef?: React.Ref<HTMLButtonElement>;
 }) {
   // Topstep aesthetic: solid action color fill, white-ish text, no
   // border, slight rounded corners. NOT bullish/bearish (those are
@@ -824,6 +1067,7 @@ function ActionButton({
   const textColor = disabled ? "text-fg-disabled" : "text-white";
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onClick}
       disabled={disabled}

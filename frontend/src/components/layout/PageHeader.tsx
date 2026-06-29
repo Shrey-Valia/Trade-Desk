@@ -20,9 +20,12 @@ export function PageHeader({
       style={{ height: 36 }}
     >
       <TradeDeskLogo size="compact" />
-      <span className="text-xs2 uppercase tracking-label-up text-fg-secondary">
+      {/* a11y (WS6): the page title is the document's <h1> so screen-reader
+          users get a heading landmark on every rail route — styling is
+          unchanged (h1 default size/margins reset by the utility classes). */}
+      <h1 className="text-xs2 uppercase tracking-label-up text-fg-secondary font-normal m-0">
         {title}
-      </span>
+      </h1>
       {subtitle && (
         <span className="text-tiny text-fg-tertiary normal-case">{subtitle}</span>
       )}

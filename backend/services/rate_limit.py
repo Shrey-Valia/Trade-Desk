@@ -148,6 +148,23 @@ def enforce(limiter: RateLimiter, request: Request, scope: str) -> None:
         )
 
 
+def enforce_user(limiter: RateLimiter, user_id: int, scope: str) -> None:
+    """Per-USER variant of `enforce`: key by user_id + scope instead of client
+    IP, for AUTHENTICATED financial actions (payout / activation / purchase).
+
+    Keying by the signed-in user (not the socket IP) means one user behind a
+    shared NAT/proxy can't exhaust another's budget, and a single user can't
+    sidestep the limit by rotating IPs. Raises 429 (with Retry-After) on
+    overflow; no-op when the limiter is disabled."""
+    allowed, retry_after = limiter.hit(f"{scope}:user:{user_id}")
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="too many requests — please wait and try again",
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
+
+
 # Module-level limiter shared by the auth endpoints. Configured from settings
 # at import; tests reset it between cases via an autouse fixture.
 def _build_auth_limiter() -> RateLimiter:
@@ -173,3 +190,17 @@ def _build_global_limiter() -> RateLimiter:
 
 
 global_limiter = _build_global_limiter()
+
+
+# Per-USER limiter for the financial endpoints (payout / activation / purchase /
+# checkout). Same sliding-window primitive, keyed by user_id+scope via
+# enforce_user. Tight budget; reset between tests like the others.
+def _build_financial_limiter() -> RateLimiter:
+    from config import settings
+
+    return RateLimiter(
+        settings.financial_rate_limit_attempts, settings.financial_rate_limit_window_s
+    )
+
+
+financial_limiter = _build_financial_limiter()

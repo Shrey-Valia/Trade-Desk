@@ -235,7 +235,24 @@ FRED_API_KEY=...
 DATABASE_URL=sqlite:///./data/dashboard.db
 LOG_LEVEL=INFO
 SEED_TRADES=0                      # set 1 to load demo journal entries
+
+# --- security / session ---
+APP_ENV=development                # set "production" to harden defaults
+COOKIE_SECURE=                     # blank → follows APP_ENV (Secure in prod,
+                                   #         open in dev); set true/false to force
+SESSION_TTL_DAYS=14                # session + cookie lifetime (was 30)
 ```
+
+> **Cookie & session hardening.** The `td_session` cookie is `HttpOnly` +
+> `SameSite=Lax` always. Its `Secure` flag is **prod-safe by default**: leave
+> `COOKIE_SECURE` blank and it follows `APP_ENV` — `Secure` in production (the
+> cookie is then never sent over plain HTTP, closing a downgrade/sidejacking
+> hole) and open in development so local HTTP dev still works. An explicit
+> `COOKIE_SECURE=true|false` always wins (e.g. force `true` behind a
+> TLS-terminating proxy). The session lifetime is `SESSION_TTL_DAYS`, shortened
+> from 30 to **14** to bound the blast radius of a stolen token while staying
+> long enough that a daily-driver trader isn't re-logging-in constantly; it
+> drives both the `auth_sessions` row expiry and the cookie `Max-Age`.
 
 ### Tests
 

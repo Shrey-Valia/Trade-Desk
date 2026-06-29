@@ -60,11 +60,80 @@ const GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
  *  plain path and unchanged; only wide chains (deep strike spans) virtualize. */
 const VIRTUALIZE_THRESHOLD = 30;
 
+// ── WS5: chain filtering ────────────────────────────────────────────────────
+// Additive narrowing of the strike list. The chain payload carries open
+// interest (the liquidity proxy we have — there's no per-row volume/IV field),
+// so the "liquidity" filter is min open interest; moneyness is the ± strike
+// band off ATM; "quotes only" hides BS-fallback rows (no live quote).
+export interface ChainFilters {
+  /** ± strikes from ATM to keep (0 = no moneyness limit). */
+  band: number;
+  /** Minimum open interest on either leg (0 = no minimum). */
+  minOpenInterest: number;
+  /** Hide rows whose BOTH sides are BS-model fallbacks (no live quote). */
+  liveQuotesOnly: boolean;
+}
+
+export const DEFAULT_CHAIN_FILTERS: ChainFilters = {
+  band: 0,
+  minOpenInterest: 0,
+  liveQuotesOnly: false,
+};
+
+/** Narrow `rows` by the active filters. The ATM row is ALWAYS kept so the
+ *  ladder stays anchored and the auto-scroll target survives. Pure → testable. */
+export function applyChainFilters(
+  rows: ChainStrikeRow[],
+  atmStrike: number,
+  f: ChainFilters,
+  keepStrike?: number | null,
+): ChainStrikeRow[] {
+  return rows.filter((r) => {
+    if (r.strike === atmStrike) return true; // anchor row always survives
+    // Never hide the row the user has SELECTED in the ticket, even if a tight
+    // band / high min-OI would otherwise filter it out.
+    if (keepStrike != null && r.strike === keepStrike) return true;
+    if (f.band > 0) {
+      // Count how many strike steps away this row is by index distance from
+      // ATM in the (sorted) list — approximate with price distance / step.
+      // Simpler + robust: keep rows within `band` strikes by rank.
+      const rank = strikeRank(rows, atmStrike, r.strike);
+      if (rank > f.band) return false;
+    }
+    if (f.minOpenInterest > 0) {
+      const oi = Math.max(r.call_open_interest ?? 0, r.put_open_interest ?? 0);
+      if (oi < f.minOpenInterest) return false;
+    }
+    if (f.liveQuotesOnly) {
+      if (r.call_source === "bs" && r.put_source === "bs") return false;
+    }
+    return true;
+  });
+}
+
+/** Index distance (in rows) between a strike and the ATM strike. */
+function strikeRank(
+  rows: ChainStrikeRow[],
+  atmStrike: number,
+  strike: number,
+): number {
+  const sorted = [...rows].sort((a, b) => a.strike - b.strike);
+  const atmIdx = sorted.findIndex((r) => r.strike === atmStrike);
+  const idx = sorted.findIndex((r) => r.strike === strike);
+  if (atmIdx < 0 || idx < 0) return 0;
+  return Math.abs(idx - atmIdx);
+}
+// ── end WS5 ─────────────────────────────────────────────────────────────────
+
 export function RightChain({ symbol, onPickSymbol }: Props) {
   // Pull 5 strikes above + 5 below ATM ⇒ ~11 rows visible without
   // scrolling. The previous redesign asked for 16; the simplification
   // pass dropped that to reduce the right column's visual weight.
   const { data, isLoading, isError, error } = useChainTable(symbol, 5);
+  // ── WS5: chain filters (additive — narrows the rendered strikes; composes
+  // with WS4's virtualization downstream since it only shrinks the row list).
+  const [filters, setFilters] = useState<ChainFilters>(DEFAULT_CHAIN_FILTERS);
+  // ── end WS5
   const setSelection = useTradeTicket((s) => s.setSelection);
   const currentSelection = useTradeTicket((s) => s.selection);
   const { data: marketStatus } = useMarketStatus();
@@ -213,6 +282,19 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
     });
   };
 
+  // ── WS5: apply chain filters to the rows (moneyness band / min open
+  // interest / live-quotes-only). Pure narrowing — keeps the ATM row so the
+  // ladder stays anchored — so it composes with the virtualization below.
+  const filteredRows = useMemo(
+    () =>
+      data
+        ? applyChainFilters(data.rows, data.atm_strike, filters, currentSelection?.strike ?? null)
+        : [],
+    [data, filters, currentSelection?.strike],
+  );
+  const filteredOut = (data?.rows.length ?? 0) - filteredRows.length;
+  // ── end WS5
+
   return (
     <section className="flex flex-col bg-tier-0">
       <Header
@@ -223,6 +305,16 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
         iv={showChain ? data?.iv_used ?? null : null}
       />
       <ColumnHeader />
+      {/* ── WS5: filter bar — additive; narrows the rendered strikes. ── */}
+      {showChain && (
+        <ChainFilterBar
+          filters={filters}
+          onChange={setFilters}
+          filteredOut={filteredOut}
+          total={data?.rows.length ?? 0}
+        />
+      )}
+      {/* ── end WS5 ── */}
       {!marketOpen && showChain && (
         <div
           className="px-3 py-1 border-b border-hairline bg-tier-1 text-warning text-center shrink-0"
@@ -252,9 +344,14 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
         {isError && !noZeroDteToday && (
           <EmptyMessage tone="bearish">{chainErrMsg}</EmptyMessage>
         )}
-        {showChain && data && data.rows.length > 0 && (
+        {showChain && data && data.rows.length > 0 && filteredRows.length === 0 && (
+          <EmptyMessage tone="warning">
+            No strikes match the filter — widen the band or lower the min OI.
+          </EmptyMessage>
+        )}
+        {showChain && data && filteredRows.length > 0 && (
           <ChainRows
-            rows={data.rows}
+            rows={filteredRows}
             underlying={data.underlying}
             atmStrike={data.atm_strike ?? null}
             selection={currentSelection}
@@ -437,6 +534,90 @@ function ChainRows(props: ChainRowsProps) {
     </div>
   );
 }
+
+// ── WS5: filter bar UI ──────────────────────────────────────────────────────
+function ChainFilterBar({
+  filters,
+  onChange,
+  filteredOut,
+  total,
+}: {
+  filters: ChainFilters;
+  onChange: (f: ChainFilters) => void;
+  filteredOut: number;
+  total: number;
+}) {
+  const bands = [0, 3, 5, 8];
+  const ois = [0, 100, 500, 1000];
+  return (
+    <div className="flex items-center flex-wrap gap-2 px-3 py-1 border-b border-hairline bg-tier-1 shrink-0">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 10 }}
+      >
+        filter
+      </span>
+      {/* Moneyness band */}
+      <label className="flex items-center gap-1" style={{ fontSize: 10 }}>
+        <span className="uppercase tracking-label-up text-fg-tertiary-2">±band</span>
+        <select
+          value={filters.band}
+          onChange={(e) => onChange({ ...filters, band: parseInt(e.target.value, 10) })}
+          aria-label="Moneyness band (strikes from ATM)"
+          className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary px-1 tabular-nums"
+          style={{ height: 20, fontSize: 11 }}
+        >
+          {bands.map((b) => (
+            <option key={b} value={b}>
+              {b === 0 ? "all" : b}
+            </option>
+          ))}
+        </select>
+      </label>
+      {/* Min open interest (liquidity proxy) */}
+      <label className="flex items-center gap-1" style={{ fontSize: 10 }}>
+        <span className="uppercase tracking-label-up text-fg-tertiary-2">min OI</span>
+        <select
+          value={filters.minOpenInterest}
+          onChange={(e) =>
+            onChange({ ...filters, minOpenInterest: parseInt(e.target.value, 10) })
+          }
+          aria-label="Minimum open interest"
+          className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary px-1 tabular-nums"
+          style={{ height: 20, fontSize: 11 }}
+        >
+          {ois.map((o) => (
+            <option key={o} value={o}>
+              {o === 0 ? "any" : o}
+            </option>
+          ))}
+        </select>
+      </label>
+      {/* Live-quotes-only toggle */}
+      <button
+        type="button"
+        onClick={() => onChange({ ...filters, liveQuotesOnly: !filters.liveQuotesOnly })}
+        aria-pressed={filters.liveQuotesOnly}
+        className={[
+          "uppercase tracking-label-up rounded-btn px-2 transition-colors duration-100 select-none",
+          filters.liveQuotesOnly
+            ? "bg-tier-3 border border-amber text-amber"
+            : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3",
+        ].join(" ")}
+        style={{ height: 20, fontSize: 10 }}
+        title="Hide strikes priced only by the BS model (no live quote on either side)"
+      >
+        quotes only
+      </button>
+      {filteredOut > 0 && (
+        <span className="text-fg-tertiary-2 ml-auto tabular-nums" style={{ fontSize: 10 }}>
+          {total - filteredOut}/{total}
+        </span>
+      )}
+    </div>
+  );
+}
+// ── end WS5 ─────────────────────────────────────────────────────────────────
 
 function Header({
   symbol,
@@ -732,10 +913,33 @@ function Cell({
       cancelling={cancelling}
     />
   );
+  // a11y (WS6): the cell is already a <button> (Enter/Space select it
+  // natively), but a screen reader hears only the bare numbers without a
+  // label. Spell out side + strike + action, mark the selected cell with
+  // aria-pressed, and add a keyboard path to the quick-order popover (the
+  // mouse-only right-click / long-press is otherwise unreachable): Shift+Enter
+  // or the ContextMenu key opens it, anchored at the cell's center.
+  const actionLabel = disabled
+    ? `${side} ${strike} — unavailable (market closed or no 0DTE today)`
+    : `Select ${side} option at strike ${strike}, premium ${price.toFixed(
+        2,
+      )}. Shift+Enter for a quick order.`;
+  const cellRef = useRef<HTMLButtonElement>(null);
+  const openQuickFromKeyboard = () => {
+    if (disabled) return;
+    const r = cellRef.current?.getBoundingClientRect();
+    onQuickOrder({
+      x: r ? r.left + r.width / 2 : 0,
+      y: r ? r.top + r.height / 2 : 0,
+    });
+  };
   const cellButton = (
     <button
         key="cell"
+        ref={cellRef}
         type="button"
+        aria-label={actionLabel}
+        aria-pressed={selected}
         onClick={() => {
           // Swallow the click synthesized right after a long-press.
           if (longFired.current) {
@@ -743,6 +947,13 @@ function Cell({
             return;
           }
           onClick();
+        }}
+        onKeyDown={(e) => {
+          // Keyboard equivalent of right-click → quick order.
+          if (e.key === "ContextMenu" || (e.key === "Enter" && e.shiftKey)) {
+            e.preventDefault();
+            openQuickFromKeyboard();
+          }
         }}
         onContextMenu={(e) => {
           if (disabled) return;

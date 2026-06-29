@@ -1,5 +1,7 @@
+from datetime import timedelta
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -10,6 +12,7 @@ class Settings(BaseSettings):
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     alpaca_api_key: str = ""
@@ -92,14 +95,32 @@ class Settings(BaseSettings):
     commission_per_contract: float = 0.65
 
     # ---------------------------------------------------------------------
+    # Deployment environment. "development" (default) keeps the dev-friendly
+    # behaviours (e.g. the session cookie is allowed over plain HTTP); set
+    # APP_ENV=production in the deployment so security defaults harden
+    # automatically — most importantly `cookie_secure` (see below). Kept
+    # separate from `sentry_environment` (which only tags error events) so the
+    # security posture isn't coupled to whether Sentry is configured.
+    app_env: str = "development"
+
+    # ---------------------------------------------------------------------
     # Auth (multi-user prop-firm shell). bcrypt cost factor is 12 for
     # real use; tests drop it to 4 so signup-per-test stays fast.
-    # cookie_secure stays False for local HTTP dev — flip on for HTTPS
-    # deployment. The dev_user_* creds are ONLY used by the one-time
-    # migration backfill that adopts a pre-multi-user database; a fresh
-    # install never creates this user.
+    #
+    # cookie_secure (Secure flag on the session cookie): env-driven and
+    # PROD-SAFE BY DEFAULT. Left unset it follows app_env — True in production
+    # (the cookie is then never sent over plain HTTP, closing a downgrade /
+    # sidejacking hole), False in development so local HTTP dev keeps working.
+    # An explicit COOKIE_SECURE in .env always wins (e.g. force True behind a
+    # TLS-terminating proxy in staging). The property below resolves it.
     bcrypt_rounds: int = 12
-    cookie_secure: bool = False
+    cookie_secure_override: bool | None = Field(default=None, alias="cookie_secure")
+    # Session lifetime (days) — drives both the auth_sessions row TTL and the
+    # cookie Max-Age. Shortened from the original 30 to 14: long enough that a
+    # daily-driver trader isn't re-logging-in constantly, short enough to bound
+    # the blast radius of a stolen session token. Override SESSION_TTL_DAYS in
+    # .env per deployment.
+    session_ttl_days: int = 14
     dev_user_email: str = "dev@local"
     # No password is committed to source. If left blank, the one-time
     # legacy-DB backfill mints a random one (the dev user is a migration
@@ -131,6 +152,18 @@ class Settings(BaseSettings):
     # Set attempts <= 0 to disable (e.g. behind an upstream rate limiter).
     auth_rate_limit_attempts: int = 10
     auth_rate_limit_window_s: int = 60
+
+    # ---------------------------------------------------------------------
+    # Per-USER throttle on the FINANCIAL endpoints (payout request, account
+    # activation, combine purchase / Stripe checkout). Keyed by user_id +
+    # endpoint scope (not IP) — these are authenticated actions, so the signed-in
+    # user is the right subject and one user can't be blocked by another behind
+    # the same NAT/proxy. A funded-account holder never needs to fire these more
+    # than a handful of times a minute, so the default is deliberately tight to
+    # blunt double-click / scripted abuse without ever tripping real use. Set
+    # attempts <= 0 to disable.
+    financial_rate_limit_attempts: int = 5
+    financial_rate_limit_window_s: int = 60
 
     # ---------------------------------------------------------------------
     # 0DTE-eligible universe — the ONLY symbols Trade Desk allows users
@@ -218,6 +251,26 @@ class Settings(BaseSettings):
         # Industrials / Consumer
         "CAT", "DE", "HD", "LOW", "NKE", "SBUX",
     )
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() in {"production", "prod"}
+
+    @property
+    def cookie_secure(self) -> bool:
+        """Effective Secure flag for the session cookie.
+
+        An explicit COOKIE_SECURE in the environment always wins; otherwise it
+        follows the deployment environment — Secure in production (cookie never
+        leaves over plain HTTP), open in development for local HTTP."""
+        if self.cookie_secure_override is not None:
+            return self.cookie_secure_override
+        return self.is_production
+
+    @property
+    def session_ttl(self) -> timedelta:
+        """Session lifetime as a timedelta (from session_ttl_days)."""
+        return timedelta(days=self.session_ttl_days)
 
 
 settings = Settings()

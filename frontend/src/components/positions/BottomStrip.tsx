@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   keepPreviousData,
@@ -18,6 +18,7 @@ import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
+import { useHotkeyActions } from "@/stores/hotkeyActions";
 import { useSelectedTicker } from "@/stores/selectedTicker";
 import { toast } from "@/stores/toast";
 import { isZeroDteTrade, STRATEGY_LABELS, type Trade, type TradeAnalytics } from "@/types/journal";
@@ -450,6 +451,33 @@ function OpenPositionCol({
     onError: (e) => toast.error((e as Error)?.message || "Could not scale out"),
   });
 
+  // WS6 power-UX: the "C" hotkey (and the palette's "Close active position")
+  // close the selected position at the live mark. SAFETY: closing realizes
+  // round-trip P&L, so — like the B/S arm pattern — a single keystroke must
+  // NOT fire. The first press ARMS (a sticky toast); a confirming second press
+  // within 3s actually closes. The panel owns the close mutation; no-op when
+  // nothing's open or a close is already in flight.
+  const hotkeyIntent = useHotkeyActions((s) => s.intent);
+  const hotkeyNonce = useHotkeyActions((s) => s.nonce);
+  const consumeHotkey = useHotkeyActions((s) => s.consume);
+  const closeArmRef = useRef<number>(0);
+  useEffect(() => {
+    if (hotkeyIntent !== "closeActive") return;
+    consumeHotkey();
+    if (!trade || !liveAnalytics || close.isPending || scaleOut.isPending) return;
+    const now = Date.now();
+    if (now - closeArmRef.current > 3000) {
+      // First press → arm; require a confirming second press.
+      closeArmRef.current = now;
+      toast.warning(`Press C again to close ${trade.symbol}`, 3000);
+      return;
+    }
+    closeArmRef.current = 0;
+    if (isPartial) scaleOut.mutate();
+    else close.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hotkeyIntent, hotkeyNonce]);
+
   return (
     <>
       <ColHeader
@@ -668,7 +696,7 @@ function PositionGlyph() {
         height: 0,
         borderLeft: "4px solid transparent",
         borderRight: "4px solid transparent",
-        borderBottom: "6px solid #D946EF",
+        borderBottom: "6px solid #E673F5",
       }}
     />
   );
@@ -1124,7 +1152,7 @@ function BeDriftPreview({
       >
         <path
           d={lowerPath.join(" ")}
-          stroke="#D946EF"
+          stroke="#E673F5"
           strokeWidth="0.8"
           strokeOpacity="0.55"
           fill="none"
@@ -1132,7 +1160,7 @@ function BeDriftPreview({
         />
         <path
           d={upperPath.join(" ")}
-          stroke="#D946EF"
+          stroke="#E673F5"
           strokeWidth="0.8"
           strokeOpacity="0.55"
           fill="none"

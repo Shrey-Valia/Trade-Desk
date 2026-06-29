@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 
 import { TradeDeskMark } from "@/components/branding/TradeDeskMark";
+import { useOnboarding } from "@/stores/onboarding";
 
 import {
   AccountsIcon,
@@ -66,12 +67,52 @@ export function LeftRail() {
       </ul>
       <div className="mt-auto pb-2">
         <ul className="flex flex-col">
+          <li>
+            <HelpEntry />
+          </li>
           {BOTTOM_ITEMS.map((item) => (
             <RailEntry key={item.to} item={item} />
           ))}
         </ul>
       </div>
     </nav>
+  );
+}
+
+/** Help is an ACTION (opens the glossary overlay), not a route — so it's a
+ *  button styled to match the rail entries rather than a NavLink. */
+function HelpEntry() {
+  const setHelpOpen = useOnboarding((s) => s.setHelpOpen);
+  return (
+    <button
+      type="button"
+      onClick={() => setHelpOpen(true)}
+      title="Help & glossary (?)"
+      aria-label="Open help and glossary"
+      className="w-full flex flex-col items-center justify-center gap-1 py-2.5 px-1 text-fg-secondary hover:bg-tier-2 hover:text-fg-primary transition-opacity duration-100"
+    >
+      <svg
+        width={20}
+        height={20}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9.2 9.3a2.8 2.8 0 0 1 5.4 1c0 1.9-2.8 2.5-2.8 2.5" />
+        <line x1="12" y1="17" x2="12" y2="17" />
+      </svg>
+      <span
+        className="uppercase text-fg-tertiary-2"
+        style={{ fontSize: 11, letterSpacing: "0.02em" }}
+      >
+        Help
+      </span>
+    </button>
   );
 }
 
