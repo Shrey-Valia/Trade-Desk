@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 
+import { useHotkeyActions } from "@/stores/hotkeyActions";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useTrades } from "@/hooks/useTrades";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
@@ -132,6 +133,27 @@ export function TradeTicket() {
   // before react has rendered the disabled state.
   const submittingRef = useRef(false);
 
+  // WS6 power-UX: the B/S hotkeys "pre-arm" by focusing the matching action
+  // button (not auto-firing — a stray keypress must never place an order). The
+  // global hotkey hook publishes the intent on the action bus; we consume it
+  // here and move focus so the user confirms with Enter/Space.
+  const buyBtnRef = useRef<HTMLButtonElement>(null);
+  const sellBtnRef = useRef<HTMLButtonElement>(null);
+  const hotkeyIntent = useHotkeyActions((s) => s.intent);
+  const hotkeyNonce = useHotkeyActions((s) => s.nonce);
+  const consumeHotkey = useHotkeyActions((s) => s.consume);
+  useEffect(() => {
+    if (hotkeyIntent === "armBuy") {
+      buyBtnRef.current?.focus();
+      consumeHotkey();
+    } else if (hotkeyIntent === "armSell") {
+      sellBtnRef.current?.focus();
+      consumeHotkey();
+    }
+    // closeActive is handled by the active-position panel, not the ticket.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hotkeyIntent, hotkeyNonce]);
+
   const fire = (action: "buy" | "sell") => {
     if (submittingRef.current || !canFire || !selection) return;
     submittingRef.current = true;
@@ -239,6 +261,8 @@ export function TradeTicket() {
         marketOpen={marketOpen}
         onBuy={() => fire("buy")}
         onSell={() => fire("sell")}
+        buyRef={buyBtnRef}
+        sellRef={sellBtnRef}
       />
       {lastError && (
         <div className="px-3 pb-1 text-tiny text-bearish truncate" title={lastError}>
@@ -756,6 +780,8 @@ function Actions({
   marketOpen,
   onBuy,
   onSell,
+  buyRef,
+  sellRef,
 }: {
   selection: TicketSelection | null;
   contracts: number;
@@ -764,6 +790,8 @@ function Actions({
   marketOpen: boolean;
   onBuy: () => void;
   onSell: () => void;
+  buyRef?: React.Ref<HTMLButtonElement>;
+  sellRef?: React.Ref<HTMLButtonElement>;
 }) {
   // Topstep idiom: "BUY +N" / "SELL -N" main label, small action sub
   // line below. While a mutation is in flight both subs read
@@ -796,6 +824,7 @@ function Actions({
         sub={buySub}
         disabled={disabled}
         onClick={onBuy}
+        buttonRef={buyRef}
       />
       <ActionButton
         intent="sell"
@@ -803,6 +832,7 @@ function Actions({
         sub={sellSub}
         disabled={disabled}
         onClick={onSell}
+        buttonRef={sellRef}
       />
     </div>
   );
@@ -941,12 +971,14 @@ function ActionButton({
   sub,
   disabled,
   onClick,
+  buttonRef,
 }: {
   intent: "buy" | "sell";
   label: string;
   sub: string;
   disabled: boolean;
   onClick: () => void;
+  buttonRef?: React.Ref<HTMLButtonElement>;
 }) {
   // Topstep aesthetic: solid action color fill, white-ish text, no
   // border, slight rounded corners. NOT bullish/bearish (those are
@@ -960,6 +992,7 @@ function ActionButton({
   const textColor = disabled ? "text-fg-disabled" : "text-white";
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onClick}
       disabled={disabled}

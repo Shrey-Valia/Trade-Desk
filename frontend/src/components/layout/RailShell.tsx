@@ -1,7 +1,9 @@
 import { Outlet } from "react-router-dom";
 
+import { CommandPalette } from "@/components/command/CommandPalette";
 import { HelpOverlay } from "@/components/help/HelpOverlay";
 import { OnboardingTour } from "@/components/help/OnboardingTour";
+import { useGlobalHotkeys } from "@/hooks/useGlobalHotkeys";
 
 import { LeftRail } from "./LeftRail";
 import { MobileBottomNav } from "./MobileBottomNav";
@@ -14,13 +16,13 @@ import { MobileBottomNav } from "./MobileBottomNav";
  * Pages already use flex-1 / min-w-0, so they shrink cleanly into whichever
  * column the breakpoint gives them.
  *
- * WS6 mounts the onboarding chrome here (inside the authed shell, never on
- * the signin/landing pages): the help/glossary overlay and the first-run
- * tour. A skip-to-content link is the first focusable element for keyboard
- * and screen-reader users. (The command palette + global hotkeys mount here
- * too — added in the power-UX pass.)
+ * WS6 mounts the onboarding + power-UX chrome here (inside the authed shell,
+ * never on the signin/landing pages): the global hotkeys, the command palette,
+ * the help/glossary overlay, and the first-run tour. A skip-to-content link is
+ * the first focusable element for keyboard and screen-reader users.
  */
 export function RailShell() {
+  useGlobalHotkeys();
   return (
     <div className="flex flex-col md:flex-row h-full min-h-0">
       <a
@@ -37,6 +39,7 @@ export function RailShell() {
         <Outlet />
       </div>
       <MobileBottomNav />
+      <CommandPalette />
       <HelpOverlay />
       <OnboardingTour />
     </div>

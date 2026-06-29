@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   keepPreviousData,
@@ -18,6 +18,7 @@ import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
+import { useHotkeyActions } from "@/stores/hotkeyActions";
 import { useSelectedTicker } from "@/stores/selectedTicker";
 import { toast } from "@/stores/toast";
 import { isZeroDteTrade, STRATEGY_LABELS, type Trade, type TradeAnalytics } from "@/types/journal";
@@ -449,6 +450,23 @@ function OpenPositionCol({
     },
     onError: (e) => toast.error((e as Error)?.message || "Could not scale out"),
   });
+
+  // WS6 power-UX: the "C" hotkey (and the palette's "Close active position")
+  // close the selected position at the live mark. We consume the intent here —
+  // the panel owns the close mutation — and no-op when nothing's open or a
+  // close is already in flight.
+  const hotkeyIntent = useHotkeyActions((s) => s.intent);
+  const hotkeyNonce = useHotkeyActions((s) => s.nonce);
+  const consumeHotkey = useHotkeyActions((s) => s.consume);
+  useEffect(() => {
+    if (hotkeyIntent !== "closeActive") return;
+    consumeHotkey();
+    if (trade && liveAnalytics && !close.isPending && !scaleOut.isPending) {
+      if (isPartial) scaleOut.mutate();
+      else close.mutate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hotkeyIntent, hotkeyNonce]);
 
   return (
     <>

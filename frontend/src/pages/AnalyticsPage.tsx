@@ -6,6 +6,8 @@ import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
+import { useTrades } from "@/hooks/useTrades";
+import { downloadCsv, tradesToCsv } from "@/lib/exportCsv";
 import type {
   AnalyticsResponse,
   KpiBlock,
@@ -52,6 +54,21 @@ export function AnalyticsPage() {
 
   const { data, isLoading, isError, error } = useJournalAnalytics(filters);
 
+  // CSV export (WS6): the closed trades behind the analytics, scoped to the
+  // same paper/live filter. Reuses the journal's tradesToCsv/downloadCsv
+  // helpers so the file format matches the journal export exactly.
+  const exportPaper = paperFilter === "all" ? undefined : paperFilter === "paper";
+  const { data: tradesData } = useTrades({
+    status: "closed",
+    ...(exportPaper === undefined ? {} : { isPaper: exportPaper }),
+  });
+  const onExport = () => {
+    const trades = tradesData?.trades ?? [];
+    if (trades.length === 0) return;
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`trade-desk-analytics-${stamp}.csv`, tradesToCsv(trades));
+  };
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
       <Toolbar
@@ -61,6 +78,8 @@ export function AnalyticsPage() {
         paperFilter={paperFilter}
         onPaperChange={setPaperFilter}
         loading={isLoading}
+        onExport={onExport}
+        exportDisabled={(tradesData?.trades?.length ?? 0) === 0}
       />
       <main className="flex-1 min-h-0 overflow-y-auto">
         {isError ? (
@@ -86,6 +105,8 @@ function Toolbar({
   paperFilter,
   onPaperChange,
   loading,
+  onExport,
+  exportDisabled,
 }: {
   tier: string | null;
   range: Range;
@@ -93,6 +114,8 @@ function Toolbar({
   paperFilter: PaperFilter;
   onPaperChange: (f: PaperFilter) => void;
   loading: boolean;
+  onExport: () => void;
+  exportDisabled: boolean;
 }) {
   return (
     <header
@@ -130,8 +153,29 @@ function Toolbar({
           </button>
         ))}
       </div>
+      {/* Export CSV (WS6) — the closed trades behind these numbers, scoped to
+          the paper/live filter. Same format as the journal export. */}
+      <button
+        type="button"
+        onClick={onExport}
+        disabled={exportDisabled}
+        title={
+          exportDisabled
+            ? "No closed trades to export for this filter"
+            : "Download the closed trades behind these analytics as CSV"
+        }
+        className={[
+          "ml-auto h-6 px-2.5 text-tiny uppercase tracking-label-up border",
+          exportDisabled
+            ? "border-hairline text-fg-disabled cursor-not-allowed"
+            : "border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary",
+        ].join(" ")}
+        style={{ borderRadius: 0 }}
+      >
+        Export CSV
+      </button>
       {/* range */}
-      <div className="ml-auto flex items-stretch border border-hairline" style={{ borderRadius: 0 }}>
+      <div className="flex items-stretch border border-hairline" style={{ borderRadius: 0 }}>
         {(["Today", "Week", "Month", "All"] as Range[]).map((r, i) => (
           <button
             key={r}

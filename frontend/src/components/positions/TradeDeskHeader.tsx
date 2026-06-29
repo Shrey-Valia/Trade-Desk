@@ -35,10 +35,11 @@ interface Props {
 export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
   const [searchOpen, setSearchOpen] = useState(false);
 
-  // Global keyboard shortcuts: "/" or Cmd/Ctrl+K opens the modal from
-  // anywhere on the page. We skip the shortcut if the user is typing
-  // in another input (e.g. the trade-entry form) so "/" still types a
-  // literal slash where it should.
+  // Symbol-search shortcut: "/" opens the modal from anywhere on the page.
+  // We skip it while the user is typing in another input (e.g. the trade-entry
+  // form) so "/" still types a literal slash there. ⌘K/Ctrl-K is now owned by
+  // the WS6 command palette (whose first entry is symbol search), so it's no
+  // longer handled here.
   useEffect(() => {
     function handle(e: KeyboardEvent) {
       const targetTag = (e.target as HTMLElement | null)?.tagName ?? "";
@@ -46,10 +47,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
         targetTag === "INPUT" ||
         targetTag === "TEXTAREA" ||
         (e.target as HTMLElement | null)?.isContentEditable === true;
-      const isCmdK =
-        (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k";
-      const isSlash = e.key === "/" && !isEditable;
-      if (isCmdK || isSlash) {
+      if (e.key === "/" && !isEditable) {
         e.preventDefault();
         setSearchOpen(true);
       }
