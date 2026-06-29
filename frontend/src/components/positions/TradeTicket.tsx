@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useAccountState } from "@/hooks/useAccountState";
 import { useTrades } from "@/hooks/useTrades";
@@ -11,6 +11,13 @@ import {
   type TicketSelection,
   type TicketOrderType,
 } from "@/stores/tradeTicket";
+// ── WS5 (Trading depth): builder / sizer / Monte-Carlo tools ────────────────
+// These mount in a collapsible TOOLS section below the Actions row (see the
+// WS5 block in the render). Self-contained components; WS6 shares this file.
+import { StrategyBuilder } from "@/components/positions/tools/StrategyBuilder";
+import { PositionSizer } from "@/components/positions/tools/PositionSizer";
+import { MonteCarloPanel } from "@/components/positions/tools/MonteCarloPanel";
+// ── end WS5 ─────────────────────────────────────────────────────────────────
 
 /**
  * Lower-right TRADE TICKET (184px tall).
@@ -132,6 +139,10 @@ export function TradeTicket() {
   // before react has rendered the disabled state.
   const submittingRef = useRef(false);
 
+  // ── WS5: collapsible TOOLS tab (builder / sizer / Monte-Carlo). null = closed.
+  const [activeTool, setActiveTool] = useState<ToolTab | null>(null);
+  // ── end WS5
+
   const fire = (action: "buy" | "sell") => {
     if (submittingRef.current || !canFire || !selection) return;
     submittingRef.current = true;
@@ -236,9 +247,73 @@ export function TradeTicket() {
           {lastError}
         </div>
       )}
+      {/* ── WS5: collapsible TOOLS — multi-leg builder / position sizer /
+          Monte-Carlo. Additive; renders below the single/straddle ticket so
+          the core BUY/SELL flow is unchanged. WS6 shares this file. ── */}
+      <ToolsSection
+        symbol={selection.symbol}
+        active={activeTool}
+        onSelect={(t) => setActiveTool((prev) => (prev === t ? null : t))}
+      />
+      {/* ── end WS5 ── */}
     </section>
   );
 }
+
+// ── WS5: TOOLS section (tab bar + active tool panel) ────────────────────────
+type ToolTab = "builder" | "sizer" | "montecarlo";
+
+function ToolsSection({
+  symbol,
+  active,
+  onSelect,
+}: {
+  symbol: string;
+  active: ToolTab | null;
+  onSelect: (t: ToolTab) => void;
+}) {
+  const tabs: Array<{ key: ToolTab; label: string }> = [
+    { key: "builder", label: "build" },
+    { key: "sizer", label: "size" },
+    { key: "montecarlo", label: "sim" },
+  ];
+  return (
+    <div className="border-t border-hairline">
+      <div className="flex items-center gap-1 px-3 py-1">
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2 mr-1"
+          style={{ fontSize: 10 }}
+        >
+          tools
+        </span>
+        {tabs.map((t) => {
+          const on = active === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => onSelect(t.key)}
+              aria-pressed={on}
+              className={[
+                "uppercase tracking-label-up rounded-btn px-2 transition-colors duration-100 select-none",
+                on
+                  ? "bg-tier-3 border border-amber text-amber"
+                  : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+              ].join(" ")}
+              style={{ height: 20, fontSize: 10 }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      {active === "builder" && <StrategyBuilder symbol={symbol} />}
+      {active === "sizer" && <PositionSizer />}
+      {active === "montecarlo" && <MonteCarloPanel />}
+    </div>
+  );
+}
+// ── end WS5 ─────────────────────────────────────────────────────────────────
 
 function CompactEmpty({ marketOpen }: { marketOpen: boolean }) {
   const label = marketOpen ? "Click a strike in the chain ↑" : "market closed";

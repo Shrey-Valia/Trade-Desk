@@ -9,18 +9,20 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from calculations.journal_analytics import compose
+from calculations.monte_carlo import simulate_terminal_pnl
 from database import get_session
 from models.combine import Combine
 from models.trade import Trade
 from models.user import User
-from services.auth import get_current_user
 from schemas.analytics import (
     AnalyticsFilters,
     AnalyticsResponse,
@@ -35,6 +37,7 @@ from schemas.analytics import (
     SymbolBucketOut,
     TimeBucketOut,
 )
+from services.auth import get_current_user
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 log = logging.getLogger(__name__)
@@ -81,7 +84,7 @@ def get_analytics(
         try:
             d = date.fromisoformat(since)
             stmt = stmt.where(
-                Trade.exit_date >= datetime.combine(d, time.min, tzinfo=timezone.utc)
+                Trade.exit_date >= datetime.combine(d, time.min, tzinfo=UTC)
             )
         except ValueError:
             pass
@@ -89,7 +92,7 @@ def get_analytics(
         try:
             d = date.fromisoformat(until)
             stmt = stmt.where(
-                Trade.exit_date <= datetime.combine(d, time.max, tzinfo=timezone.utc)
+                Trade.exit_date <= datetime.combine(d, time.max, tzinfo=UTC)
             )
         except ValueError:
             pass
@@ -205,3 +208,110 @@ def get_analytics(
         ),
         filters=AnalyticsFilters(paper=paper, strategy=strategy, since=since, until=until),
     )
+
+
+# ---------------------------------------------------------------------------
+# WS5 — Monte-Carlo scenario / backtest panel
+# ---------------------------------------------------------------------------
+#
+# Surfaces the dormant simulator behind POST /api/analytics/montecarlo.
+# Two modes:
+#   * trade_id given → simulate the live open position's terminal P&L.
+#   * legs given     → simulate a hypothetical structure (the builder preview).
+# Self-contained: no chart/feed dependency; spot/sigma/horizon are supplied
+# by the caller (the frontend reads them from the chain/position payload).
+
+
+class MonteCarloLeg(BaseModel):
+    side: Literal["call", "put"]
+    action: Literal["buy", "sell"]
+    strike: float = Field(gt=0)
+    contracts: int = Field(gt=0, le=1000, default=1)
+    entry_price: float = Field(ge=0)
+
+
+class MonteCarloRequest(BaseModel):
+    """Either reference an owned open trade (`trade_id`) OR pass explicit
+    `legs`. `spot`, `sigma`, `horizon_days` describe the environment; `drift`
+    is optional (defaults to the risk-free `rate`)."""
+
+    trade_id: int | None = Field(default=None)
+    legs: list[MonteCarloLeg] | None = Field(default=None, min_length=1, max_length=8)
+    spot: float = Field(gt=0)
+    sigma: float = Field(gt=0, le=5.0)
+    horizon_days: float = Field(gt=0, le=365.0)
+    rate: float = Field(default=0.0, ge=0, le=1.0)
+    drift: float | None = Field(default=None, ge=-1.0, le=1.0)
+    paths: int = Field(default=10_000, ge=100, le=200_000)
+    seed: int | None = Field(default=None)
+
+
+class MonteCarloOut(BaseModel):
+    paths: int
+    horizon_days: float
+    spot: float
+    sigma: float
+    drift: float
+    cost_basis: float
+    prob_profit: float
+    expected_pnl: float
+    median_pnl: float
+    pnl_p05: float
+    pnl_p95: float
+    max_simulated_loss: float
+    max_simulated_profit: float
+    var_95: float
+    expected_terminal_price: float
+    hist_bin_edges: list[float]
+    hist_counts: list[int]
+    sample_terminal_prices: list[float]
+
+
+@router.post("/montecarlo", response_model=MonteCarloOut)
+def post_montecarlo(
+    payload: MonteCarloRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> MonteCarloOut:
+    """Run a terminal-value Monte-Carlo for an open position or a hypothetical
+    structure. Position is resolved from the user's own combines (404 on a
+    foreign/unknown trade_id). At least one of trade_id / legs is required."""
+    if payload.trade_id is not None:
+        trade = session.execute(
+            select(Trade).where(
+                Trade.id == payload.trade_id,
+                Trade.combine_id.in_(
+                    select(Combine.id).where(Combine.user_id == user.id)
+                ),
+            )
+        ).scalar_one_or_none()
+        if trade is None:
+            raise HTTPException(404, f"trade {payload.trade_id} not found")
+        legs = [
+            {
+                "side": leg["side"],
+                "action": leg["action"],
+                "strike": float(leg["strike"]),
+                "contracts": int(leg.get("contracts", 1)),
+                "entry_price": float(leg["entry_price"]),
+            }
+            for leg in (trade.legs or [])
+        ]
+        if not legs:
+            raise HTTPException(422, f"trade {payload.trade_id} has no legs to simulate")
+    elif payload.legs:
+        legs = [leg.model_dump() for leg in payload.legs]
+    else:
+        raise HTTPException(422, "Provide either trade_id or legs.")
+
+    result = simulate_terminal_pnl(
+        legs=legs,
+        spot=payload.spot,
+        sigma=payload.sigma,
+        horizon_days=payload.horizon_days,
+        rate=payload.rate,
+        drift=payload.drift,
+        paths=payload.paths,
+        seed=payload.seed,
+    )
+    return MonteCarloOut(**result.__dict__)

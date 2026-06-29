@@ -106,3 +106,70 @@ export interface ContractPreviewInput {
   strike: number;
   contracts: number;
 }
+
+// -- WS5: multi-leg strategy builder ----------------------------------------
+
+/** One leg of a custom/preset multi-leg structure. `ratio` scales the leg
+ *  within the structure (e.g. butterfly body = 2); actual contracts =
+ *  ratio × the request's base `contracts`. */
+export interface MultiLegSpec {
+  side: "call" | "put";
+  action: "buy" | "sell";
+  strike: number;
+  ratio?: number;
+}
+
+export interface OpenMultiLegInput {
+  symbol: string;
+  contracts: number;
+  legs: MultiLegSpec[];
+  /** Label: "vertical" | "iron_condor" | "butterfly" | "custom". */
+  strategy?: string;
+  stop_loss?: number | null;
+  take_profit?: number | null;
+}
+
+// -- WS5: Monte-Carlo scenario / backtest -----------------------------------
+
+export interface MonteCarloLeg {
+  side: "call" | "put";
+  action: "buy" | "sell";
+  strike: number;
+  contracts: number;
+  entry_price: number;
+}
+
+export interface MonteCarloInput {
+  /** Reference an owned open trade OR pass explicit `legs`. */
+  trade_id?: number | null;
+  legs?: MonteCarloLeg[];
+  spot: number;
+  sigma: number;
+  horizon_days: number;
+  rate?: number;
+  drift?: number | null;
+  paths?: number;
+  seed?: number | null;
+}
+
+export const MonteCarloResultSchema = z.object({
+  paths: z.number().int(),
+  horizon_days: z.number(),
+  spot: z.number(),
+  sigma: z.number(),
+  drift: z.number(),
+  cost_basis: z.number(),
+  prob_profit: z.number(),
+  expected_pnl: z.number(),
+  median_pnl: z.number(),
+  pnl_p05: z.number(),
+  pnl_p95: z.number(),
+  max_simulated_loss: z.number(),
+  max_simulated_profit: z.number(),
+  var_95: z.number(),
+  expected_terminal_price: z.number(),
+  hist_bin_edges: z.array(z.number()),
+  hist_counts: z.array(z.number().int()),
+  sample_terminal_prices: z.array(z.number()),
+});
+export type MonteCarloResult = z.infer<typeof MonteCarloResultSchema>;
