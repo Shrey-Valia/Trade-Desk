@@ -100,3 +100,52 @@ def test_account_state_exposes_max_contracts(auth_client):
     make_combine(auth_client, "50K")
     body = auth_client.get("/api/account/state").json()
     assert body["max_contracts"] == 5
+
+
+def test_straddle_counts_two_contracts_against_cap(auth_client, monkeypatch):
+    """A straddle is 2 legs, so it consumes 2× the per-leg size against the
+    total-contract cap. With cap 5: a 3-contract straddle is 6 total → rejected;
+    a 2-contract straddle is 4 total → ok."""
+    make_combine(auth_client, "50K")  # cap 5
+    monkeypatch.setattr("routers.zerodte.is_market_open", lambda: True)
+    monkeypatch.setattr("routers.zerodte._require_today_expiry", lambda e: None)
+    q = types.SimpleNamespace(bid=1.0, ask=1.2, last=1.1)
+    monkeypatch.setattr(
+        "routers.zerodte._resolve_atm_chain",
+        lambda sym: ("SPY", 100.0, _TODAY, 100.0, q, q),
+    )
+    over = auth_client.post("/api/zerodte/open", json={"symbol": "SPY", "action": "buy", "contracts": 3})
+    assert over.status_code == 422, over.text  # 3 × 2 legs = 6 > 5
+    ok = auth_client.post("/api/zerodte/open", json={"symbol": "SPY", "action": "buy", "contracts": 2})
+    assert ok.status_code == 201, ok.text  # 2 × 2 = 4 ≤ 5
+    assert all(leg["contracts"] == 2 for leg in ok.json()["legs"])
+
+
+def test_open_blocked_when_live_urpl_breaches_mll(auth_client, monkeypatch):
+    """Fine on REALIZED P&L, but OPEN positions are deeply underwater (live MLL
+    breach) → a new open is blocked. The order-time gate is mark-to-market
+    aware, not realized-only."""
+    make_combine(auth_client, "50K")  # balance 50,000; MLL floor 48,000
+    _stub_market(monkeypatch)
+    monkeypatch.setattr("routers.zerodte._live_combine_urpl", lambda s, c: -2_500.0)
+    res = auth_client.post(
+        "/api/zerodte/open-leg",
+        json={"symbol": "SPY", "side": "call", "action": "buy",
+              "strike": 100, "entry_price": 1.0, "contracts": 1},
+    )
+    assert res.status_code == 403
+    assert "mll" in res.json()["detail"].lower()
+
+
+def test_open_allowed_when_live_urpl_small(auth_client, monkeypatch):
+    """A small open loss that keeps the live balance above the floor doesn't
+    block opening."""
+    make_combine(auth_client, "50K")
+    _stub_market(monkeypatch)
+    monkeypatch.setattr("routers.zerodte._live_combine_urpl", lambda s, c: -100.0)
+    res = auth_client.post(
+        "/api/zerodte/open-leg",
+        json={"symbol": "SPY", "side": "call", "action": "buy",
+              "strike": 100, "entry_price": 1.0, "contracts": 1},
+    )
+    assert res.status_code == 201, res.text

@@ -26,14 +26,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from calculations.black_scholes import bs_greeks
 from calculations.intraday_analytics import (
     SECONDS_PER_YEAR,
     bs_intraday,
     compute_contract_preview,
+    greeks_intraday,
     iv_intraday,
 )
 from calculations.position_analytics import DEFAULT_IV
+from config import settings
 from database import get_session
 from models.combine import Combine
 from models.trade import Trade
@@ -60,13 +61,19 @@ _CLOSE_HHMM = (16, 0)
 
 
 def _session_close_et(reference: datetime | None = None) -> datetime:
-    """The next 4:00pm ET. If today's close has passed (after-hours,
-    weekends) we still anchor to TODAY's close so the prototype clock
-    is well-defined — the scrubber just starts in the "expired" state
-    and the user can scrub backwards conceptually if needed. In
-    practice the demo is used during the session, so this matters
-    rarely. Keeps the math single-branch."""
+    """The session close for the reference date — 4:00pm ET, or the 1:00pm ET
+    early close on NYSE half-days (half-day aware via the schedule), with a flat
+    4pm fallback for non-trading days. If today's close has passed (after-hours,
+    weekends) we still anchor to TODAY's close so the prototype clock is
+    well-defined — the scrubber just starts in the 'expired' state. Routing
+    through the NYSE schedule stops ~9 half-days/year from being priced with
+    ~3 extra hours of fictitious time value."""
+    from services.market_calendar import session_close_et as _sched_close
+
     now = reference or datetime.now(_ET)
+    close = _sched_close(now.date().isoformat())
+    if close is not None:
+        return close
     return datetime.combine(now.date(), time(*_CLOSE_HHMM), tzinfo=_ET)
 
 
@@ -146,6 +153,25 @@ class ChainTableOut(BaseModel):
     notice: str = "Paper · indicative pricing (approximate)"
 
 
+def _require_fresh_spot(quote) -> None:
+    """Refuse to open against a STALE underlying print. A halted or thinly
+    traded symbol can show a last trade minutes old even during the session, and
+    filling against it books a price the market isn't actually at. No-op when
+    the feed omits a trade timestamp (can't judge → let it through)."""
+    as_of = getattr(quote, "as_of", None)
+    if as_of is None:
+        return
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=UTC)
+    age = (datetime.now(UTC) - as_of).total_seconds()
+    if age > settings.max_spot_staleness_s:
+        raise HTTPException(
+            503,
+            f"Underlying quote is stale ({int(age)}s old) — the symbol may be halted "
+            "or illiquid. Try again when it is trading.",
+        )
+
+
 def _resolve_atm_chain(symbol: str) -> tuple[str, float, date, float, _LegQuote, _LegQuote]:
     """Find the ATM call+put for the given symbol expiring today (or the
     nearest available expiry if 0DTE isn't listed). Returns
@@ -158,6 +184,7 @@ def _resolve_atm_chain(symbol: str) -> tuple[str, float, date, float, _LegQuote,
     quote = get_quotes([sym]).get(sym)
     if quote is None:
         raise HTTPException(503, f"{sym} quote unavailable")
+    _require_fresh_spot(quote)
     spot = float(quote.price)
 
     today = datetime.now(_ET).date()
@@ -212,12 +239,17 @@ def get_atm_chain(symbol: str = "SPY") -> ChainOut:
 
 def _quote_price(c) -> tuple[float | None, str]:
     """Best per-share price from a ContractRow. Returns (price, source).
-    source is "ask"/"mid"/"last" — only used internally; the API
-    surfaces "quote" vs "bs" externally."""
-    if c.ask and c.ask > 0:
-        return float(c.ask), "ask"
+    source is "mid"/"ask"/"last" — only used internally; the API
+    surfaces "quote" vs "bs" externally.
+
+    Prefer the (bid+ask)/2 MID when two-sided; only fall back to a lone ask
+    (then last) when there's no two-sided market. Previously the ask branch ran
+    first, so the mid branch was dead code and every quoted premium was the
+    offer — biasing displayed premiums and the back-solved ATM IV upward."""
     if c.bid and c.ask and c.bid > 0 and c.ask > 0:
         return (float(c.bid) + float(c.ask)) / 2, "mid"
+    if c.ask and c.ask > 0:
+        return float(c.ask), "ask"
     if c.last and c.last > 0:
         return float(c.last), "last"
     return None, "none"
@@ -322,10 +354,12 @@ def get_chain_table(
         else:
             put_source = "quote"
 
-        # Display greeks via the existing engine — same inputs as the BS
-        # price fallback above (spot, strike, T-to-close, rate, ATM IV).
-        cg = bs_greeks(spot, k, t_close, rate, iv_used, "call")
-        pg = bs_greeks(spot, k, t_close, rate, iv_used, "put")
+        # Display greeks via the INTRADAY engine (1-minute T floor), matching
+        # the bs_intraday prices in the same rows. Using the day-floored
+        # bs_greeks here contradicted the price — it computed delta/theta as if
+        # a full trading day remained, hiding the violent end-of-day 0DTE decay.
+        cg = greeks_intraday(spot, k, t_close, rate, iv_used, "call")
+        pg = greeks_intraday(spot, k, t_close, rate, iv_used, "put")
 
         rows.append(
             ChainStrikeRow(
@@ -460,11 +494,17 @@ def _pick_fill_price(q: _LegQuote, action: str = "buy", contracts: int = 1) -> f
         mid = float(q.last)
         spread = mid * 0.02
     elif ask is not None:
-        mid = ask
-        spread = 0.0
+        # Ask-only: synthesize a 2% touch BELOW the offer, so a market BUY pays
+        # ~the ask (not below it) and a SELL is penalized — not a free fill at
+        # the lone quote. (Previously spread=0 let a 1-lot buy fill at the ask
+        # with zero slippage, and a sell receive the ask — impossibly good.)
+        spread = ask * 0.02
+        mid = ask - spread / 2.0
     elif bid is not None:
-        mid = bid
-        spread = 0.0
+        # Bid-only: synthesize a 2% touch ABOVE the bid, so a market SELL hits
+        # ~the bid and a BUY pays up — not a free fill at the lone quote.
+        spread = bid * 0.02
+        mid = bid + spread / 2.0
     else:
         return 0.0
 
@@ -508,7 +548,10 @@ def _open_contracts_for_combine(session: Session, combine_id: int) -> int:
     total = 0
     for t in rows:
         legs = t.legs or []
-        total += max((int(leg.get("contracts", 1)) for leg in legs), default=1)
+        # TOTAL option contracts across all legs (per-leg-per-contract) — a real
+        # prop firm counts a 5-lot straddle as 10 contracts, not 5. (Was max-leg,
+        # which undercounted true open exposure for any multi-leg structure.)
+        total += sum(int(leg.get("contracts", 1) or 1) for leg in legs)
     return total
 
 
@@ -531,6 +574,44 @@ def _clamp_contracts_to_cap(
     # in _require_tradeable owns the "no room at all" case (open_now >= cap).
     return max(1, min(int(requested), remaining)) if remaining > 0 else int(requested)
 # ── end WS5 ─────────────────────────────────────────────────────────────────
+
+
+def _live_combine_urpl(session: Session, combine: Combine) -> float:
+    """Live mark-to-market URPL of the combine's OPEN positions. Best-effort and
+    fully resilient: any pricing failure (cold feed / circuit open / no creds)
+    contributes 0, so the order-time gate degrades to the realized-only check
+    rather than blocking wrongly. The ~20s monitor + auto-liquidation remain the
+    hard backstop."""
+    try:
+        open_trades = (
+            session.execute(
+                select(Trade).where(
+                    Trade.combine_id == combine.id, Trade.status == "open"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    except Exception:  # noqa: BLE001
+        return 0.0
+    if not open_trades:
+        return 0.0
+    from services.order_monitor import _default_unrealized_for
+
+    now = datetime.now(UTC)
+    total = 0.0
+    spot_cache: dict[str, float | None] = {}
+    for t in open_trades:
+        try:
+            if t.symbol not in spot_cache:
+                spot_cache[t.symbol] = _spot_for_symbol(t.symbol)
+            spot = spot_cache[t.symbol]
+            if spot is None:
+                continue
+            total += _default_unrealized_for(t, spot, now)
+        except Exception:  # noqa: BLE001 — one unpriceable trade contributes 0
+            continue
+    return total
 
 
 def _require_tradeable(
@@ -556,6 +637,23 @@ def _require_tradeable(
             status_code=403,
             detail="Daily loss limit hit — no further trading today. The day-lock lifts at the 5pm-PT settlement.",
         )
+    # Mark-to-market gate: the realized-only snapshot above can read "tradeable"
+    # while the LIVE balance (incl. open-position URPL) is already through the
+    # MLL floor or has exhausted today's DLL budget. The ~20s monitor would
+    # auto-liquidate, but don't let a fresh open slip in ahead of it. Only losses
+    # can newly breach a floor the realized check already passed.
+    urpl = _live_combine_urpl(session, combine)
+    if urpl < 0:
+        if snap.balance + urpl <= snap.mll:
+            raise HTTPException(
+                status_code=403,
+                detail="Live balance is at/through the MLL floor from open-position losses — close positions before opening more.",
+            )
+        if not snap.dll_disabled and (snap.dll_used + (-urpl)) >= snap.dll_budget:
+            raise HTTPException(
+                status_code=403,
+                detail="Daily loss limit reached on a mark-to-market basis (open-position losses) — no further trading today.",
+            )
     if contracts is not None:
         open_now = _open_contracts_for_combine(session, combine.id)
         if open_now + contracts > snap.max_contracts:
@@ -626,10 +724,13 @@ def open_zerodte_straddle(
     Strict 0DTE — refuses to open if today's expiry isn't listed.
     Refuses to open if the NYSE session is not OPEN."""
     _require_market_open()
-    _require_tradeable(session, combine, contracts=payload.contracts)
-    # WS5: defense-in-depth — clamp the persisted size to the scaling cap even
-    # though _require_tradeable already 422s an over-cap request.
-    contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
+    # A straddle is TWO legs, so it consumes 2× the per-leg size against the
+    # total-contract cap. Gate and clamp on that effective total, then back out
+    # the per-leg size. (Defense-in-depth: _require_tradeable already 422s an
+    # over-cap request; the clamp guards a snapshot shift under us.)
+    _require_tradeable(session, combine, contracts=payload.contracts * 2)
+    allowed_total = _clamp_contracts_to_cap(session, combine, payload.contracts * 2)
+    contracts = max(1, allowed_total // 2)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
     _require_today_expiry(expiry)
 
@@ -894,15 +995,14 @@ def open_zerodte_multi_leg(
     the cap; per-leg ratios scale within the structure). Strict 0DTE +
     session-open, like the straddle/leg paths."""
     _require_market_open()
-    # The aggregate scaling cap counts a trade as its LARGEST leg
-    # (_open_contracts_for_combine uses max(leg.contracts) = base × max_ratio).
-    # So gate AND clamp on that EFFECTIVE size, not the base — otherwise a leg
-    # with ratio > 1 (e.g. the butterfly body's ratio=2) persists past the cap
-    # that only validated the base, doubling the real open size.
-    max_ratio = max(int(spec.ratio) for spec in payload.legs)
-    _require_tradeable(session, combine, contracts=payload.contracts * max_ratio)
-    effective = _clamp_contracts_to_cap(session, combine, payload.contracts * max_ratio)
-    base_contracts = max(1, effective // max_ratio)
+    # The aggregate scaling cap counts TOTAL contracts across all legs, so a
+    # structure consumes base × Σ ratios (e.g. a 4-leg iron condor at base 1 is
+    # 4 contracts; a butterfly 1-2-1 is 4). Gate AND clamp on that effective
+    # total, then back out the base size.
+    sum_ratio = sum(int(spec.ratio) for spec in payload.legs)
+    _require_tradeable(session, combine, contracts=payload.contracts * sum_ratio)
+    effective = _clamp_contracts_to_cap(session, combine, payload.contracts * sum_ratio)
+    base_contracts = max(1, effective // sum_ratio)
 
     sym, spot, expiry, by_key = _resolve_same_day_quotes(payload.symbol)
     _require_today_expiry(expiry)
@@ -1226,6 +1326,13 @@ def reverse_positions(
     placed). Reuses the single-close path + mirror cascade for the close half,
     and mirror_open for the new reversed positions."""
     _require_market_open()
+    # Reversing re-OPENS fresh positions, so it must clear the SAME risk gate as
+    # /open: a FAILED or day-locked combine cannot put on a new book. (Previously
+    # /reverse called only _require_market_open, letting a failed/day-locked
+    # account re-establish a full opposite-side book and bypass the prop-firm
+    # rules every other open path enforces.) Per-position size is clamped to the
+    # remaining scaling-cap below.
+    _require_tradeable(session, combine)
     now = datetime.now(UTC)
     positions = _open_positions_for_combine(session, combine.id)
     closed: list[int] = []
@@ -1251,20 +1358,29 @@ def reverse_positions(
         # via the same intraday engine the analytics path uses.
         from services.order_monitor import _default_option_mark  # per-leg pricer reuse
 
+        # Clamp the reversed structure to the remaining scaling-cap capacity
+        # (the close above frees this position's own size). Scale every leg by
+        # the same factor so multi-leg ratios are preserved.
+        requested = sum(int(leg.get("contracts", 1) or 1) for leg in src_legs)
+        allowed = _clamp_contracts_to_cap(session, combine, requested)
+        scale = (allowed / requested) if requested > 0 else 1.0
+
         rev_legs: list[dict] = []
         for leg in src_legs:
             flipped = "sell" if leg.get("action", "buy") == "buy" else "buy"
-            # Price the single leg at the current spot with the chain-default IV.
+            rev_contracts = max(1, int(int(leg.get("contracts", 1) or 1) * scale))
+            # Price the flipped leg at the current mark (live chain → model).
             one = dict(leg)
             one["action"] = flipped
-            px = abs(_default_option_mark(_FakeTrade([one]), spot, now))
+            one["contracts"] = rev_contracts
+            px = abs(_default_option_mark(_FakeTrade(t.symbol, [one]), spot, now))
             rev_legs.append(
                 {
                     "side": leg["side"],
                     "action": flipped,
                     "strike": float(leg["strike"]),
                     "expiry": leg["expiry"],
-                    "contracts": int(leg.get("contracts", 1) or 1),
+                    "contracts": rev_contracts,
                     "entry_price": round(float(px), 4),
                 }
             )
@@ -1294,10 +1410,11 @@ def reverse_positions(
 
 
 class _FakeTrade:
-    """Minimal duck-typed stand-in so _default_option_mark (which only reads
-    .legs) can price an ad-hoc single leg without a DB row."""
+    """Minimal duck-typed stand-in so _default_option_mark (which reads .symbol
+    and .legs) can price an ad-hoc single leg without a DB row."""
 
-    def __init__(self, legs: list[dict]) -> None:
+    def __init__(self, symbol: str, legs: list[dict]) -> None:
+        self.symbol = symbol
         self.legs = legs
 
 

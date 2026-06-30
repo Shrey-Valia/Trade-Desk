@@ -37,7 +37,7 @@ Three responsibilities each tick:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -113,11 +113,26 @@ def _rate() -> float:
         return DEFAULT_RATE_FALLBACK
 
 
+def _session_close_for_date(d: date) -> datetime:
+    """Regular-session close instant (tz-aware ET) for date `d`, half-day aware
+    via the NYSE schedule, with a flat 16:00 ET fallback when `d` isn't a
+    listed trading day (defensive — a stored expiry that got shifted)."""
+    from services.market_calendar import session_close_et
+
+    close = session_close_et(d.isoformat())
+    if close is not None:
+        return close
+    return datetime.combine(d, time(16, 0), tzinfo=_ET)
+
+
 def _t_to_close(now: datetime) -> float:
     from calculations.intraday_analytics import SECONDS_PER_YEAR
 
     now_et = now.astimezone(_ET)
-    close = datetime.combine(now_et.date(), time(16, 0), tzinfo=_ET)
+    # Half-day aware: the NYSE schedule knows the 1:00pm ET early closes, so a
+    # 0DTE isn't priced with ~3 extra hours of fictitious time value on those
+    # ~9 sessions/year.
+    close = _session_close_for_date(now_et.date())
     secs = max((close - now_et).total_seconds(), 60.0)
     return secs / SECONDS_PER_YEAR
 
@@ -130,20 +145,79 @@ def _et_date(dt: datetime):
     return dt.astimezone(_ET).date()
 
 
+def _option_chain_rows(symbol: str):
+    """Cached live option chain for the monitor's mark, or None when the feed
+    is cold / the circuit breaker is open. Best-effort — never raises into the
+    loop. `with_volume=False` skips the expensive per-contract bars fetch."""
+    try:
+        from services.alpaca_client import get_chain_snapshot
+
+        return get_chain_snapshot(symbol, with_volume=False)
+    except Exception:  # noqa: BLE001 — cold feed / breaker open → model fallback
+        return None
+
+
+def _chain_row_for(rows, strike: float, side: str, expiry):
+    if not rows or expiry is None:
+        return None
+    for r in rows:
+        if r.type == side and r.expiry == expiry and abs(r.strike - strike) < 1e-6:
+            return r
+    return None
+
+
+def _chain_quote_mid(row) -> float | None:
+    """Per-share mid from a live chain row: (bid+ask)/2 when two-sided, else a
+    positive last. None when the contract has no usable quote (→ model fallback)."""
+    if row is None:
+        return None
+    if row.bid is not None and row.ask is not None and row.bid > 0 and row.ask > 0:
+        return (row.bid + row.ask) / 2.0
+    if row.last is not None and row.last > 0:
+        return float(row.last)
+    return None
+
+
+def _leg_t_to_expiry(leg: dict, now: datetime) -> float:
+    """Years to THIS leg's own expiry close (ET, half-day aware), floored at 60s
+    — NOT today's close. A position on a future expiry must price with its real
+    remaining life, not as if it expired today."""
+    from calculations.intraday_analytics import SECONDS_PER_YEAR
+
+    exp = _leg_expiry(leg)
+    now_et = now.astimezone(_ET)
+    close = _session_close_for_date(exp if exp is not None else now_et.date())
+    secs = max((close - now_et).total_seconds(), 60.0)
+    return secs / SECONDS_PER_YEAR
+
+
 def _default_option_mark(trade: Trade, spot: float, now: datetime) -> float:
-    """Per-share option premium for a (working) position. Uses a chain-default
-    IV — approximate, but a working order only needs to know when the mark
-    crosses the trigger, not an exact fill."""
+    """Signed, contracts-scaled per-share position mark (Σ sign·contracts·px)
+    for working-order triggers and trailing stops.
+
+    Prices each leg from the LIVE option-chain quote MID for its exact
+    strike/expiry/side when available (faithful — no model). Only when the
+    contract isn't quoted does it fall back to a Black-Scholes price at THE
+    LEG'S OWN expiry (half-day aware), using the contract's live chain IV when
+    present, else the DEFAULT_IV. This replaces the old behaviour — a flat 30%
+    IV at *today's* close for every leg — which fabricated stop fills and
+    mispriced any future-expiry position as if it expired today."""
     from calculations.intraday_analytics import bs_intraday
     from calculations.position_analytics import DEFAULT_IV
 
-    t = _t_to_close(now)
     rate = _rate()
+    rows = _option_chain_rows(trade.symbol)
     total = 0.0
     for leg in trade.legs:
         sign = 1.0 if leg.get("action") == "buy" else -1.0
         contracts = int(leg.get("contracts", 1) or 1)
-        px = bs_intraday(spot, float(leg["strike"]), t, rate, DEFAULT_IV, leg["side"])
+        strike = float(leg["strike"])
+        side = leg["side"]
+        row = _chain_row_for(rows, strike, side, _leg_expiry(leg))
+        px = _chain_quote_mid(row)
+        if px is None:
+            iv = float(row.iv) if (row is not None and row.iv and row.iv > 0) else DEFAULT_IV
+            px = bs_intraday(spot, strike, _leg_t_to_expiry(leg, now), rate, iv, side)
         total += sign * contracts * px
     return total
 
@@ -158,14 +232,16 @@ def _default_unrealized_for(trade: Trade, spot: float, now: datetime) -> float:
         entry = entry.replace(tzinfo=timezone.utc)
     elapsed_hours = max(0.0, (now - entry).total_seconds() / 3600.0)
     resp = _intraday_analytics(trade=trade, spot=spot, rate=_rate(), elapsed_hours=elapsed_hours)
-    contracts = max((int(leg.get("contracts", 1) or 1) for leg in trade.legs), default=1)
-    resp = _fold_commission(resp, contracts * settings.commission_per_contract)
+    resp = _fold_commission(resp, _commission_side(trade))
     return float(resp.unrealized_pnl)
 
 
 def _commission_side(trade: Trade) -> float:
-    contracts = max((int(leg.get("contracts", 1) or 1) for leg in trade.legs), default=1)
-    return contracts * settings.commission_per_contract
+    # TOTAL contracts across all legs (per contract per leg) — matches
+    # journal._position_commission_side. A 4-leg condor at 1 contract = 4×fee.
+    # per_contract_fee = commission + regulatory/exchange fee, per side.
+    contracts = sum(int(leg.get("contracts", 1) or 1) for leg in trade.legs)
+    return contracts * settings.per_contract_fee
 
 
 # --- trigger logic ----------------------------------------------------------
@@ -190,6 +266,23 @@ def _bracket_triggered(entry_underlying: float, level: float | None, spot: float
     if level >= entry_underlying:
         return spot >= level
     return spot <= level
+
+
+# Short-volatility, delta-neutral structures lose on a big move in EITHER
+# direction, so a single underlying stop level must protect BOTH sides.
+_SHORT_VOL_STRATEGIES = {
+    "short_straddle", "short_strangle", "iron_condor", "iron_butterfly",
+}
+
+
+def _bracket_band_triggered(entry_underlying: float, level: float | None, spot: float) -> bool:
+    """Two-sided (distance-band) stop for a short-vol structure: fire when the
+    underlying has moved AT LEAST |level − entry| away from entry in EITHER
+    direction. A directional level on a short straddle/strangle/condor silently
+    ignored an equally large adverse move the other way."""
+    if level is None:
+        return False
+    return abs(spot - entry_underlying) >= abs(level - entry_underlying)
 
 
 def _has_trailing_stop(trade: Trade) -> bool:
@@ -242,6 +335,115 @@ def _process_trailing_stop(trade: Trade, mark: float, spot: float, now: datetime
     return True
 
 
+# --- expiry settlement ------------------------------------------------------
+
+
+def _leg_expiry(leg: dict) -> date | None:
+    raw = leg.get("expiry")
+    if raw is None:
+        return None
+    if isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+
+
+def _latest_leg_expiry(trade: Trade) -> date | None:
+    """The LAST expiry across all legs. Settlement waits for this so a
+    multi-expiry structure (calendar/diagonal) isn't force-closed while a
+    longer-dated leg is still live."""
+    expiries = [e for e in (_leg_expiry(leg) for leg in trade.legs) if e is not None]
+    return max(expiries) if expiries else None
+
+
+def _settlement_unrealized_for(trade: Trade, settle_spot: float) -> float:
+    """Folded unrealized P&L at EXPIRY INTRINSIC — same convention as
+    `_default_unrealized_for` (entry-side commission folded in), so `_book_close`
+    books the same shape of number it does for a manual / bracket close.
+
+    At expiry every option is worth exactly its intrinsic value: max(S-K,0) for
+    a call, max(K-S,0) for a put. P&L is intrinsic vs the entry premium, ×100,
+    summed signed across legs (long +, short −), less the entry commission."""
+    gross = 0.0
+    for leg in trade.legs:
+        sign = 1.0 if leg.get("action") == "buy" else -1.0
+        contracts = int(leg.get("contracts", 1) or 1)
+        strike = float(leg["strike"])
+        entry = float(leg.get("entry_price", 0.0) or 0.0)
+        if leg.get("side") == "call":
+            intrinsic = max(settle_spot - strike, 0.0)
+        else:
+            intrinsic = max(strike - settle_spot, 0.0)
+        gross += sign * contracts * (intrinsic - entry) * 100.0
+    return gross - _commission_side(trade)
+
+
+def settle_expired_positions(
+    session_factory=None, *, now: datetime, spot_for=None
+) -> int:
+    """Book every OPEN position whose options have ALL expired to their
+    settlement INTRINSIC value at the 4pm ET close (or the half-day close),
+    exactly once. This is the simulated analog of cash settlement /
+    exercise-assignment: an expired option ceases to exist, so its win/loss
+    must be REALIZED — not left marking as a phantom live position forever
+    (which silently corrupts combine balance, the MLL/DLL floors, and the
+    scaling-cap budget).
+
+    Invoked from the market-CLOSED branch of `run_order_monitor` (the bell has
+    rung; the fill/bracket pass is dormant), and independently re-checks
+    `now_et >= session_close(latest_leg_expiry)` so a not-yet-expired multi-day
+    position is never touched. Idempotent — a settled trade becomes
+    status='closed' and drops out of the open query on the next tick. The
+    settlement spot is recorded as exit_underlying_price so a later view can't
+    re-mark the (now closed) position at a drifted live price. Returns the
+    number of positions settled."""
+    spot_for = spot_for or _default_spot_for
+    if session_factory is None:
+        from database import SessionLocal
+
+        session_factory = SessionLocal
+    from services.copy_trade import mirror_close
+
+    now_et = now.astimezone(_ET)
+    session = session_factory()
+    settled = 0
+    spot_cache: dict[str, float | None] = {}
+    try:
+        trades = (
+            session.execute(select(Trade).where(Trade.status == "open"))
+            .scalars()
+            .all()
+        )
+        for trade in trades:
+            try:
+                expiry = _latest_leg_expiry(trade)
+                if expiry is None or now_et < _session_close_for_date(expiry):
+                    continue  # no expiry data, or the last leg hasn't expired
+                # Settle against the 4pm print: the live spot if the feed is
+                # warm, else the last-known-good fallback. No price ⇒ defer to a
+                # later tick (never fabricate a settlement value).
+                spot = _liquidation_spot(trade.symbol, spot_for, now, spot_cache)
+                if spot is None:
+                    log.warning(
+                        "settlement: no spot for %s (trade %s) — deferring",
+                        trade.symbol, trade.id,
+                    )
+                    continue
+                _book_close(trade, spot, now, _settlement_unrealized_for, "expiry")
+                trade.notes = (trade.notes or "") + " · settled at expiry"
+                session.commit()
+                mirror_close(session, trade)  # cascade to follower copies
+                settled += 1
+            except Exception:  # noqa: BLE001 — isolate one bad trade from the rest
+                session.rollback()
+                log.exception("settlement: trade %s failed", trade.id)
+        return settled
+    finally:
+        session.close()
+
+
 # --- the pass ---------------------------------------------------------------
 
 
@@ -269,7 +471,16 @@ def run_order_monitor(
         session_factory = SessionLocal
 
     if not market_open():
-        return {"filled": 0, "closed": 0, "cancelled": 0, "skipped": "market_closed"}
+        # The fill/bracket pass is dormant out of session, but expiration is a
+        # wall-clock event — settle anything that expired at/after the bell.
+        settled = settle_expired_positions(session_factory, now=now, spot_for=spot_for)
+        return {
+            "filled": 0,
+            "closed": 0,
+            "cancelled": 0,
+            "settled": settled,
+            "skipped": "market_closed",
+        }
 
     session = session_factory()
     filled = closed = cancelled = 0
@@ -350,6 +561,7 @@ def run_order_monitor(
             "closed": closed,
             "cancelled": cancelled,
             "liquidated": liquidated,
+            "settled": 0,  # in-session: nothing is past its expiry close
             "total": len(trades),
         }
     finally:
@@ -723,7 +935,11 @@ def _book_close(trade: Trade, spot: float, now: datetime, unrealized_for, reason
     trade.close_reason = reason
     trade.exit_date = now
     trade.exit_underlying_price = spot
-    trade.realized_pnl = round(realized, 2)
+    # ACCUMULATE onto any realized already booked by prior scale-outs (a partial
+    # close reduces the legs and adds its slice to realized_pnl). The recompute
+    # above covers only the REMAINING contracts, so a bare assignment would
+    # discard every booked scale-out slice. None/0 for a never-scaled position.
+    trade.realized_pnl = round((trade.realized_pnl or 0.0) + realized, 2)
 
 
 def _process_open(
@@ -740,8 +956,16 @@ def _process_open(
             return True
 
     entry_u = trade.entry_underlying_price
+    # A short-vol structure's stop is two-sided (a big move EITHER way is the
+    # loss); every other strategy keeps the directional level.
+    short_vol = (trade.strategy or "") in _SHORT_VOL_STRATEGIES
+    sl_triggered = (
+        _bracket_band_triggered(entry_u, trade.stop_loss, spot)
+        if short_vol
+        else _bracket_triggered(entry_u, trade.stop_loss, spot)
+    )
     reason: str | None = None
-    if _bracket_triggered(entry_u, trade.stop_loss, spot):
+    if sl_triggered:
         reason = "stop_loss"
     elif _bracket_triggered(entry_u, trade.take_profit, spot):
         reason = "take_profit"

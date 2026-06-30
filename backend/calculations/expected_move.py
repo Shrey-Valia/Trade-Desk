@@ -54,8 +54,13 @@ def atm_straddle_price(
 
 
 def _mid(c: ContractRow) -> float | None:
+    """Prefer a two-sided mid; fall back to a positive last. Returns None when
+    only ONE side is quoted — a lone bid or ask is not a fair value for the
+    contract, and using it skews the ±1σ expected-move band. (The old
+    `c.bid or c.ask` fallback also mislabeled itself "larger of bid/ask" — it
+    returned bid-if-truthy, not the larger.)"""
     if c.bid is not None and c.ask is not None and c.bid > 0 and c.ask > 0:
         return (c.bid + c.ask) / 2
     if c.last is not None and c.last > 0:
         return c.last
-    return c.bid or c.ask
+    return None

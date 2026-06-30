@@ -74,9 +74,8 @@ export function TradeTicket() {
   const maxContracts = accountState?.max_contracts ?? 99;
   const activeTier = accountState?.active_tier ?? "50K";
   // Contracts already open/working on this tier. The scaling cap limits TOTAL
-  // simultaneous size, so the ticket's remaining capacity is the scaling max
-  // minus what's already on — otherwise multiple max-size orders stack past
-  // the cap (the server now rejects that aggregate too).
+  // contracts across ALL legs (a 5-lot straddle is 10 contracts), matching the
+  // server. Remaining capacity is the scaling max minus what's already on.
   const openContracts = useMemo(() => {
     const ts = tradesData?.trades ?? [];
     return ts
@@ -87,14 +86,21 @@ export function TradeTicket() {
       )
       .reduce(
         (sum, t) =>
-          sum + (t.legs.length ? Math.max(...t.legs.map((l) => l.contracts ?? 1)) : 1),
+          sum +
+          (t.legs.length
+            ? t.legs.reduce((a, l) => a + (l.contracts ?? 1), 0)
+            : 1),
         0,
       );
   }, [tradesData, activeTier]);
   const remaining = Math.max(0, maxContracts - openContracts);
+  // A straddle quick-entry opens 2 legs, so it consumes 2× the per-leg size; a
+  // single leg consumes 1×. Clamp the per-leg selection to what fits.
+  const orderLegs = selection?.kind === "leg" ? 1 : 2;
+  const maxPerLeg = Math.max(1, Math.floor(remaining / orderLegs));
   useEffect(() => {
-    if (contracts > remaining) setContracts(Math.max(1, remaining));
-  }, [contracts, remaining, setContracts]);
+    if (contracts > maxPerLeg) setContracts(maxPerLeg);
+  }, [contracts, maxPerLeg, setContracts]);
 
   // Combine engine soft-gate: a DAY LOCK (DLL hit today) or a FAILED
   // account blocks further opens — UX only; the backend open path is not
@@ -125,7 +131,7 @@ export function TradeTicket() {
   const limitOk = !needsLimit || (limitPrice != null && limitPrice > 0);
   // At the scaling cap: no remaining capacity, or the chosen size would push
   // total open past the cap. Blocks the BUY (server enforces this too).
-  const atCap = remaining <= 0 || contracts > remaining;
+  const atCap = remaining <= 0 || contracts * orderLegs > remaining;
   const atCapReason = `Scaling plan: ${openContracts}/${maxContracts} contracts open — close a position to scale up.`;
   // Stop-limit needs a valid stop (arm) price in addition to the limit price.
   const stopOk = !needsStop || (stopPrice != null && stopPrice > 0);

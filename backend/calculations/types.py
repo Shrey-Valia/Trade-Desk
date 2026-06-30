@@ -7,7 +7,7 @@ so they're trivially testable and decoupled from data-source quirks.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 
 @dataclass
@@ -29,3 +29,7 @@ class ContractRow:
     bid: float | None = None
     ask: float | None = None
     last: float | None = None
+    # Timestamp of the contract's last trade (NOT the fetch time), so consumers
+    # can judge staleness — a thinly traded / halted strike can show a print
+    # minutes old even during the session. None when the feed omits it.
+    as_of: datetime | None = None

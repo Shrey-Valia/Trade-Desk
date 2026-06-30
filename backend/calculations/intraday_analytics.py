@@ -96,10 +96,16 @@ def greeks_intraday(
     delta = (up_s - dn_s) / (2 * h_s)
     gamma = (up_s - 2 * base + dn_s) / (h_s ** 2)
 
-    # Theta — 1-calendar-day forward step, floored so a near-expiry
-    # position doesn't push T through zero.
-    T_minus = max(MIN_T_INTRADAY, T - one_day)
-    theta = bs_intraday(S, K, T_minus, r, sigma, option_type) - base
+    # Theta. A full 1-calendar-day step saturates at the expiry for a sub-day
+    # (0DTE) option — T - one_day clamps to the 60s floor, so "per day" theta
+    # becomes a meaningless function of the floor. When less than a day remains,
+    # report the ACTUAL remaining time decay to expiry: value(now) → intrinsic
+    # (T=0). For longer-dated options keep the standard 1-calendar-day step.
+    if T <= one_day:
+        intrinsic = max(S - K, 0.0) if option_type == "call" else max(K - S, 0.0)
+        theta = intrinsic - base  # ≤ 0 for long premium; = −(remaining extrinsic)
+    else:
+        theta = bs_intraday(S, K, T - one_day, r, sigma, option_type) - base
 
     # Vega — per 1% IV bump (sigma is fractional, so +0.01 == +1%).
     up_iv = bs_intraday(S, K, T, r, sigma + 0.01, option_type)

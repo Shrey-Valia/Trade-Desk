@@ -6,17 +6,19 @@ unrealized_for / market_open. Trades are seeded straight into the DB.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 import models.combine_event  # noqa: F401 — ensure combine_events table exists
 import services.order_monitor as order_monitor
+from config import settings
 from models.trade import Trade
 from services.order_monitor import (
     _bracket_triggered,
     _entry_fill_triggered,
     run_order_monitor,
+    settle_expired_positions,
 )
 from tests.conftest import make_combine
 
@@ -426,7 +428,8 @@ def test_stop_loss_closes_and_books_realized(auth_client, session_factory):
     assert t.status == "closed"
     assert t.close_reason == "stop_loss"
     assert t.exit_underlying_price == 94.0
-    assert t.realized_pnl == -150.65  # −150 − 0.65 exit commission
+    # −150 − exit fee (single leg, 1 contract = 1× per_contract_fee).
+    assert t.realized_pnl == pytest.approx(-150.0 - settings.per_contract_fee, abs=0.001)
     s.close()
 
 
@@ -572,8 +575,8 @@ def test_auto_liquidates_when_urpl_breaches_mll(auth_client, session_factory):
     t = s.get(Trade, tid)
     assert t.status == "closed"
     assert t.close_reason == "liquidation"
-    # −2,600 unrealized − 0.65 exit commission booked as realized.
-    assert t.realized_pnl == -2_600.65
+    # −2,600 unrealized − exit fee (single leg) booked as realized.
+    assert t.realized_pnl == pytest.approx(-2_600.0 - settings.per_contract_fee, abs=0.001)
     assert "auto-liquidated" in (t.notes or "")
     assert s.get(Combine, c["id"]).outcome == "failed"
     s.close()
@@ -898,4 +901,211 @@ def test_auto_liquidation_cascades_to_follower_copies(auth_client, session_facto
     # ordering decides which fires first. Either way it must end up closed.
     assert copy.status == "closed"
     assert copy.close_reason in ("copy", "liquidation")
+    s.close()
+
+
+# --- expiry settlement ------------------------------------------------------
+#
+# Options expire at the 4pm ET bell (1pm on half-days). A held position must be
+# REALIZED at intrinsic — not left marking as a phantom live position. Fixed
+# dates so the assertions are wall-clock-independent. 2026-01-16 is a Friday
+# trading day; 4pm EST = 21:00 UTC, so 21:30 UTC is just past the close.
+_EXPIRY = "2026-01-16"
+_PAST_CLOSE = datetime(2026, 1, 16, 21, 30, tzinfo=timezone.utc)
+
+
+def _leg(side, action, strike, entry, contracts=1, expiry=_EXPIRY):
+    return {
+        "side": side, "action": action, "strike": strike,
+        "expiry": expiry, "contracts": contracts, "entry_price": entry,
+    }
+
+
+def test_settlement_books_itm_long_call_at_intrinsic(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open",
+                _legs=[_leg("call", "buy", 100.0, 1.0)])
+    n = settle_expired_positions(session_factory, now=_PAST_CLOSE, spot_for=lambda s: 105.0)
+    assert n == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed"
+    assert t.close_reason == "expiry"
+    # intrinsic 5.00 vs entry 1.00 = +4.00/sh ×100 = +400, less entry+exit comm.
+    assert t.realized_pnl == pytest.approx(400.0 - 2 * settings.per_contract_fee, abs=0.01)
+    assert t.exit_underlying_price == 105.0
+    s.close()
+
+
+def test_settlement_books_otm_long_call_worthless(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open",
+                _legs=[_leg("call", "buy", 100.0, 1.0)])
+    n = settle_expired_positions(session_factory, now=_PAST_CLOSE, spot_for=lambda s: 95.0)
+    assert n == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed"
+    # worthless: lose the $1.00/sh premium ×100 = −100, less both commissions.
+    assert t.realized_pnl == pytest.approx(-100.0 - 2 * settings.per_contract_fee, abs=0.01)
+    s.close()
+
+
+def test_settlement_books_short_put_itm_loss(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open",
+                _legs=[_leg("put", "sell", 100.0, 2.0)])
+    # spot 96 → put intrinsic 4.00; short sold for 2.00 → −2.00/sh ×100 = −200.
+    n = settle_expired_positions(session_factory, now=_PAST_CLOSE, spot_for=lambda s: 96.0)
+    assert n == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.realized_pnl == pytest.approx(-200.0 - 2 * settings.per_contract_fee, abs=0.01)
+    s.close()
+
+
+def test_settlement_skips_not_yet_expired(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open",
+                _legs=[_leg("call", "buy", 100.0, 1.0, expiry="2030-01-18")])
+    n = settle_expired_positions(session_factory, now=_PAST_CLOSE, spot_for=lambda s: 105.0)
+    assert n == 0
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    s.close()
+
+
+def test_settlement_is_idempotent(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    _seed(session_factory, c["id"], status="open", _legs=[_leg("call", "buy", 100.0, 1.0)])
+    first = settle_expired_positions(session_factory, now=_PAST_CLOSE, spot_for=lambda s: 105.0)
+    second = settle_expired_positions(session_factory, now=_PAST_CLOSE, spot_for=lambda s: 105.0)
+    assert first == 1 and second == 0
+
+
+def test_settlement_defers_when_no_spot(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", _legs=[_leg("call", "buy", 100.0, 1.0)])
+    n = settle_expired_positions(session_factory, now=_PAST_CLOSE, spot_for=lambda s: None)
+    assert n == 0
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"  # deferred, not lost
+    s.close()
+
+
+def test_settlement_preserves_accumulated_scaleout_realized(auth_client, session_factory):
+    """A position scaled out (realized already booked) then left to expire must
+    ADD the settlement slice to the running realized, not overwrite it."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", _legs=[_leg("call", "buy", 100.0, 1.0)])
+    s = session_factory()
+    s.get(Trade, tid).realized_pnl = 800.0  # pretend a prior scale-out booked +800
+    s.commit()
+    s.close()
+    settle_expired_positions(session_factory, now=_PAST_CLOSE, spot_for=lambda s: 105.0)
+    s = session_factory()
+    t = s.get(Trade, tid)
+    # 800 carried + (400 intrinsic − 2×0.65 commission) settlement slice.
+    assert t.realized_pnl == pytest.approx(800.0 + 400.0 - 2 * settings.per_contract_fee, abs=0.01)
+    s.close()
+
+
+def test_settlement_runs_in_market_closed_branch(auth_client, session_factory):
+    """run_order_monitor settles expired positions when the session is closed."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", _legs=[_leg("call", "buy", 100.0, 1.0)])
+    summary = run_order_monitor(
+        session_factory=session_factory,
+        now=_PAST_CLOSE,
+        market_open=lambda: False,
+        spot_for=lambda sym: 105.0,
+    )
+    assert summary["settled"] == 1
+    s = session_factory()
+    assert s.get(Trade, tid).status == "closed"
+    s.close()
+
+
+# --- option mark: live chain quote + per-leg expiry -------------------------
+
+
+def _mark_trade(legs):
+    t = Trade(
+        symbol="SPY", strategy="long_call", entry_date=datetime.now(timezone.utc),
+        entry_underlying_price=100.0, net_debit_credit=0.0, tier="50K",
+    )
+    t.legs = legs
+    return t
+
+
+def test_default_option_mark_uses_live_chain_mid(monkeypatch):
+    """The mark prices from the live chain quote MID, not a flat-IV model."""
+    from calculations.types import ContractRow
+
+    rows = [ContractRow(strike=100.0, expiry=date(2026, 1, 16), type="call", bid=2.0, ask=2.4)]
+    monkeypatch.setattr(order_monitor, "_option_chain_rows", lambda sym: rows)
+    monkeypatch.setattr(order_monitor, "_rate", lambda: 0.04)
+    trade = _mark_trade([{"side": "call", "action": "buy", "strike": 100.0,
+                          "expiry": "2026-01-16", "contracts": 2, "entry_price": 1.0}])
+    # mid (2.0+2.4)/2 = 2.2 per share, long ×2 contracts (signed) = +4.4.
+    assert order_monitor._default_option_mark(trade, 105.0, _PAST_CLOSE) == pytest.approx(4.4)
+
+
+def test_default_option_mark_fallback_uses_leg_expiry(monkeypatch):
+    """With no live quote, the model fallback uses THE LEG'S expiry (not today)."""
+    from calculations.intraday_analytics import bs_intraday
+    from calculations.position_analytics import DEFAULT_IV
+
+    monkeypatch.setattr(order_monitor, "_option_chain_rows", lambda sym: None)
+    monkeypatch.setattr(order_monitor, "_rate", lambda: 0.04)
+    leg = {"side": "call", "action": "buy", "strike": 100.0,
+           "expiry": "2026-02-20", "contracts": 1, "entry_price": 1.0}
+    now = datetime(2026, 1, 16, 18, 0, tzinfo=timezone.utc)  # weeks before expiry
+    expected = bs_intraday(105.0, 100.0, order_monitor._leg_t_to_expiry(leg, now),
+                           0.04, DEFAULT_IV, "call")
+    assert order_monitor._default_option_mark(_mark_trade([leg]), 105.0, now) == pytest.approx(expected)
+    # And it carries real time value — not collapsed to ~intrinsic as if 0DTE.
+    assert expected > 5.0  # intrinsic is 5.00; extrinsic pushes it higher
+
+
+# --- two-sided brackets for short-vol structures ----------------------------
+
+
+def test_short_straddle_stop_is_two_sided(auth_client, session_factory):
+    """A short straddle's single stop level protects BOTH sides — a big move
+    DOWN triggers it even though the level sits above entry (was ignored)."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", strategy="short_straddle",
+                entry_underlying_price=500.0, stop_loss=505.0)
+    # 490: |490−500|=10 ≥ |505−500|=5 → stop fires.
+    summary = _run(session_factory, spot_for=lambda s: 490.0, unrealized_for=lambda t, s: -300.0)
+    assert summary["closed"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed" and t.close_reason == "stop_loss"
+    s.close()
+
+
+def test_short_straddle_stop_holds_inside_band(auth_client, session_factory):
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", strategy="short_straddle",
+                entry_underlying_price=500.0, stop_loss=505.0)
+    # 502: |2| < 5 → inside the band, no stop.
+    summary = _run(session_factory, spot_for=lambda s: 502.0, unrealized_for=lambda t, s: -50.0)
+    assert summary["closed"] == 0
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    s.close()
+
+
+def test_directional_stop_unchanged_for_long_call(auth_client, session_factory):
+    """A directional strategy keeps the one-sided level: an above-entry stop on
+    a long_call fires on the way UP, not on a drop."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open", strategy="long_call",
+                entry_underlying_price=500.0, stop_loss=505.0)
+    summary = _run(session_factory, spot_for=lambda s: 490.0, unrealized_for=lambda t, s: -100.0)
+    assert summary["closed"] == 0
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
     s.close()

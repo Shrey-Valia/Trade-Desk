@@ -5,6 +5,8 @@ from __future__ import annotations
 import types
 from datetime import datetime, timezone
 
+import pytest
+
 import models.combine_event  # noqa: F401 — combine_snapshot writes events
 from models.trade import Trade
 from routers import zerodte
@@ -228,6 +230,8 @@ def test_reverse_closes_and_opens_opposite_side(auth_client, session_factory, mo
     )
     monkeypatch.setattr("routers.zerodte.is_market_open", lambda: True)
     _stub_quote(monkeypatch)
+    # Keep the reversed-leg pricer off the network — model fallback is fine here.
+    monkeypatch.setattr("services.order_monitor._option_chain_rows", lambda sym: None)
 
     res = auth_client.post("/api/zerodte/reverse")
     assert res.status_code == 200, res.text
@@ -252,6 +256,48 @@ def test_reverse_rejected_when_market_closed(auth_client, session_factory, monke
     _stub_quote(monkeypatch)
     res = auth_client.post("/api/zerodte/reverse")
     assert res.status_code == 409
+
+
+def test_reverse_rejected_when_combine_failed(auth_client, session_factory, monkeypatch):
+    """A FAILED combine cannot re-establish a fresh opposite-side book via
+    /reverse — it must clear the same risk gate as /open (regression: /reverse
+    used to bypass _require_tradeable entirely)."""
+    import types
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed_trade(session_factory, c["id"], status="open")
+    monkeypatch.setattr("routers.zerodte.is_market_open", lambda: True)
+    _stub_quote(monkeypatch)
+    monkeypatch.setattr(
+        "routers.zerodte.combine_snapshot",
+        lambda session, combine: types.SimpleNamespace(
+            outcome="failed", day_locked=False, max_contracts=2
+        ),
+    )
+    res = auth_client.post("/api/zerodte/reverse")
+    assert res.status_code == 403
+    # Gate fires BEFORE any close/open, so the original position is untouched.
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    s.close()
+
+
+def test_reverse_rejected_when_day_locked(auth_client, session_factory, monkeypatch):
+    """A day-locked combine (DLL hit) likewise can't reverse into a new book."""
+    import types
+
+    c = make_combine(auth_client, "50K")
+    _seed_trade(session_factory, c["id"], status="open")
+    monkeypatch.setattr("routers.zerodte.is_market_open", lambda: True)
+    _stub_quote(monkeypatch)
+    monkeypatch.setattr(
+        "routers.zerodte.combine_snapshot",
+        lambda session, combine: types.SimpleNamespace(
+            outcome="active", day_locked=True, max_contracts=2
+        ),
+    )
+    res = auth_client.post("/api/zerodte/reverse")
+    assert res.status_code == 403
 
 
 # --- deterministic fill slippage --------------------------------------------
@@ -304,6 +350,50 @@ def test_slippage_floor_keeps_price_positive():
     q = _q(bid=0.01, ask=0.05)  # mid 0.03, half-spread 0.02
     sell = zerodte._pick_fill_price(q, "sell", 50)  # large adverse size impact
     assert sell >= 0.01  # floored, never ≤ 0
+
+
+def test_one_sided_ask_only_buyer_pays_ask_seller_penalized():
+    """Ask-only quote: a market BUY pays ~the ask (not a free fill below it),
+    and a SELL is penalized below it — was a 0-spread free fill at the ask."""
+    q = _q(ask=2.0)  # synthetic 2% touch: spread 0.04, mid 1.98
+    buy = zerodte._pick_fill_price(q, "buy", 1)
+    sell = zerodte._pick_fill_price(q, "sell", 1)
+    assert buy == pytest.approx(2.0)    # 1.98 + half-spread 0.02 = the ask
+    assert sell == pytest.approx(1.96)  # 1.98 − 0.02 — not the free ask
+    assert buy > sell
+
+
+def test_one_sided_bid_only_seller_hits_bid_buyer_pays_up():
+    """Bid-only quote: a market SELL hits ~the bid; a BUY pays up above it —
+    was a free fill at the bid for the buyer."""
+    q = _q(bid=2.0)  # synthetic 2% touch: spread 0.04, mid 2.02
+    buy = zerodte._pick_fill_price(q, "buy", 1)
+    sell = zerodte._pick_fill_price(q, "sell", 1)
+    assert sell == pytest.approx(2.0)   # 2.02 − 0.02 = the bid
+    assert buy == pytest.approx(2.04)   # 2.02 + 0.02 — pays up, no offer to lift
+    assert buy > sell
+
+
+def test_quote_price_prefers_mid_over_ask():
+    """_quote_price returns the two-sided MID, not the lone ask (the mid branch
+    used to be dead code, so every quoted premium was the offer)."""
+    px, src = zerodte._quote_price(_q(bid=1.0, ask=1.4))
+    assert (px, src) == (pytest.approx(1.2), "mid")
+    # Ask-only still falls back to the ask.
+    assert zerodte._quote_price(_q(ask=1.4)) == (pytest.approx(1.4), "ask")
+
+
+def test_require_fresh_spot_rejects_stale_quote():
+    """A halted/illiquid symbol with a minutes-old last trade is refused; a
+    fresh one (or one with no timestamp) passes."""
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    zerodte._require_fresh_spot(types.SimpleNamespace(as_of=now))  # fresh → ok
+    zerodte._require_fresh_spot(types.SimpleNamespace(as_of=None))  # no ts → ok
+    with pytest.raises(Exception) as exc:
+        zerodte._require_fresh_spot(types.SimpleNamespace(as_of=now - timedelta(minutes=10)))
+    assert exc.value.status_code == 503
 
 
 def test_no_quote_returns_zero():

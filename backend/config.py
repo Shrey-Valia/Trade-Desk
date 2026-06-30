@@ -94,6 +94,18 @@ class Settings(BaseSettings):
     # the MLL/DLL engine reads net P&L separately (a later prompt).
     commission_per_contract: float = 0.65
 
+    # Blended per-contract REGULATORY/EXCHANGE fee, $ per contract per side
+    # (ORF + OCC clearing + sell-side SEC/TAF). Real options trades pay this on
+    # top of commission, so omitting it makes paper P&L systematically rosy.
+    # Folded into the same per-side cost as commission via `per_contract_fee`.
+    regulatory_fee_per_contract: float = 0.04
+
+    # Max age (seconds) of the underlying's LAST TRADE before a 0DTE open is
+    # refused — a halted / thinly traded symbol can show a print minutes old
+    # even during the session, and filling against it books a price the market
+    # isn't at. 300s tolerates normal indicative-feed lag.
+    max_spot_staleness_s: float = 300.0
+
     # ---------------------------------------------------------------------
     # Deployment environment. "development" (default) keeps the dev-friendly
     # behaviours (e.g. the session cookie is allowed over plain HTTP); set
@@ -271,6 +283,13 @@ class Settings(BaseSettings):
     def session_ttl(self) -> timedelta:
         """Session lifetime as a timedelta (from session_ttl_days)."""
         return timedelta(days=self.session_ttl_days)
+
+    @property
+    def per_contract_fee(self) -> float:
+        """Total per-contract, per-side transaction cost: commission + the
+        blended regulatory/exchange fee. The single number every commission
+        helper folds into cost basis / realized P&L (entry and exit)."""
+        return self.commission_per_contract + self.regulatory_fee_per_contract
 
 
 settings = Settings()

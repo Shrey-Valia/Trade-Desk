@@ -98,7 +98,7 @@ def test_multileg_butterfly_ratio_doubles_body(auth_client, session_factory, mon
         "/api/zerodte/open-multi",
         json={
             "symbol": "SPY",
-            "contracts": 2,
+            "contracts": 1,  # base 1 × Σratio 4 = 4 total ≤ cap 5
             "strategy": "butterfly",
             "legs": [
                 {"side": "call", "action": "buy", "strike": 95, "ratio": 1},
@@ -109,23 +109,23 @@ def test_multileg_butterfly_ratio_doubles_body(auth_client, session_factory, mon
     )
     assert res.status_code == 201, res.text
     legs = {leg["strike"]: leg["contracts"] for leg in res.json()["legs"]}
-    # ratio × base contracts: wings 1×2=2, body 2×2=4.
-    assert legs[95.0] == 2 and legs[105.0] == 2
-    assert legs[100.0] == 4
+    # ratio × base contracts: wings 1×1=1, body 2×1=2.
+    assert legs[95.0] == 1 and legs[105.0] == 1
+    assert legs[100.0] == 2
 
 
 def test_multileg_ratio_cannot_bypass_scaling_cap(auth_client, session_factory, monkeypatch):
-    """The aggregate scaling cap counts a trade as its LARGEST leg. A butterfly
-    with base = cap and a body ratio=2 would persist a 2x-cap body leg — the gate
-    must reject it. Regression: the cap was checked on the BASE, not base x ratio,
-    so a ratio>1 leg could be persisted at double the cap."""
+    """The aggregate scaling cap counts TOTAL contracts across all legs. A
+    butterfly with base = cap and Σratio = 4 consumes 4× the cap — the gate must
+    reject it. Regression: the cap was checked on the BASE, not base × Σratio, so
+    a multi-leg structure could be persisted well past the cap."""
     make_combine(auth_client, "50K")  # scaling cap = 5 contracts at $0 built equity
     _stub_chain(monkeypatch, strikes=(95.0, 100.0, 105.0))
     res = auth_client.post(
         "/api/zerodte/open-multi",
         json={
             "symbol": "SPY",
-            "contracts": 5,  # base=5; body ratio=2 -> effective body = 10 > cap 5
+            "contracts": 5,  # base=5 × Σratio 4 = 20 total >> cap 5
             "strategy": "butterfly",
             "legs": [
                 {"side": "call", "action": "buy", "strike": 95, "ratio": 1},

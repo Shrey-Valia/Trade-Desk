@@ -10,7 +10,8 @@ The `now` parameter is preserved for the fallback path and for testing.
 """
 
 import logging
-from datetime import datetime
+from datetime import date as DateType, datetime
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 import pandas_market_calendars as mcal
@@ -19,6 +20,21 @@ log = logging.getLogger(__name__)
 
 _NYSE = mcal.get_calendar("NYSE")
 _ET = ZoneInfo("America/New_York")
+
+
+@lru_cache(maxsize=1024)
+def session_close_et(date_iso: str) -> datetime | None:
+    """The regular-session CLOSE instant (tz-aware ET) for the NYSE trading day
+    `date_iso` ('YYYY-MM-DD'), or None if that date is not a trading day.
+
+    Encodes early-close half-days (1:00pm ET on the day after Thanksgiving,
+    Christmas Eve, etc.) straight from the NYSE schedule — callers must NOT
+    assume a flat 16:00 close. Cached per date (the schedule is immutable)."""
+    d = DateType.fromisoformat(date_iso)
+    schedule = _NYSE.schedule(start_date=d, end_date=d)
+    if schedule.empty:
+        return None
+    return schedule.iloc[0]["market_close"].to_pydatetime().astimezone(_ET)
 
 
 def is_market_open(now: datetime | None = None) -> bool:

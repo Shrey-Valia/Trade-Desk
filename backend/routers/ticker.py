@@ -644,28 +644,57 @@ def _iv_rank_with_status(symbol: str, iv30: float | None) -> tuple[float | None,
 
 
 def _historical_iv30(symbol: str) -> list[float]:
-    """Pull historical ATM IV per snapshot_date from options_snapshots.
+    """Pull historical ATM near-term IV per snapshot_date from options_snapshots.
 
-    Uses median ATM IV per day to ride out outliers in the indicative feed.
-    Empty until `collect_options_chain` has run for at least one day.
+    One value per day: the median IV of the NEAR-TERM expiry's ATM contracts
+    (|delta| ≈ 0.5). Empty until `collect_options_chain` has run for ≥1 day.
     """
     with SessionLocal() as session:
         return _historical_iv30_query(session, symbol)
 
 
+# ATM is identified by delta (≈0.5 for a call, −0.5 for a put). Spot isn't
+# stored per-snapshot, so |delta| within this band of 0.5 is the ATM proxy.
+_ATM_DELTA_BAND = 0.10
+
+
 def _historical_iv30_query(session: Session, symbol: str) -> list[float]:
+    """Daily ATM near-term IV series — NOT a median over the whole surface.
+
+    IV-Rank/percentile must compare today's ATM-near-term IV against a like-for
+    -like history. Medianing every strike and every expiry (0DTE→LEAPS) yielded
+    a skew-and-term-weighted number that wasn't IV30 and wasn't comparable
+    day-to-day. We filter to each day's near-term expiry and its ATM contracts
+    (|delta|≈0.5) so the series is a true ATM-IV30 history."""
     cutoff = datetime.now(_ET).date() - timedelta(days=_IV_HISTORY_WINDOW * 2)
     rows = session.execute(
-        select(OptionsSnapshot.snapshot_date, OptionsSnapshot.iv)
+        select(
+            OptionsSnapshot.snapshot_date,
+            OptionsSnapshot.expiry,
+            OptionsSnapshot.iv,
+            OptionsSnapshot.delta,
+        )
         .where(OptionsSnapshot.symbol == symbol)
         .where(OptionsSnapshot.iv.is_not(None))
+        .where(OptionsSnapshot.delta.is_not(None))
         .where(OptionsSnapshot.snapshot_date >= cutoff)
     ).all()
-    by_date: dict[date, list[float]] = {}
-    for snap_date, iv in rows:
-        by_date.setdefault(snap_date, []).append(float(iv))
-    daily_medians = []
+    by_date: dict[date, list[tuple[date, float, float]]] = {}
+    for snap_date, expiry, iv, delta in rows:
+        by_date.setdefault(snap_date, []).append((expiry, float(iv), abs(float(delta))))
+
+    daily_atm_iv: list[float] = []
     for d in sorted(by_date):
-        vals = sorted(by_date[d])
-        daily_medians.append(vals[len(vals) // 2])
-    return daily_medians
+        entries = by_date[d]
+        # Near-term expiry on/after the snapshot date (fallback: earliest seen).
+        future = [e for (e, _iv, _adl) in entries if e >= d]
+        near = min(future) if future else min(e for (e, _iv, _adl) in entries)
+        near_entries = [(adl, iv) for (e, iv, adl) in entries if e == near]
+        # ATM band first; if nothing within the band, take the single contract
+        # whose delta is closest to 0.5 (still ATM, just a sparser chain).
+        atm_ivs = sorted(iv for (adl, iv) in near_entries if abs(adl - 0.5) <= _ATM_DELTA_BAND)
+        if not atm_ivs and near_entries:
+            atm_ivs = [min(near_entries, key=lambda t: abs(t[0] - 0.5))[1]]
+        if atm_ivs:
+            daily_atm_iv.append(atm_ivs[len(atm_ivs) // 2])
+    return daily_atm_iv

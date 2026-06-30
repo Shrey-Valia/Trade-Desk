@@ -260,6 +260,10 @@ class Quote:
     day_high: float = 0.0
     day_low: float = 0.0
     day_volume: int = 0
+    # Timestamp of the latest TRADE behind `price` (not the fetch time). After
+    # hours / on a halt this is the stale last print, which lets callers refuse
+    # to fill against a price the market isn't actually at. None if unavailable.
+    as_of: datetime | None = None
 
     @property
     def change_pct(self) -> float:
@@ -416,6 +420,7 @@ def get_quotes(symbols: list[str]) -> dict[str, Quote]:
             day_high=float(getattr(daily_bar, "high", 0) or 0) if daily_bar else 0.0,
             day_low=float(getattr(daily_bar, "low", 0) or 0) if daily_bar else 0.0,
             day_volume=int(getattr(daily_bar, "volume", 0) or 0) if daily_bar else 0,
+            as_of=getattr(latest_trade, "timestamp", None),
         )
 
     cache.set(cache_key, out, ttl_seconds=5)
@@ -584,7 +589,10 @@ def _parse_occ(occ_symbol: str) -> tuple[date, str, float] | None:
         strike_int = int(occ_symbol[-8:])
         side_char = occ_symbol[-9:-8]
         date_str = occ_symbol[-15:-9]
-        expiry = datetime.strptime(date_str, "%y%m%d").date()
+        # OCC YY is always 20xx for listed options; pin the century explicitly
+        # rather than leaning on strptime's 1969–2068 %y window. date() raises
+        # on an implausible month/day, which we treat as malformed (→ None).
+        expiry = date(2000 + int(date_str[0:2]), int(date_str[2:4]), int(date_str[4:6]))
     except ValueError:
         return None
     side = "call" if side_char == "C" else "put" if side_char == "P" else None
@@ -644,6 +652,7 @@ def get_chain_snapshot(symbol: str, with_volume: bool = True) -> list[ContractRo
                 bid=_safe_float(getattr(latest_quote, "bid_price", None) if latest_quote else None),
                 ask=_safe_float(getattr(latest_quote, "ask_price", None) if latest_quote else None),
                 last=_safe_float(getattr(latest_trade, "price", None) if latest_trade else None),
+                as_of=getattr(latest_trade, "timestamp", None) if latest_trade else None,
             )
         )
 

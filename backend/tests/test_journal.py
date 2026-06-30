@@ -171,19 +171,15 @@ def test_list_filters_by_status_and_paper(client):
 def _expected_realized(session_factory, tid: int) -> float:
     """The realized P&L the server SHOULD book on a full close of `tid`:
     the recomputed folded unrealized minus the exit-side commission. Calls
-    the exact router helper so the test tracks the production math."""
-    from config import settings
-
+    the exact router helpers so the test tracks the production math (incl. the
+    per-contract-per-leg commission convention)."""
     s = session_factory()
     try:
         from models.trade import Trade
 
         trade = s.get(Trade, tid)
         unreal = journal_router._recompute_unrealized(trade)
-        contracts = max(
-            (int(leg.get("contracts", 1) or 1) for leg in trade.legs), default=1
-        )
-        exit_comm = contracts * settings.commission_per_contract
+        exit_comm = journal_router._position_commission_side(trade)
         return round(unreal - exit_comm, 2)
     finally:
         s.close()
@@ -484,9 +480,10 @@ def test_scale_out_recomputes_slice_and_ignores_client_pnl(
     s = session_factory()
     trade = s.get(Trade, tid)
     position_unrealized = journal_router._recompute_unrealized(trade)
+    num_legs = len(trade.legs)  # straddle → 2 legs; qty closes on each
     s.close()
     held, qty = 2, 1
-    exit_comm = qty * settings.commission_per_contract
+    exit_comm = qty * num_legs * settings.per_contract_fee
     expected_slice = round(position_unrealized * (qty / held) - exit_comm, 2)
 
     res = client.post(
@@ -549,3 +546,35 @@ def test_scale_out_requires_open_position(client, mock_quote):
     )
     res = client.post(f"/api/journal/trades/{tid}/scale-out", json={"qty": 1})
     assert res.status_code == 409
+
+
+def test_intraday_analytics_prices_each_leg_at_its_own_expiry(monkeypatch):
+    """A mixed-expiry structure (near 0DTE leg + far-dated leg) prices the far
+    leg at ITS OWN expiry, keeping its time value instead of collapsing it onto
+    the near leg's expiry. So current_value with a far leg exceeds the value
+    when both legs are forced to the near expiry. IV is pinned so the comparison
+    isolates per-leg time-to-expiry from the entry-IV back-solve."""
+    from models.trade import Trade
+
+    monkeypatch.setattr(journal_router, "iv_intraday", lambda *a, **k: 0.20)
+    today = date.today().isoformat()
+    far = "2031-06-20"
+    now = datetime.now(timezone.utc)
+
+    def _mk(legs):
+        t = Trade(symbol="SPY", strategy="custom", entry_date=now,
+                  entry_underlying_price=100.0, net_debit_credit=0.0, tier="50K")
+        t.id = 1
+        t.legs = legs
+        return t
+
+    near_leg = {"side": "call", "action": "buy", "strike": 100.0,
+                "expiry": today, "contracts": 1, "entry_price": 1.0}
+    far_leg = {"side": "call", "action": "buy", "strike": 100.0,
+               "expiry": far, "contracts": 1, "entry_price": 1.0}
+
+    mixed = journal_router._intraday_analytics(
+        trade=_mk([near_leg, far_leg]), spot=100.0, rate=0.04, elapsed_hours=0.0)
+    same = journal_router._intraday_analytics(
+        trade=_mk([near_leg, {**far_leg, "expiry": today}]), spot=100.0, rate=0.04, elapsed_hours=0.0)
+    assert mixed.current_value > same.current_value

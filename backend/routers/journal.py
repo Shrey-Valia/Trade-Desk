@@ -91,14 +91,15 @@ def _owned_trade(session: Session, user: User, trade_id: int) -> Trade:
 
 
 def _position_commission_side(trade: Trade) -> float:
-    """Exit-side commission for a full position: contract count × the
-    configured per-contract rate. Same convention `_fold_commission` and the
-    order monitor's `_commission_side` use."""
-    position_contracts = max(
-        (int(leg.get("contracts", 1) or 1) for leg in (trade.legs or [])),
-        default=1,
+    """Per-side commission for a full position: TOTAL contracts across all legs
+    × the configured per-contract rate. A real broker charges per contract PER
+    LEG, so a 4-leg iron condor at 1 contract is 4 fills (4×rate), a 2-leg
+    straddle is 2×. Same convention the order monitor's `_commission_side`
+    uses; `_fold_commission` folds this into both entry and exit."""
+    position_contracts = sum(
+        int(leg.get("contracts", 1) or 1) for leg in (trade.legs or [])
     )
-    return position_contracts * settings.commission_per_contract
+    return position_contracts * settings.per_contract_fee
 
 
 def _recompute_unrealized(trade: Trade) -> float:
@@ -149,9 +150,12 @@ def _recompute_unrealized(trade: Trade) -> float:
         resp = _fold_commission(resp, commission_side)
         return float(resp.unrealized_pnl)
 
-    # Multi-day branch — identical to the analytics endpoint's day path.
-    today = datetime.now(timezone.utc).date()
-    entry_date = trade.entry_date.date() if trade.entry_date else today
+    # Multi-day branch — identical to the analytics endpoint's day path. DTE is
+    # an ET-calendar quantity (US equity options), so anchor "today" and the
+    # entry date to ET — NOT UTC, which rolls a day ahead every evening and
+    # would mark a 1DTE position as already-expired (intrinsic only) all night.
+    today = datetime.now(_ET).date()
+    entry_date = trade.entry_date.astimezone(_ET).date() if trade.entry_date else today
     legs_now, iv_used, iv_source = build_legs_from_journal(
         trade.legs,
         today=today,
@@ -284,7 +288,12 @@ def update_trade(
     if closing_now:
         unrealized = _recompute_unrealized(trade)
         realized = unrealized - _position_commission_side(trade)
-        trade.realized_pnl = round(realized, 2)
+        # ACCUMULATE onto any realized already booked by prior scale-outs. After
+        # a scale-out the legs hold only the REMAINING contracts, so this
+        # recompute covers just that final slice — a bare assignment would wipe
+        # every booked scale-out slice (e.g. +$800 on 2/3 then +$100 on the last
+        # would show $100, not $900). None/0 for a never-scaled close → no-op.
+        trade.realized_pnl = round((trade.realized_pnl or 0.0) + realized, 2)
     if payload.notes is not None:
         trade.notes = payload.notes
     if payload.tags is not None:
@@ -340,7 +349,10 @@ def scale_out_trade(
     position_unrealized = _recompute_unrealized(trade)
     slice_fraction = payload.qty / held
     slice_unrealized = position_unrealized * slice_fraction
-    exit_commission = payload.qty * settings.commission_per_contract
+    # Closing `qty` reduces EVERY leg by qty, so the slice's exit commission is
+    # qty × number-of-legs × rate (per contract per leg) — not a single leg's.
+    num_legs = len(legs) or 1
+    exit_commission = payload.qty * num_legs * settings.per_contract_fee
     slice_realized = round(slice_unrealized - exit_commission, 2)
 
     # Reduce every leg by qty (all legs scale together — a straddle closes qty
@@ -538,14 +550,11 @@ def get_trade_analytics(
     if cached is not None:
         return cached
 
-    # Simulated commission for THIS position, $ per side. "Per contract per
-    # side": the position's contract count × the configured rate. Folded
-    # into cost basis + unrealized below (entry side); realized P&L on close
+    # Simulated commission for THIS position, $ per side — TOTAL contracts
+    # across all legs × the configured rate (per contract per leg). Folded into
+    # cost basis + unrealized below (entry side); realized P&L on close
     # subtracts the exit side too. Display-only — does not touch MLL/tier.
-    position_contracts = max(
-        (int(leg.get("contracts", 1)) for leg in trade.legs), default=1
-    )
-    commission_side = position_contracts * settings.commission_per_contract
+    commission_side = _position_commission_side(trade)
 
     # Current underlying spot — prefer live quote, fall back to entry
     # price so analytics still render when the market data feed is cold
@@ -580,8 +589,10 @@ def get_trade_analytics(
         cache.set(cache_key, response, ttl_seconds=3)
         return response
 
-    today = datetime.now(timezone.utc).date()
-    entry_date = trade.entry_date.date() if trade.entry_date else today
+    # ET-calendar DTE (see _recompute_unrealized) — UTC would lose a day of
+    # value every evening on the multi-day path.
+    today = datetime.now(_ET).date()
+    entry_date = trade.entry_date.astimezone(_ET).date() if trade.entry_date else today
 
     try:
         legs_now, iv_used, iv_source = build_legs_from_journal(
@@ -688,7 +699,7 @@ def _validate_soft(payload: TradeIn) -> list[str]:
         warnings.append(
             f"{payload.strategy} usually has {expected} legs; received {len(payload.legs)}"
         )
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(_ET).date()  # ET-calendar expiry check (US options)
     past = [leg for leg in payload.legs if leg.expiry < today]
     if past:
         warnings.append(f"{len(past)} leg(s) have past expiry")
@@ -741,25 +752,36 @@ def _intraday_analytics(
             "missing or malformed",
         )
 
-    # Times: entry → expiry (today's 4pm ET).
+    # Times: entry → expiry, PER LEG (each leg uses its own expiry close).
     entry_dt = trade.entry_date if trade.entry_date else datetime.now(timezone.utc)
     if entry_dt.tzinfo is None:
         entry_dt = entry_dt.replace(tzinfo=timezone.utc)
     entry_et = entry_dt.astimezone(_ET)
-
-    # All legs share the same expiry on a 0DTE straddle. Take the first.
-    expiry_raw = legs[0].get("expiry")
-    try:
-        expiry_d = date.fromisoformat(str(expiry_raw))
-    except (TypeError, ValueError):
-        expiry_d = datetime.now(_ET).date()
-    expiry_dt = datetime.combine(expiry_d, time(*_CLOSE_HHMM), tzinfo=_ET)
-
-    total_seconds = max(60.0, (expiry_dt - entry_et).total_seconds())
-    t_at_entry = total_seconds / SECONDS_PER_YEAR
     elapsed_seconds = max(0.0, elapsed_hours * 3600)
-    remaining_seconds = max(60.0, total_seconds - elapsed_seconds)
-    t_now = remaining_seconds / SECONDS_PER_YEAR
+
+    # Per-leg time-to-expiry. Each leg prices off its OWN expiry close (half-day
+    # aware), so a calendar/diagonal with mixed expiries is priced correctly
+    # instead of forcing every leg onto leg[0]'s expiry. For the common
+    # single-expiry 0DTE structure every leg shares one expiry, so this reduces
+    # to identical numbers. Past the close → T=0 (settled intrinsic); otherwise
+    # floored at 60s so BS never sees T<=0 intraday.
+    from services.market_calendar import session_close_et as _sched_close
+
+    def _leg_close_dt(leg: dict) -> datetime:
+        try:
+            d = date.fromisoformat(str(leg.get("expiry")))
+        except (TypeError, ValueError):
+            d = datetime.now(_ET).date()
+        return _sched_close(d.isoformat()) or datetime.combine(
+            d, time(*_CLOSE_HHMM), tzinfo=_ET
+        )
+
+    def _leg_t(leg: dict) -> tuple[float, float]:
+        """(t_now, t_at_entry) in years for THIS leg's own expiry close."""
+        tot = max(60.0, (_leg_close_dt(leg) - entry_et).total_seconds())
+        rem = tot - elapsed_seconds
+        t_now_leg = 0.0 if rem <= 0 else max(60.0, rem) / SECONDS_PER_YEAR
+        return t_now_leg, tot / SECONDS_PER_YEAR
 
     # Back-solve IV from each leg's entry price; median is robust to one
     # noisy leg. Same defensive pattern as build_legs_from_journal.
@@ -776,7 +798,7 @@ def _intraday_analytics(
             entry_price,
             float(trade.entry_underlying_price),
             strike,
-            t_at_entry,
+            _leg_t(leg)[1],  # this leg's own time-to-expiry at entry
             rate,
             side,
         )
@@ -791,8 +813,9 @@ def _intraday_analytics(
         iv_used = DEFAULT_IV
         iv_source = "default"
 
-    # Per-share aggregator across legs: sign × contracts × bs_intraday.
-    def _portfolio_value(s: float, t_years: float) -> float:
+    # Per-share aggregator across legs: sign × contracts × bs_intraday, each leg
+    # at its OWN remaining time-to-expiry.
+    def _portfolio_value(s: float) -> float:
         total = 0.0
         for leg in legs:
             side = str(leg.get("side", "")).lower()
@@ -803,7 +826,7 @@ def _intraday_analytics(
             contracts = int(leg.get("contracts", 1))
             sign = 1 if action == "buy" else -1
             total += sign * contracts * bs_intraday(
-                s, strike, t_years, rate, iv_used, side
+                s, strike, _leg_t(leg)[0], rate, iv_used, side
             )
         return total
 
@@ -836,7 +859,7 @@ def _intraday_analytics(
     # same resolution multi-day trades use.
     prices_np = np.linspace(spot * 0.75, spot * 1.25, 81)
     today_pnl_ps = np.array(
-        [_portfolio_value(float(s), t_now) for s in prices_np]
+        [_portfolio_value(float(s)) for s in prices_np]
     )
     today_pnl_ps -= cb_per_share
     exp_pnl_ps = np.array([_portfolio_intrinsic(float(s)) for s in prices_np])
@@ -860,7 +883,7 @@ def _intraday_analytics(
     be_today = _zero_crossings(prices_np, today_pnl_ps)
     be_expiration = _zero_crossings(prices_np, exp_pnl_ps)
 
-    cv_per_share = _portfolio_value(spot, t_now)
+    cv_per_share = _portfolio_value(spot)
     cv_total = cv_per_share * CONTRACT_MULTIPLIER
     unrealized = cv_total - cb_total
 
@@ -890,7 +913,7 @@ def _intraday_analytics(
         strike = float(leg.get("strike", 0.0))
         contracts = int(leg.get("contracts", 1))
         sign = 1 if action == "buy" else -1
-        leg_g = greeks_intraday(spot, strike, t_now, rate, iv_used, side)
+        leg_g = greeks_intraday(spot, strike, _leg_t(leg)[0], rate, iv_used, side)
         for k in g_total:
             g_total[k] += sign * contracts * leg_g[k]
     # Scale to position dollars (CONTRACT_MULTIPLIER = 100 shares/contract).
