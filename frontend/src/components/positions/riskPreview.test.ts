@@ -53,4 +53,25 @@ describe("riskPreviewFor (WS6 risk preview math)", () => {
   it("scales max loss by contract count", () => {
     expect(riskPreviewFor(straddleSel, 5).maxLoss).toBe(2000);
   });
+
+  it("put: long max profit and short max loss are both the assignment-to-zero bound", () => {
+    const r = riskPreviewFor(putSel, 1);
+    expect(r.longMaxProfit).toBe(49800); // (500 − 2) × 100
+    expect(r.shortMaxLoss).toBe(49800); // short put assigned, underlying → 0
+    expect(r.shortCredit).toBe(200); // premium received if sold
+  });
+
+  it("call: long upside and short loss are both unbounded (null)", () => {
+    const r = riskPreviewFor(callSel, 1);
+    expect(r.longMaxProfit).toBeNull();
+    expect(r.shortMaxLoss).toBeNull();
+    expect(r.shortCredit).toBe(200);
+  });
+
+  it("straddle: long profit and short loss unbounded; credit scales with size", () => {
+    const r = riskPreviewFor(straddleSel, 2);
+    expect(r.longMaxProfit).toBeNull();
+    expect(r.shortMaxLoss).toBeNull();
+    expect(r.shortCredit).toBe(800); // 4 × 100 × 2
+  });
 });

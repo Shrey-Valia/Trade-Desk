@@ -938,18 +938,26 @@ function Actions({
  *     the trader a reward-in-underlying-terms reference before they fire.
  */
 interface RiskPreviewData {
+  /** LONG (buy) max loss = the full debit — always bounded. */
   maxLoss: number;
   breakevens: string | null;
-  /** Underlying price at +1R / +2R profit (premium 2× / 3×), long only. */
+  /** Underlying price at +1R / +2R profit (premium 2× / 3×), long single-leg. */
   target1R: number | null;
   target2R: number | null;
+  /** LONG (buy) max profit — null = UNBOUNDED (long call / long straddle). */
+  longMaxProfit: number | null;
+  /** SHORT (sell) max loss — null = UNBOUNDED (naked short call / short straddle). */
+  shortMaxLoss: number | null;
+  /** Premium RECEIVED if sold — the short's max profit (keep it if worthless). */
+  shortCredit: number;
 }
 
 export function riskPreviewFor(
   selection: TicketSelection,
   contracts: number,
 ): RiskPreviewData {
-  const debit = selection.price * 100 * contracts;
+  // Same magnitude whether you BUY (debit) or SELL (credit).
+  const notional = selection.price * 100 * contracts;
   const breakevens = computeBreakevens(selection);
 
   // R-multiple in underlying terms: the long pays `price` premium; at +1R the
@@ -959,6 +967,15 @@ export function riskPreviewFor(
   // so we don't print a single directional target.
   let target1R: number | null = null;
   let target2R: number | null = null;
+
+  // Bounds differ by side. A call's upside (long) and a naked short call's
+  // downside are both UNBOUNDED. A put is capped because the underlying can't
+  // go below 0: a long put's max gain and a short put's max loss are both the
+  // assignment-to-zero value (strike − premium) × 100 × contracts. A straddle
+  // carries a call leg, so both its long upside and short loss are unbounded.
+  let longMaxProfit: number | null;
+  let shortMaxLoss: number | null;
+
   if (selection.kind === "leg") {
     const be =
       selection.side === "call"
@@ -968,13 +985,29 @@ export function riskPreviewFor(
     if (selection.side === "call") {
       target1R = be + step;
       target2R = be + 2 * step;
+      longMaxProfit = null; // long call → unbounded upside
+      shortMaxLoss = null; // short call → unbounded loss
     } else {
       target1R = be - step;
       target2R = be - 2 * step;
+      const toZero = (selection.strike - selection.price) * 100 * contracts;
+      longMaxProfit = toZero; // long put → max gain if underlying → 0
+      shortMaxLoss = toZero; // short put → max loss if assigned (underlying → 0)
     }
+  } else {
+    longMaxProfit = null; // long straddle → unbounded (the call leg)
+    shortMaxLoss = null; // short straddle → unbounded (the call leg)
   }
 
-  return { maxLoss: debit, breakevens, target1R, target2R };
+  return {
+    maxLoss: notional,
+    breakevens,
+    target1R,
+    target2R,
+    longMaxProfit,
+    shortMaxLoss,
+    shortCredit: notional,
+  };
 }
 
 function RiskPreview({
@@ -984,11 +1017,21 @@ function RiskPreview({
   selection: TicketSelection;
   contracts: number;
 }) {
-  const { maxLoss, breakevens, target1R, target2R } = riskPreviewFor(
-    selection,
-    contracts,
-  );
+  const {
+    maxLoss,
+    breakevens,
+    target1R,
+    target2R,
+    longMaxProfit,
+    shortMaxLoss,
+    shortCredit,
+  } = riskPreviewFor(selection, contracts);
   if (!Number.isFinite(maxLoss) || maxLoss <= 0) return null;
+
+  // null bound = unbounded; show it in words, never a fake number.
+  const money = (v: number) => `$${v.toFixed(2)}`;
+  const bound = (v: number | null) => (v == null ? "unbounded" : money(v));
+  const lbl = "uppercase tracking-label-up text-fg-tertiary-2";
 
   return (
     <div
@@ -996,27 +1039,47 @@ function RiskPreview({
       style={{ fontSize: 12 }}
       aria-label="Risk preview for this order"
     >
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 10 }}>
-          risk preview
-        </span>
+      <span className={lbl} style={{ fontSize: 10 }}>
+        risk preview
+      </span>
+      {/* Both directions, max loss + max profit. Loss bearish, profit position;
+          an UNBOUNDED loss (naked short call / short straddle) is flagged warning. */}
+      <div
+        className="mt-1 grid items-baseline gap-x-3 gap-y-0.5"
+        style={{ gridTemplateColumns: "auto 1fr 1fr" }}
+      >
+        <span />
+        <span className={lbl} style={{ fontSize: 10 }}>max loss</span>
+        <span className={lbl} style={{ fontSize: 10 }}>max profit</span>
+
+        <span className={lbl} style={{ fontSize: 10 }}>long · buy</span>
+        <span className="text-bearish">{money(maxLoss)}</span>
+        <span className="text-position">{bound(longMaxProfit)}</span>
+
+        <span className={lbl} style={{ fontSize: 10 }}>short · sell</span>
         <span
-          className="uppercase tracking-label-up text-warning"
-          style={{ fontSize: 10 }}
-          title="If bought (long), loss is capped at the full debit. A SHORT's (SELL) loss is NOT premium-bounded — this figure does not apply to a sell."
+          className={shortMaxLoss == null ? "text-warning" : "text-bearish"}
+          title={
+            shortMaxLoss == null
+              ? "A naked short call / short straddle has no upside cap on the underlying — loss is unbounded."
+              : "Short put assigned with the underlying at 0: (strike − premium) × 100 × contracts."
+          }
         >
-          long only
+          {bound(shortMaxLoss)}
+        </span>
+        <span className="text-position">
+          {money(shortCredit)}
+          <span className="text-fg-tertiary-2"> credit</span>
         </span>
       </div>
-      <div className="flex items-baseline gap-x-4 gap-y-0.5 flex-wrap mt-0.5">
-        <Stat label="max loss (long)" value={`$${maxLoss.toFixed(2)}`} tone="text-bearish" />
+      <div className="mt-1 pt-1 border-t border-hairline flex items-baseline gap-x-4 flex-wrap">
         {breakevens && <Stat label="breakeven" value={breakevens} tone="text-position" />}
         {target1R != null && (
           <Stat
             label="+1R / +2R"
             value={`$${target1R.toFixed(2)} · $${(target2R ?? target1R).toFixed(2)}`}
             tone="text-fg-secondary"
-            title="Underlying price where the option returns +1R / +2R (R = the debit risked)."
+            title="Underlying price where a LONG returns +1R / +2R (R = the debit risked)."
           />
         )}
       </div>
