@@ -83,7 +83,7 @@ function CalendarHeader({
         <button
           type="button"
           onClick={() => onCursorChange(shiftMonth(monthCursor, -1))}
-          className="h-7 w-7 flex items-center justify-center border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-amber"
+          className="h-7 w-7 flex items-center justify-center border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
           style={{ borderRadius: 0 }}
           aria-label="Previous month"
           title="Previous month"
@@ -101,7 +101,7 @@ function CalendarHeader({
         <button
           type="button"
           onClick={() => onCursorChange(shiftMonth(monthCursor, +1))}
-          className="h-7 w-7 flex items-center justify-center border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-amber"
+          className="h-7 w-7 flex items-center justify-center border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
           style={{ borderRadius: 0 }}
           aria-label="Next month"
           title="Next month"
@@ -152,8 +152,8 @@ function CalendarGrid({
     .filter((w) => w.days.some((d) => d.in_month));
 
   return (
-    <div className="overflow-x-auto">
-    <div className="border border-hairline min-w-[660px] md:min-w-0">
+    <div className="overflow-x-auto flex-1 min-h-0 flex flex-col">
+    <div className="border border-hairline min-w-[660px] md:min-w-0 flex-1 min-h-0 flex flex-col">
       {/* Weekday header */}
       <div className="grid border-b border-hairline" style={{ gridTemplateColumns: GRID_TEMPLATE }}>
         {WEEKDAYS.map((wd) => (
@@ -176,7 +176,7 @@ function CalendarGrid({
       {weeks.map(({ week, days }) => (
         <div
           key={week.week_of_month}
-          className="grid border-b border-hairline last:border-b-0"
+          className="grid border-b border-hairline last:border-b-0 flex-1 min-h-0"
           style={{ gridTemplateColumns: GRID_TEMPLATE }}
         >
           {days.map((d) => (
@@ -236,7 +236,7 @@ function DayCell({
       onClick={onClick}
       disabled={!hasPnl}
       className={[
-        "relative flex flex-col items-stretch justify-between text-left",
+        "relative flex flex-col items-stretch justify-between text-left h-full",
         "min-h-[84px] px-2 py-1.5 border-r border-b-0 border-hairline",
         leftRule,
         tint,
@@ -255,7 +255,7 @@ function DayCell({
         <span
           className={[
             "tabular-nums",
-            day.is_today ? "text-amber" : day.in_month ? "text-fg-tertiary-2" : "text-fg-tertiary",
+            day.is_today ? "text-fg-primary font-medium" : day.in_month ? "text-fg-tertiary-2" : "text-fg-tertiary",
           ].join(" ")}
           style={{ fontSize: 11 }}
         >
@@ -264,7 +264,7 @@ function DayCell({
         </span>
         {hasJournal && (
           <span
-            className="bg-amber"
+            className="bg-fg-tertiary"
             style={{ width: 5, height: 5, borderRadius: "50%" }}
             title="has notes / tags"
           />
@@ -296,7 +296,7 @@ function DayCell({
 function WeekTotalCell({ week }: { week: CalendarWeek }) {
   const hasActivity = week.trade_count > 0;
   return (
-    <div className="flex flex-col justify-center gap-0.5 px-2.5 py-1.5 bg-tier-1 min-h-[84px]">
+    <div className="flex flex-col justify-center gap-0.5 px-2.5 py-1.5 bg-tier-1 min-h-[84px] h-full">
       <span className="uppercase tracking-label-up text-fg-tertiary" style={{ fontSize: 11 }}>
         Wk {week.week_of_month}
       </span>

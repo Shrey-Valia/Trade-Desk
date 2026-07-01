@@ -35,8 +35,10 @@ export const colors = {
   // spots, so it must meet the normal-text bar, not just AA-large.
   fgPrimary: "#E8E8E0",
   fgSecondary: "#C4C4BC",
-  fgTertiary2: "#9B9B92",
-  fgTertiary: "#9A9A90",
+  // Lifted #9B9B92/#9A9A90 → #ABABA2 so the smallest labels read a touch
+  // brighter (~7:1 on #16181C) while staying clearly below fgSecondary.
+  fgTertiary2: "#ABABA2",
+  fgTertiary: "#ABABA2",
   fgDisabled: "#3F3F3A",
 
   // Borders — neutral charcoal steps (drop the blue tint).
@@ -49,18 +51,20 @@ export const colors = {
   bullish: "#22E584", // bright mint-green — winning P&L, up moves
   bearish: "#FF5A6A", // bright red — losing P&L, down moves
 
-  // Accents. ORANGE RETIRED — the amber token now renders ELECTRIC CYAN. It
-  // carries the "active / selected" UI state AND the indicator / expected-move
-  // chart lines (which reference colors.accentAmber). The name is kept for
-  // token stability (Tailwind `*-amber` classes + ~300 call sites); only the
-  // value changed. accentCyan stays the calmer neutral-marker teal so there's
-  // still a two-tier cool hierarchy (bright electric vs quiet teal).
-  accentAmber: "#38E1FF", // (electric cyan) active/selected + indicator/EM lines
-  accentCyan: "#4FB8C8",  // neutral / quiet annotation accent
-  warning: "#E8C84A",     // advisories — YELLOW caution (not orange)
+  // Accents. MONOCHROME — no accent color. The UI chrome is black & white:
+  // the "amber" token (active / selected state + indicator/EM chart lines) is
+  // now WHITE, and the neutral-marker token is a mid GRAY. The name `accentAmber`
+  // is kept for token stability (Tailwind `*-amber` classes + ~300 call sites);
+  // only the value changed. The ONLY colors that remain are the money semantics
+  // (bullish/bearish + BUY/SELL) and the rare risk-warning amber — a trader must
+  // read profit/loss and "approaching your limit" at a glance.
+  accentAmber: "#FFFFFF", // (white) active/selected UI + indicator/EM lines
+  accentCyan: "#808690",  // neutral / quiet annotation accent (mid gray)
+  warning: "#E8C84A",     // rare risk advisory (approaching MLL/DLL) — kept
 
-  // User position highlight (entry triangle + breakeven lines).
-  positionMagenta: "#E673F5",
+  // User position highlight (entry triangle + breakeven lines) — pure white,
+  // the brightest thing on the chart because it's YOUR position.
+  positionMagenta: "#FFFFFF",
 
   // Action affordance colors — BUY / SELL filled buttons. BRIGHT now (the
   // product should feel alive, not muted). Dark text sits on these vivid fills.

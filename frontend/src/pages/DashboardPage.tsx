@@ -77,7 +77,7 @@ function FirstCombineHero() {
       </span>
       <Link
         to="/combines/new"
-        className="mt-2 h-9 px-4 inline-flex items-center uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 font-medium"
+        className="mt-2 h-9 px-4 inline-flex items-center uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 font-medium"
         style={{ fontSize: 12, borderRadius: 0 }}
       >
         Start a Trading Combine →
@@ -129,7 +129,7 @@ function DashboardBody() {
           </Link>
           <Link
             to="/combines/new"
-            className="h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 font-medium"
+            className="h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 font-medium"
             style={{ borderRadius: 0 }}
           >
             Start a Trading Combine

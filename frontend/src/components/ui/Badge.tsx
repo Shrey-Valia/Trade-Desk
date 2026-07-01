@@ -35,7 +35,7 @@ export function Badge({
       : tone === "warning"
         ? "text-warning border-warning"
         : tone === "amber"
-          ? "text-amber border-amber"
+          ? "text-fg-secondary border-hairline-strong"
           : tone === "bullish"
             ? "text-bullish border-bullish"
             : tone === "cyan"

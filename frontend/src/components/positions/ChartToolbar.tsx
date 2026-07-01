@@ -231,7 +231,7 @@ function PeriodPopover({
         aria-label={`Edit ${label} period`}
         aria-expanded={open}
         title={`Edit ${label} period`}
-        className="px-1 border border-hairline border-l-0 text-fg-tertiary hover:text-amber hover:bg-tier-2 transition-colors duration-100"
+        className="px-1 border border-hairline border-l-0 text-fg-tertiary hover:text-fg-primary hover:bg-tier-2 transition-colors duration-100"
         style={{ fontSize: 9, borderRadius: 0 }}
       >
         ▾
@@ -277,7 +277,7 @@ function PeriodPopover({
                 setOpen(false);
               }}
               title="Reset to default"
-              className="text-tiny uppercase tracking-label-up text-fg-tertiary hover:text-amber px-1 border border-hairline"
+              className="text-tiny uppercase tracking-label-up text-fg-tertiary hover:text-fg-primary px-1 border border-hairline"
               style={{ fontSize: 9, borderRadius: 0 }}
             >
               reset

@@ -89,7 +89,7 @@ const HLINE_ANCHOR_TIME = 0 as unknown as Time;
 // the package imported type-only above) leaves the store free of the drawing
 // package at runtime, so the package code-splits cleanly into the chart chunk.
 const MIGRATED_HLINE_STYLE: DrawingStyle = {
-  lineColor: "#4FB8C8",
+  lineColor: "#808690",
   lineWidth: 1,
 };
 

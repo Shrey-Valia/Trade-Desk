@@ -514,7 +514,7 @@ function Launch({ combine }: { combine: CombineOut }) {
         <button
           type="button"
           onClick={() => navigate("/dashboard")}
-          className="h-9 uppercase tracking-label-up border border-amber text-amber bg-tier-2 hover:bg-tier-3 rounded-btn font-medium"
+          className="h-9 uppercase tracking-label-up border border-hairline-strong text-fg-secondary bg-tier-1 hover:bg-tier-2 rounded-btn font-medium"
           style={{ fontSize: 11 }}
         >
           Open dashboard

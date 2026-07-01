@@ -49,7 +49,7 @@ export function Button({
   const visual = disabled
     ? "bg-tier-1 border-tier-2 text-fg-disabled cursor-not-allowed"
     : variant === "primary"
-      ? "bg-tier-3 border-amber text-amber"
+      ? "bg-amber text-tier-0 border-amber hover:opacity-90"
       : variant === "danger"
         ? "bg-tier-2 border-bearish text-bearish hover:bg-tier-3"
         : variant === "ghost"

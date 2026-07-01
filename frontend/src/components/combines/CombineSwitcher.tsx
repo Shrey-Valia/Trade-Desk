@@ -36,7 +36,7 @@ export function CombineSwitcher({ size = "sm" }: { size?: "sm" | "md" }) {
       <button
         type="button"
         onClick={() => navigate("/combines/new")}
-        className={`${h} px-3 rounded-btn uppercase tracking-label-up flex items-center gap-2 border border-amber text-amber bg-tier-2 hover:bg-tier-3`}
+        className={`${h} px-3 rounded-btn uppercase tracking-label-up flex items-center gap-2 bg-amber text-tier-0 hover:opacity-90`}
         style={{ fontSize: 12, fontWeight: 500 }}
       >
         + Start a combine

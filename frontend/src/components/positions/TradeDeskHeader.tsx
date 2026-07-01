@@ -58,7 +58,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
 
   return (
     <header
-      className="flex flex-wrap md:flex-nowrap items-center gap-2 border-b border-hairline bg-tier-1 px-3 py-2 md:py-0 min-h-[64px] md:h-16 shrink-0 relative"
+      className="flex flex-wrap items-center gap-2 border-b border-hairline bg-tier-1 px-3 py-2 min-h-[64px] md:min-h-16 shrink-0 relative"
     >
       <CombineSwitcher size="md" />
       <SearchTrigger
@@ -66,7 +66,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
         onClick={() => setSearchOpen(true)}
       />
       <PriceReadout symbol={symbol} />
-      <div className="ml-auto flex items-center" style={{ gap: 6 }}>
+      <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5 min-w-0">
         <AlertsBell symbol={symbol} />
         <MetricPills />
       </div>
@@ -290,14 +290,14 @@ function MetricPills() {
         label="RP&L"
         value={formatSigned(rpl)}
         signed={rpl}
-        className="hidden min-[1280px]:flex"
+        className="hidden min-[1440px]:flex"
         title="Realized P&L today — closed trades in the current 5pm-PT trading day."
       />
       <MetricPill
         label="UP&L"
         value={formatSigned(upl)}
         signed={upl}
-        className="hidden min-[1280px]:flex"
+        className="hidden min-[1440px]:flex"
         title="Unrealized P&L — live, summed across all open positions on this tier."
       />
       <MetricPill

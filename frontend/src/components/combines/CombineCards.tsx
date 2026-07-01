@@ -26,7 +26,10 @@ export function CombineCardsGrid({
   leadCombineId?: number | null;
 }) {
   return (
-    <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+    <div
+      className="grid gap-3"
+      style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}
+    >
       {combines.map((c) => (
         <CombineCard
           key={c.id}
@@ -105,7 +108,7 @@ function CombineCard({
               type="button"
               onClick={() => !archived && setEditing(true)}
               title={archived ? undefined : "Rename"}
-              className="text-fg-primary font-medium truncate text-left hover:text-amber"
+              className="text-fg-primary font-medium truncate text-left hover:text-fg-secondary"
               style={{ fontSize: 13 }}
             >
               {combine.name}
@@ -113,7 +116,7 @@ function CombineCard({
           )}
           {isActive && !archived && (
             <span
-              className="border border-amber text-amber px-1 uppercase tracking-label-up shrink-0"
+              className="border border-hairline-strong text-fg-secondary px-1 uppercase tracking-label-up shrink-0"
               style={{ fontSize: 11, borderRadius: 2 }}
             >
               active
@@ -168,7 +171,7 @@ function CombineCard({
                   ? `Activate this funded account — a one-time $${combine.activation_fee} fee unlocks payouts (simulated).`
                   : "Activate this funded account — free on the no-activation plan — to unlock payouts."
               }
-              className="h-5 px-1.5 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
+              className="h-5 px-1.5 text-tiny uppercase tracking-label-up border border-hairline-strong text-fg-primary hover:bg-tier-2 hover:border-hairline disabled:opacity-50"
               style={{ borderRadius: 0, fontSize: 11 }}
             >
               {activateAccount.isPending

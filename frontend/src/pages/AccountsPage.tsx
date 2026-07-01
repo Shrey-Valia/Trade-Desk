@@ -33,7 +33,7 @@ export function AccountsPage() {
         }
       />
       <main className="flex-1 min-h-0 overflow-y-auto border-t border-hairline">
-        <div className="p-3.5 flex flex-col gap-3.5">
+        <div className="mx-auto w-full max-w-[1280px] p-3.5 flex flex-col gap-3.5">
           {/* Roll-up across active accounts + new-combine CTA. */}
           <div className="flex items-center gap-3 flex-wrap">
             <CombineSwitcher />
@@ -46,7 +46,7 @@ export function AccountsPage() {
             />
             <Link
               to="/combines/new"
-              className="ml-auto h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 font-medium"
+              className="ml-auto h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 font-medium"
               style={{ borderRadius: 0 }}
             >
               Start a Trading Combine

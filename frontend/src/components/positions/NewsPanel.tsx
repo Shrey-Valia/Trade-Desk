@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 
 import { PanelHeader, relativeTime } from "@/components/positions/panelChrome";
-import { Badge } from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useTickerNews } from "@/hooks/useTickerNews";
 import type { NewsItem } from "@/types/news";
@@ -77,22 +76,28 @@ function NewsCard({ item }: { item: NewsItem }) {
       style={{ width: CARD_WIDTH }}
       title={item.headline}
     >
-      <Badge tone="cyan">{truncateSource(item.source) || "news"}</Badge>
-      {/* 2-line clamp + no summary: news reads as a quick-scan feature, not
-          a content wall. Full headline is in the title tooltip. */}
+      {/* Headline leads (highest-value line). The source is a quiet gray
+          label in the footer beside the time — not a bright outlined chip. */}
       <span
-        className="text-tiny text-fg-secondary"
+        className="text-tiny text-fg-primary"
         style={{
           display: "-webkit-box",
           WebkitBoxOrient: "vertical",
-          WebkitLineClamp: 2,
+          WebkitLineClamp: 3,
           overflow: "hidden",
         }}
       >
         {item.headline}
       </span>
-      <span className="text-tiny text-fg-tertiary mt-auto" style={{ fontSize: 10 }}>
-        {relativeTime(item.created_at)}
+      <span
+        className="flex items-center gap-1.5 text-fg-tertiary mt-auto"
+        style={{ fontSize: 10 }}
+      >
+        <span className="uppercase tracking-label-up text-fg-tertiary-2 truncate">
+          {truncateSource(item.source) || "news"}
+        </span>
+        <span aria-hidden>·</span>
+        <span className="tabular-nums shrink-0">{relativeTime(item.created_at)}</span>
       </span>
     </a>
   );
@@ -107,12 +112,11 @@ function LoadingCards() {
           className="shrink-0 h-full flex flex-col gap-2 px-3 py-2 border-r border-hairline"
           style={{ width: CARD_WIDTH }}
         >
-          <Skeleton width={56} height={12} />
           <Skeleton width="90%" height={11} />
           <Skeleton width="80%" height={11} />
           <Skeleton width="60%" height={11} />
           <div className="mt-auto">
-            <Skeleton width={48} height={9} />
+            <Skeleton width={72} height={9} />
           </div>
         </div>
       ))}
@@ -135,7 +139,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
       <button
         type="button"
         onClick={onRetry}
-        className="text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber transition-colors duration-100"
+        className="text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-fg-primary transition-colors duration-100"
         style={{ fontSize: 9 }}
       >
         retry
