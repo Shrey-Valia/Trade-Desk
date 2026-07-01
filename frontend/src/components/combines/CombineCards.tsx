@@ -28,7 +28,7 @@ export function CombineCardsGrid({
   return (
     <div
       className="grid gap-3"
-      style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}
+      style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 360px))" }}
     >
       {combines.map((c) => (
         <CombineCard

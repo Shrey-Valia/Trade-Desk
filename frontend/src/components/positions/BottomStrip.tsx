@@ -307,7 +307,7 @@ function PillToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
         width: 24,
         height: 14,
         borderRadius: 9999,
-        background: on ? "#FFFFFF" : "#2C3038",
+        background: on ? "#D8D8D2" : "#2C3038",
         transition: "background 100ms ease-out",
       }}
     >
@@ -320,7 +320,7 @@ function PillToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
           width: 10,
           height: 10,
           borderRadius: 9999,
-          background: "#FFFFFF",
+          background: "#D8D8D2",
           transition: "left 100ms ease-out",
         }}
       />
@@ -696,7 +696,7 @@ function PositionGlyph() {
         height: 0,
         borderLeft: "4px solid transparent",
         borderRight: "4px solid transparent",
-        borderBottom: "6px solid #FFFFFF",
+        borderBottom: "6px solid #D8D8D2",
       }}
     />
   );
@@ -1152,7 +1152,7 @@ function BeDriftPreview({
       >
         <path
           d={lowerPath.join(" ")}
-          stroke="#FFFFFF"
+          stroke="#D8D8D2"
           strokeWidth="0.8"
           strokeOpacity="0.55"
           fill="none"
@@ -1160,7 +1160,7 @@ function BeDriftPreview({
         />
         <path
           d={upperPath.join(" ")}
-          stroke="#FFFFFF"
+          stroke="#D8D8D2"
           strokeWidth="0.8"
           strokeOpacity="0.55"
           fill="none"

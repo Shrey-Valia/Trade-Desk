@@ -58,13 +58,13 @@ export const colors = {
   // only the value changed. The ONLY colors that remain are the money semantics
   // (bullish/bearish + BUY/SELL) and the rare risk-warning amber — a trader must
   // read profit/loss and "approaching your limit" at a glance.
-  accentAmber: "#FFFFFF", // (white) active/selected UI + indicator/EM lines
+  accentAmber: "#D8D8D2", // (soft off-white) active/selected UI + indicator/EM lines + CTA fills. Softened from pure white to cut glare — "monotone white".
   accentCyan: "#808690",  // neutral / quiet annotation accent (mid gray)
   warning: "#E8C84A",     // rare risk advisory (approaching MLL/DLL) — kept
 
-  // User position highlight (entry triangle + breakeven lines) — pure white,
+  // User position highlight (entry triangle + breakeven lines) — soft off-white,
   // the brightest thing on the chart because it's YOUR position.
-  positionMagenta: "#FFFFFF",
+  positionMagenta: "#D8D8D2",
 
   // Action affordance colors — BUY / SELL filled buttons. BRIGHT now (the
   // product should feel alive, not muted). Dark text sits on these vivid fills.

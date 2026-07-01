@@ -63,6 +63,7 @@ from services.alpaca_client import (
 from services.cache import cache
 from services.finnhub_client import next_earnings_for
 from services.resilience import breaker_retry_after
+from services.timeouts import CallTimeout, run_with_timeout
 
 router = APIRouter(prefix="/api/ticker", tags=["ticker"])
 log = logging.getLogger(__name__)
@@ -76,6 +77,18 @@ _ALPACA_BREAKER = "alpaca"
 # just-rate-limited key every second. A 5s floor keeps the early-degradation
 # backoff meaningful; once the breaker opens, its ~30s cooldown dominates.
 _MIN_DEGRADED_RETRY_S = 5
+
+# Hard deadline for the REQUEST-PATH bars fetch. The Alpaca SDK exposes no
+# request timeout (see services/timeouts), so without this the handler HANGS
+# indefinitely when the feed stalls (slow network / creds hiccup) — the circuit
+# breaker only trips on ERRORS, never on a stall. We fail fast instead so the
+# frontend's retry/backoff + the cache can recover, rather than an infinite
+# spinner. Kept comfortably above a healthy fetch (~1–3s).
+_BARS_REQUEST_TIMEOUT_S = 6.0
+# Last-good bars are cached far longer than the 30s hot cache so a degraded
+# feed still renders the last-known candles — "stale but visible" beats a blank
+# chart. Written on every successful fetch; served on timeout/degradation.
+_BARS_STALE_TTL_S = 3600
 
 
 class MarketDataDegraded(HTTPException):
@@ -190,14 +203,32 @@ def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
     / rate-limited — distinct from a genuine "no bars" (404) so the
     frontend can show a retrying state instead of treating it as terminal.
     """
+    stale_key = f"bars_stale:{symbol}:{timeframe}"
     try:
-        bars = get_bars(symbol, timeframe) or []
-    except MarketDataUnavailable:
-        log.info("bars degraded for %s @ %s (circuit open / rate-limited)", symbol, timeframe)
+        # Hard deadline: a stalled Alpaca call (no SDK timeout) would otherwise
+        # hang the request forever. CallTimeout frees the handler after 6s.
+        bars = run_with_timeout(
+            get_bars, symbol, timeframe, timeout_s=_BARS_REQUEST_TIMEOUT_S
+        ) or []
+    except (MarketDataUnavailable, CallTimeout) as exc:
+        # Feed degraded (circuit open / rate-limited) OR the SDK call stalled
+        # past the deadline. Prefer the last-known candles over an empty chart;
+        # only 503 when we have nothing to show.
+        stale = cache.get(stale_key)
+        if stale is not None:
+            log.info(
+                "bars degraded for %s @ %s (%s) — serving stale candles",
+                symbol, timeframe, type(exc).__name__,
+            )
+            return stale
+        log.info(
+            "bars degraded for %s @ %s (%s) — no cache, returning 503",
+            symbol, timeframe, type(exc).__name__,
+        )
         raise MarketDataDegraded() from None
     if not bars:
         raise HTTPException(status_code=404, detail=f"no bars for {symbol} @ {timeframe}")
-    return [
+    points = [
         BarPoint(
             t=b.timestamp.isoformat(),
             o=float(b.open),
@@ -208,6 +239,9 @@ def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
         )
         for b in bars
     ]
+    # Refresh the last-good cache so a later degraded fetch can serve it.
+    cache.set(stale_key, points, ttl_seconds=_BARS_STALE_TTL_S)
+    return points
 
 
 @router.get("/{symbol}/bars", response_model=ChartResponse)
@@ -472,14 +506,26 @@ def get_ticker_chart(symbol: str, timeframe: str = "5m") -> ChartResponse:
 
     bar_points = _fetch_bars(symbol, timeframe)
 
-    quote = get_quotes([symbol]).get(symbol)
-    spot = quote.price if quote else float(bar_points[-1].c)
+    # Annotations depend on the quote + options chain — a SECONDARY feed that
+    # can stall independently of bars. Guard + time-box it so /chart still
+    # returns the candles (with empty annotations) rather than hanging.
+    try:
+        quote = run_with_timeout(
+            get_quotes, [symbol], timeout_s=_BARS_REQUEST_TIMEOUT_S
+        ).get(symbol)
+        spot = quote.price if quote else float(bar_points[-1].c)
+        chain, oi_source = run_with_timeout(
+            _chain_with_oi_proxy, symbol, timeout_s=_BARS_REQUEST_TIMEOUT_S
+        )
+        annotations = _compute_annotations(chain, spot)
+        annotations.earnings_date = next_earnings_for(symbol)
+    except (MarketDataUnavailable, CallTimeout):
+        log.info("chart annotations degraded for %s — returning candles only", symbol)
+        annotations = ChartAnnotations()
+        oi_source = "bars_only"
 
-    chain, oi_source = _chain_with_oi_proxy(symbol)
-    annotations = _compute_annotations(chain, spot)
-    annotations.earnings_date = next_earnings_for(symbol)
-
-    # Auto support/resistance from the chart's own bars (no chain needed).
+    # Auto support/resistance from the chart's own bars (no chain needed) —
+    # always available even when the annotation feed is degraded.
     # BarPoint uses h/l/c; adapt to the high/low/close structural Bar the
     # levels module reads.
     level_bars = [_LevelBar(b.h, b.l, b.c) for b in bar_points]

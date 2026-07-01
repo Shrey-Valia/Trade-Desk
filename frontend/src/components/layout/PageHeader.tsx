@@ -16,7 +16,7 @@ export function PageHeader({
 }) {
   return (
     <header
-      className="flex items-center gap-6 border-b border-hairline bg-tier-0 px-4 shrink-0"
+      className="flex items-center gap-6 border-b border-hairline bg-tier-0 px-3.5 shrink-0"
       style={{ height: 36 }}
     >
       <TradeDeskLogo size="compact" />
