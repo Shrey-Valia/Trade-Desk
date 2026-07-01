@@ -48,8 +48,8 @@ interface UserSettingsState {
  * the store initializer, the reset action, and the Settings UI's
  * "differs from default" check. */
 export const APPEARANCE_DEFAULTS = {
-  bullishColor: "#4DD17C",
-  bearishColor: "#E85C5C",
+  bullishColor: "#22E584", // bright mint-green candles (was muted #4DD17C)
+  bearishColor: "#FF5A6A", // bright red candles (was muted #E85C5C)
   bgGradient: true,
   gridOpacity: 30,
 } as const;

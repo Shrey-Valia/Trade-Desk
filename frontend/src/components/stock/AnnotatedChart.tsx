@@ -50,8 +50,8 @@ const TIMEFRAMES: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
 
 // Trade Desk position overlay — magenta is reserved for "MY POSITION"
 // markers so it can't be confused with the six options-level annotations
-// (EM amber, CW red, PW green, MP/GF cyan). One color, one meaning.
-const POSITION_COLOR = "#D4537E";
+// (EM cyan, CW red, PW green, MP/GF cyan). One color, one meaning.
+const POSITION_COLOR = colors.positionMagenta;
 
 export interface PositionOverlay {
   /** Trade primary key — drives marker text and id so dedupe is clean. */

@@ -12,7 +12,7 @@ body {
   @apply text-fg-primary font-mono antialiased;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  background-color: #131722;
+  background-color: #16181C;
 }
 
 /* Subtle radial gradient — slightly lifted in the center, darker at
@@ -22,18 +22,18 @@ body {
 html:not([data-bg-gradient="off"]) body {
   background-image: radial-gradient(
     circle at 50% 38%,
-    #161B26 0%,
-    #131722 55%,
-    #0F121B 100%
+    #1B1E24 0%,
+    #16181C 55%,
+    #101216 100%
   );
   background-attachment: fixed;
 }
 
-/* Global keyboard focus ring — amber per DESIGN.md.
+/* Global keyboard focus ring — electric cyan (the active-state accent).
  * Hex hardcoded because CSS can't read the JS palette; matches
- * colors.accentAmber in src/lib/palette.js. */
+ * colors.accentAmber in src/lib/palette.js (which now renders cyan). */
 *:focus-visible {
-  outline: 2px solid #F0A030;
+  outline: 2px solid #38E1FF;
   outline-offset: 1px;
   border-radius: 2px;
 }
@@ -134,8 +134,8 @@ html:not([data-bg-gradient="off"]) body {
 }
 @keyframes td-quick-flash {
   0% {
-    background-color: rgba(240, 160, 48, 0.45);
-    box-shadow: inset 0 0 0 1px rgba(240, 160, 48, 0.9);
+    background-color: rgba(56, 225, 255, 0.40);
+    box-shadow: inset 0 0 0 1px rgba(56, 225, 255, 0.9);
   }
   100% {
     background-color: transparent;
@@ -152,7 +152,7 @@ html:not([data-bg-gradient="off"]) body {
   -webkit-appearance: none;
   appearance: none;
   height: 4px;
-  background: #2F3545;
+  background: #2B2F37;
   outline: none;
   cursor: pointer;
   margin: 0;
@@ -160,13 +160,13 @@ html:not([data-bg-gradient="off"]) body {
 }
 .theta-scrubber::-webkit-slider-runnable-track {
   height: 4px;
-  background: #2F3545;
-  border: 1px solid #3A4258;
+  background: #2B2F37;
+  border: 1px solid #3A3F49;
 }
 .theta-scrubber::-moz-range-track {
   height: 4px;
-  background: #2F3545;
-  border: 1px solid #3A4258;
+  background: #2B2F37;
+  border: 1px solid #3A3F49;
 }
 .theta-scrubber::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -174,15 +174,15 @@ html:not([data-bg-gradient="off"]) body {
   width: 12px;
   height: 12px;
   margin-top: -5px;
-  background: #D4537E;
-  border: 1px solid #11141C;
+  background: #E673F5;
+  border: 1px solid #16181C;
   cursor: grab;
 }
 .theta-scrubber::-moz-range-thumb {
   width: 12px;
   height: 12px;
-  background: #D4537E;
-  border: 1px solid #11141C;
+  background: #E673F5;
+  border: 1px solid #16181C;
   cursor: grab;
 }
 .theta-scrubber:active::-webkit-slider-thumb { cursor: grabbing; }
@@ -191,27 +191,27 @@ html:not([data-bg-gradient="off"]) body {
 
 /* Thin hairline scrollbar for the bottom-row NEWS panel's horizontal
  * card scroller. Matches the dense terminal aesthetic: 8px track on the
- * body ground (#131722 = bg-tier-0) with a bg-tier-3 (#2A3142) thumb,
+ * body ground (#16181C = bg-tier-0) with a bg-tier-3 (#2C3038) thumb,
  * mirroring the design-system scrollbar convention. Firefox uses the
  * standardized scrollbar-* properties. */
 .news-scroll {
   scrollbar-width: thin;
-  scrollbar-color: #2A3142 #131722;
+  scrollbar-color: #2C3038 #16181C;
 }
 .news-scroll::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 .news-scroll::-webkit-scrollbar-track {
-  background: #131722;
+  background: #16181C;
 }
 .news-scroll::-webkit-scrollbar-thumb {
-  background: #2A3142;
-  border: 2px solid #131722;
+  background: #2C3038;
+  border: 2px solid #16181C;
   border-radius: 0;
 }
 .news-scroll::-webkit-scrollbar-thumb:hover {
-  background: #3A4258;
+  background: #3A3F49;
 }
 
 /* Pre-liquidation urgency pulse — applied to the header MLL / DLL pills
@@ -226,12 +226,12 @@ html:not([data-bg-gradient="off"]) body {
 
 @keyframes td-pulse-warn {
   0%, 100% {
-    border-color: var(--td-pulse-color, #F0A030);
-    box-shadow: 0 0 0 0 rgba(240, 160, 48, 0);
+    border-color: var(--td-pulse-color, #E8C84A);
+    box-shadow: 0 0 0 0 rgba(232, 200, 74, 0);
   }
   50% {
-    border-color: var(--td-pulse-color, #F0A030);
-    box-shadow: 0 0 0 2px rgba(240, 160, 48, 0.35);
+    border-color: var(--td-pulse-color, #E8C84A);
+    box-shadow: 0 0 0 2px rgba(232, 200, 74, 0.35);
   }
 }
 

@@ -17,11 +17,13 @@
  * candle/P&L bullish/bearish hues.
  */
 export const colors = {
-  // Surface elevation tiers — softer dark navy, not pure black.
-  bgTier0: "#131722",
-  bgTier1: "#1A1F2D",
-  bgTier2: "#222837",
-  bgTier3: "#2A3142",
+  // Surface elevation tiers — NEUTRAL charcoal (was dark navy). Not pure black,
+  // no blue tint: a gray-black ground so the brighter money colors read as
+  // electric without eye strain.
+  bgTier0: "#16181C",
+  bgTier1: "#1D2026",
+  bgTier2: "#24272F",
+  bgTier3: "#2C3038",
 
   // Foreground (text) tiers — five-stop ramp. Revamp: the two dimmest
   // CONTENT tiers were lifted so any real text clears WCAG AA on the
@@ -37,36 +39,35 @@ export const colors = {
   fgTertiary: "#9A9A90",
   fgDisabled: "#3F3F3A",
 
-  // Borders — bumped up so they read against the lifted background.
-  borderHairline: "#2F3545",
-  borderStrong: "#3A4258",
+  // Borders — neutral charcoal steps (drop the blue tint).
+  borderHairline: "#2B2F37",
+  borderStrong: "#3A3F49",
 
-  // Price semantics — reserved for +/- price moves + P&L coloring.
-  // WS6 a11y: bearish lifted #E85C5C → #F06A6A. As text it sat at ~4.29:1 on
-  // tier-2 (an AA fail for normal text); the lift clears AA-large everywhere
-  // and AA on the tier-0/1/2 surfaces where most P&L text renders. (Candle
+  // Price semantics — BRIGHTER money colors. These are the +/- price moves and
+  // P&L: they should feel electric against the charcoal ground. (Candle bullish/
   // bearish is a SEPARATE, user-tunable token in userSettings — unchanged.)
-  bullish: "#4DD17C",
-  bearish: "#F06A6A",
+  bullish: "#22E584", // bright mint-green — winning P&L, up moves
+  bearish: "#FF5A6A", // bright red — losing P&L, down moves
 
-  // Accents.
-  accentAmber: "#F0A030", // ACTIVE / SELECTED only.
-  accentCyan: "#4FB8C8",  // neutral / quiet annotation accent.
-  // WS6 a11y: warning lifted #C97A3A → #D98A4A to clear AA (≥4.5:1) on the
-  // lifted tiers (was ~4.44 on tier-2).
-  warning: "#D98A4A",     // alerts / "market closed" notices.
+  // Accents. ORANGE RETIRED — the amber token now renders ELECTRIC CYAN. It
+  // carries the "active / selected" UI state AND the indicator / expected-move
+  // chart lines (which reference colors.accentAmber). The name is kept for
+  // token stability (Tailwind `*-amber` classes + ~300 call sites); only the
+  // value changed. accentCyan stays the calmer neutral-marker teal so there's
+  // still a two-tier cool hierarchy (bright electric vs quiet teal).
+  accentAmber: "#38E1FF", // (electric cyan) active/selected + indicator/EM lines
+  accentCyan: "#4FB8C8",  // neutral / quiet annotation accent
+  warning: "#E8C84A",     // advisories — YELLOW caution (not orange)
 
   // User position highlight (entry triangle + breakeven lines).
-  // WS6 a11y: lifted #D946EF → #E673F5 to clear AA as text + 3:1 as a graphic.
   positionMagenta: "#E673F5",
 
-  // Action affordance colors — BUY / SELL filled buttons.
-  // Deliberately distinct from BULLISH / BEARISH (price/P&L semantics).
-  // These read as professional fills, not candy bright.
-  actionBuy: "#2A8C4A",
-  actionBuyHover: "#33A357",
-  actionBuyActive: "#21753E",
-  actionSell: "#C8434A",
-  actionSellHover: "#D85258",
-  actionSellActive: "#A6363C",
+  // Action affordance colors — BUY / SELL filled buttons. BRIGHT now (the
+  // product should feel alive, not muted). Dark text sits on these vivid fills.
+  actionBuy: "#1FC463",
+  actionBuyHover: "#2BDE74",
+  actionBuyActive: "#18A452",
+  actionSell: "#F03B4E",
+  actionSellHover: "#FF5063",
+  actionSellActive: "#CE2C3E",
 };

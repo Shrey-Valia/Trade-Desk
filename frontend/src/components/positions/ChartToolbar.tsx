@@ -118,7 +118,7 @@ function ToolbarSeparator() {
     <span
       aria-hidden
       className="self-center"
-      style={{ width: 1, height: 16, background: "#2F3545", marginInline: 8 }}
+      style={{ width: 1, height: 16, background: "#2B2F37", marginInline: 8 }}
     />
   );
 }
@@ -302,7 +302,7 @@ function Separator() {
     <span
       aria-hidden
       className="self-center"
-      style={{ width: 1, height: 16, background: "#2F3545", marginInline: 8 }}
+      style={{ width: 1, height: 16, background: "#2B2F37", marginInline: 8 }}
     />
   );
 }

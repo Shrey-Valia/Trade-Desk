@@ -12,6 +12,16 @@ The dashboard does not have a marketing surface. It does not have an onboarding 
 
 ## Palette
 
+> **Re-theme (2026-07-01) — "money neon on deep charcoal."** The hex values in
+> the table below are **historical**; the live source of truth is
+> [`frontend/src/lib/palette.js`](frontend/src/lib/palette.js). Current theme:
+> neutral **charcoal** base (`bgTier0 #16181C`, no blue tint, not pure black);
+> **orange retired** — the `accentAmber` token now renders **electric cyan
+> `#38E1FF`** and carries active/selected + the indicator/EM chart lines;
+> **brighter money** — `bullish #22E584`, `bearish #FF5A6A`, and vivid BUY/SELL
+> button fills (`actionBuy #1FC463` / `actionSell #F03B4E`); **warnings** are a
+> yellow caution `#E8C84A` (not orange); position magenta `#E673F5`.
+
 ### Canonical tokens (use these in new code)
 
 ```

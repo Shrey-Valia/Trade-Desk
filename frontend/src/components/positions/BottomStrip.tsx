@@ -307,7 +307,7 @@ function PillToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
         width: 24,
         height: 14,
         borderRadius: 9999,
-        background: on ? "#F0A030" : "#2A3142",
+        background: on ? "#38E1FF" : "#2C3038",
         transition: "background 100ms ease-out",
       }}
     >

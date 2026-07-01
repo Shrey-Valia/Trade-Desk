@@ -1,4 +1,5 @@
 import { Coachmark } from "@/components/positions/Coachmark";
+import { colors } from "@/lib/design";
 import { useChartPrefs } from "@/stores/chartPrefs";
 
 interface Entry {
@@ -7,30 +8,33 @@ interface Entry {
   swatch: { color: string; style: "solid" | "dashed" | "dotted" | "arrow" };
 }
 
+// Swatches reference the SAME palette tokens the chart lines use (see
+// AnnotatedChart buildPriceLines), so a re-theme can never drift the legend
+// out of sync with the actual line colors.
 const POSITION_ENTRIES: Entry[] = [
   {
     label: "BE",
     meaning: "Position breakeven (today)",
-    swatch: { color: "#D4537E", style: "solid" },
+    swatch: { color: colors.positionMagenta, style: "solid" },
   },
   {
     label: "BE✕",
     meaning: "Position breakeven (expiration)",
-    swatch: { color: "#D4537E", style: "dotted" },
+    swatch: { color: colors.positionMagenta, style: "dotted" },
   },
   {
     label: "▲",
     meaning: "Entry price + date",
-    swatch: { color: "#D4537E", style: "arrow" },
+    swatch: { color: colors.positionMagenta, style: "arrow" },
   },
 ];
 
 const MARKET_ENTRIES: Entry[] = [
-  { label: "EM±", meaning: "Expected move", swatch: { color: "#F0A030", style: "dashed" } },
-  { label: "CW",  meaning: "Call wall",     swatch: { color: "#E85C5C", style: "solid" } },
-  { label: "PW",  meaning: "Put wall",      swatch: { color: "#4DD17C", style: "solid" } },
-  { label: "MP",  meaning: "Max pain",      swatch: { color: "#4FB8C8", style: "dashed" } },
-  { label: "GF",  meaning: "Gamma flip",    swatch: { color: "#4FB8C8", style: "dashed" } },
+  { label: "EM±", meaning: "Expected move", swatch: { color: colors.accentAmber, style: "dashed" } },
+  { label: "CW",  meaning: "Call wall",     swatch: { color: colors.bearish, style: "solid" } },
+  { label: "PW",  meaning: "Put wall",      swatch: { color: colors.bullish, style: "solid" } },
+  { label: "MP",  meaning: "Max pain",      swatch: { color: colors.accentCyan, style: "dashed" } },
+  { label: "GF",  meaning: "Gamma flip",    swatch: { color: colors.accentCyan, style: "dashed" } },
 ];
 
 /**
