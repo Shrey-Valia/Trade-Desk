@@ -1,6 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useSyncExternalStore } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { fetchChainTable } from "@/lib/api";
+import type { ChainTable } from "@/types/zerodte";
 
 /**
  * Windowed option chain around ATM for the trading ticket.
@@ -24,4 +26,35 @@ export function useChainTable(symbol: string | null, strikes: number = 15) {
     placeholderData: (prev, prevQuery) =>
       prevQuery?.queryKey?.[3] === symbol ? prev : undefined,
   });
+}
+
+/**
+ * PASSIVE read of the freshest chain table already in the query cache for
+ * `symbol` — any strike span. Subscribes to cache updates but never fetches
+ * or polls itself, so consumers (the header's expected-move pill) ride the
+ * chain poll the ladder already runs instead of adding a duplicate request.
+ * Null when nothing has been fetched yet (consumers hide).
+ */
+export function useCachedChainTable(symbol: string | null): ChainTable | null {
+  const qc = useQueryClient();
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => qc.getQueryCache().subscribe(onStoreChange),
+    [qc],
+  );
+  const getSnapshot = useCallback((): ChainTable | null => {
+    if (!symbol) return null;
+    let best: ChainTable | null = null;
+    let bestAt = -1;
+    for (const q of qc
+      .getQueryCache()
+      .findAll({ queryKey: ["zerodte", "chain", "table", symbol] })) {
+      const data = q.state.data as ChainTable | undefined;
+      if (data && q.state.dataUpdatedAt > bestAt) {
+        best = data;
+        bestAt = q.state.dataUpdatedAt;
+      }
+    }
+    return best;
+  }, [qc, symbol]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

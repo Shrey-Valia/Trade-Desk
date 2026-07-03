@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useChainTable } from "@/hooks/useChainTable";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteMultiLeg } from "@/hooks/useOpenZeroDteMultiLeg";
-import type { MultiLegSpec } from "@/types/zerodte";
+import { premiumExitForDirection, useTradeTicket } from "@/stores/tradeTicket";
+import type { ChainStrikeRow, MultiLegSpec } from "@/types/zerodte";
 
 /**
  * WS5 — multi-leg strategy builder. Presets (vertical / iron condor /
@@ -50,13 +51,29 @@ export function StrategyBuilder({ symbol }: Props) {
   const canFire =
     marketOpen && atm != null && legs.length >= 2 && !openMulti.isPending;
 
+  // Premium-exit presets (ticket store, shared with the single-leg ticket).
+  // A structure's direction isn't a button here — derive net debit/credit
+  // from the live chain prices; when the legs can't be priced client-side,
+  // send nothing (defensive: the backend is the pricing authority).
+  const premiumExit = useTradeTicket((s) => s.premiumExit);
+  const netPremium = useMemo(
+    () => netPremiumPerShare(chain?.rows ?? [], legs),
+    [chain, legs],
+  );
+
   const fire = () => {
     if (!canFire) return;
+    const exits =
+      netPremium != null
+        ? premiumExitForDirection(premiumExit, netPremium >= 0)
+        : { tp: null, sl: null };
     openMulti.mutate({
       symbol,
       contracts,
       strategy: preset,
       legs,
+      tp_premium_mult: exits.tp,
+      sl_premium_mult: exits.sl,
     });
   };
 
@@ -325,6 +342,28 @@ export function presetLegs(preset: Preset, atm: number, step: number): MultiLegS
         { side: "put", action: "buy", strike: atm, ratio: 1 },
       ];
   }
+}
+
+/**
+ * Net premium of the structure per share (debit > 0, credit < 0), priced
+ * off the live chain rows. Null when any leg's strike isn't on the fetched
+ * grid or its price is unusable — callers must NOT guess direction then.
+ * Exported for unit testing.
+ */
+export function netPremiumPerShare(
+  rows: readonly Pick<ChainStrikeRow, "strike" | "call_price" | "put_price">[],
+  legs: readonly MultiLegSpec[],
+): number | null {
+  if (!legs.length) return null;
+  let net = 0;
+  for (const leg of legs) {
+    const row = rows.find((r) => r.strike === leg.strike);
+    if (!row) return null;
+    const price = leg.side === "call" ? row.call_price : row.put_price;
+    if (!Number.isFinite(price) || price < 0) return null;
+    net += (leg.action === "buy" ? 1 : -1) * price * (leg.ratio ?? 1);
+  }
+  return net;
 }
 
 function describeLegs(legs: MultiLegSpec[]): string {

@@ -1000,6 +1000,8 @@ def _to_out(trade: Trade) -> TradeOut:
         oco_group=trade.oco_group,
         stop_loss=trade.stop_loss,
         take_profit=trade.take_profit,
+        tp_premium_mult=trade.tp_premium_mult,
+        sl_premium_mult=trade.sl_premium_mult,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
         time_in_force=trade.time_in_force,  # type: ignore[arg-type]
         tags=trade.tags,

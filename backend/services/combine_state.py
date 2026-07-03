@@ -109,6 +109,23 @@ class CombineSnapshot:
     # Activation fee still owed to unlock payouts ($149 if required, else 0).
     activation_required: bool
     activation_fee: float
+    # --- personal risk controls (DLL modes + daily profit target) ---------
+    # The owner's personal per-tier DLL override, if any: clamped amount +
+    # enforcement mode ("alert" | "liquidate" | "liquidate_block"). Only a
+    # liquidate_block override IS the blocking dll_budget above; alert /
+    # liquidate are monitor-side triggers (order_monitor) and leave the firm
+    # tier default as the blocking budget.
+    personal_dll_amount: float | None
+    personal_dll_mode: str | None
+    # Personal daily PROFIT target ("protect the green day"): per-user
+    # {amount, lock} config, surfaced here so the monitor tests the live
+    # (URPL-inclusive) basis without re-reading the owner.
+    profit_target_amount: float | None
+    profit_target_lock: bool
+    # True while the profit-target day-protect lock is engaged for the
+    # current 5pm-PT trading day (combine.profit_locked_at within the
+    # window). Folded into day_locked.
+    profit_locked: bool
 
 
 def realized_sum_for_combine(
@@ -239,6 +256,27 @@ def record_event(
     )
 
 
+def event_recorded_today(
+    session: Session, combine_id: int, type_: str, now: datetime
+) -> bool:
+    """True when a combine_events row of `type_` already exists within the
+    current 5pm-PT trading day — the once-per-day dedup behind the personal
+    alert-style events ("personal_dll" / "profit_target")."""
+    day_start = trading_day_start(now)
+    return (
+        session.execute(
+            select(CombineEvent.id)
+            .where(
+                CombineEvent.combine_id == combine_id,
+                CombineEvent.type == type_,
+                CombineEvent.created_at >= day_start,
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
 def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     """Full computed state for one combine. Advances the persisted RUNNING
     HWM monotonically (realized-only), runs the lazy 5pm-PT settlement,
@@ -297,15 +335,63 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         compute_balance(tier.starting_balance, realized - today_realized, 0.0) - payouts
     )
     owner = session.get(User, combine.user_id)
-    dll_override = owner.dll_overrides.get(combine.tier) if owner else None
+    personal = owner.dll_override_entries.get(combine.tier) if owner else None
     # DLL-off toggle: when the owner has disabled the DLL for this tier the
     # budget stays numeric (tier default, for display) but the day-lock /
     # breach tests are suppressed — the DLL no longer binds, only the MLL.
     dll_disabled = bool(owner and not owner.dll_enabled_for(combine.tier))
+    # Mode-aware BLOCKING budget: only a "liquidate_block" override replaces
+    # the firm tier default as the day-lock budget (today's historical
+    # behavior, and what legacy bare-float overrides map to). "alert" /
+    # "liquidate" overrides are monitor-side triggers (order_monitor) — they
+    # never move the gate budget, so the FIRM default DLL stays senior.
+    blocking_override = (
+        personal["amount"]
+        if personal is not None and personal["mode"] == "liquidate_block"
+        else None
+    )
     dll_budget = resolve_dll_budget(
-        combine.tier, dll_override, disabled=dll_disabled
+        combine.tier, blocking_override, disabled=dll_disabled
     )  # type: ignore[arg-type]
-    day_locked = (not dll_disabled) and dll_used >= dll_budget
+    personal_dll_amount = (
+        resolve_dll_budget(combine.tier, personal["amount"])  # type: ignore[arg-type]
+        if personal is not None
+        else None
+    )
+    personal_dll_mode = personal["mode"] if personal is not None else None
+
+    # Personal daily PROFIT target ("protect the green day"). The persisted
+    # profit_locked_at stamp day-locks the combine while it falls within the
+    # current 5pm-PT trading day, lifting implicitly at the boundary.
+    pt = owner.profit_target if owner else None
+    pt_amount = pt["amount"] if pt else None
+    pt_lock = bool(pt and pt["lock"])
+    profit_locked = (
+        combine.profit_locked_at is not None
+        and combine.profit_locked_at >= trading_day_start(now)
+    )
+    # Lazy REALIZED-basis engage (mirrors the lazy settlement pattern): the
+    # order monitor owns the live (URPL-inclusive) trigger + flatten; this
+    # read-path check catches a green day banked by manual closes when there
+    # is no open book left for the monitor to scan.
+    if (
+        pt_amount is not None
+        and combine.status != "archived"
+        and not profit_locked
+        and today_realized >= pt_amount
+    ):
+        if pt_lock:
+            combine.profit_locked_at = now
+            record_event(
+                session, combine, "profit_target", "Profit target reached — day protected."
+            )
+            profit_locked = True
+            dirty = True
+        elif not event_recorded_today(session, combine.id, "profit_target", now):
+            record_event(session, combine, "profit_target", "Profit target reached.")
+            dirty = True
+
+    day_locked = ((not dll_disabled) and dll_used >= dll_budget) or profit_locked
 
     # PASS progress (realized-based), bucketed per 5pm-PT trading day.
     by_day = realized_by_trading_day(session, combine.id, since)
@@ -406,4 +492,9 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
         funded_activated=funded_activated,
         activation_required=activation_required,
         activation_fee=activation_fee,
+        personal_dll_amount=personal_dll_amount,
+        personal_dll_mode=personal_dll_mode,
+        profit_target_amount=pt_amount,
+        profit_target_lock=pt_lock,
+        profit_locked=profit_locked,
     )

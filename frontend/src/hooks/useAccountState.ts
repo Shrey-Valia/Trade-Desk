@@ -5,6 +5,8 @@ import {
   fetchDllOverrides,
   updateDllOverrides,
   type DllOverridesConfig,
+  type DllOverrideValue,
+  type ProfitTarget,
 } from "@/lib/api";
 import { toast } from "@/stores/toast";
 
@@ -43,14 +45,20 @@ export function useDllOverrides() {
   });
 }
 
-/** Replace the per-tier DLL overrides and/or DLL-off disable flags. Refreshes
- *  the config + the active account snapshot (whose dll_budget / dll_disabled
- *  reflect the change). `disabled` omitted leaves the disable set untouched. */
+/** Replace the per-tier DLL overrides ({amount, mode} objects or legacy
+ *  bare numbers), the DLL-off disable flags, and/or the daily profit
+ *  target. Refreshes the config + the active account snapshot (whose
+ *  dll_budget / dll_disabled reflect the change). `disabled` /
+ *  `profit_target` omitted leave those values untouched server-side;
+ *  profit_target null CLEARS the target. */
 export function useUpdateDllOverrides() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { overrides: Record<string, number>; disabled?: string[] }) =>
-      updateDllOverrides(input.overrides, input.disabled),
+    mutationFn: (input: {
+      overrides: Record<string, DllOverrideValue>;
+      disabled?: string[];
+      profit_target?: ProfitTarget | null;
+    }) => updateDllOverrides(input.overrides, input.disabled, input.profit_target),
     onSuccess: (saved: DllOverridesConfig) => {
       qc.setQueryData(DLL_OVERRIDES_KEY, saved);
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });

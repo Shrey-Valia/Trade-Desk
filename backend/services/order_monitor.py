@@ -335,6 +335,60 @@ def _process_trailing_stop(trade: Trade, mark: float, spot: float, now: datetime
     return True
 
 
+# --- premium-denominated TP/SL (Tastytrade "manage winners") -----------------
+
+
+def _has_premium_exit(trade: Trade) -> bool:
+    return trade.tp_premium_mult is not None or trade.sl_premium_mult is not None
+
+
+def _entry_net_premium(trade: Trade) -> float:
+    """Signed, contracts-scaled NET entry premium (Σ sign·contracts·entry_price)
+    — the same shape as `_default_option_mark`'s live value, so the premium
+    TP/SL ratio test compares like with like (the contracts scale cancels in
+    the ratio, making it equivalent to a per-contract comparison). Positive =
+    net debit (long premium), negative = net credit (short premium)."""
+    total = 0.0
+    for leg in trade.legs:
+        sign = 1.0 if leg.get("action") == "buy" else -1.0
+        contracts = int(leg.get("contracts", 1) or 1)
+        total += sign * contracts * float(leg.get("entry_price", 0.0) or 0.0)
+    return total
+
+
+def _premium_exit_reason(trade: Trade, mark_net: float) -> tuple[str | None, str | None]:
+    """Premium TP/SL trigger test. entry = |net entry premium|, mark = |net
+    live premium| (both signed and contracts-scaled).
+
+      NET-DEBIT (long premium):   TP when mark ≥ entry × tp_premium_mult,
+                                  SL when mark ≤ entry × sl_premium_mult.
+      NET-CREDIT (short premium): the semantics INVERT — tp_premium_mult is
+        the FRACTION of the credit to buy back at (0.5 = close at 50% of max
+        profit) → TP when mark ≤ entry × tp; sl_premium_mult is the cut
+        multiple (2.0 = stop at 2× the credit) → SL when mark ≥ entry × sl.
+
+    Returns (close_reason, note) or (None, None). The open endpoints validate
+    the mults per direction, so TP and SL can never both be true on one tick."""
+    entry_net = _entry_net_premium(trade)
+    if entry_net == 0.0:
+        return None, None  # zero-net-premium structure: no scale to multiply
+    entry = abs(entry_net)
+    mark = abs(mark_net)
+    tp = trade.tp_premium_mult
+    sl = trade.sl_premium_mult
+    if entry_net > 0:  # net debit (long premium)
+        if tp is not None and mark >= entry * tp:
+            return "take_profit", f"premium target {tp:g}×"
+        if sl is not None and mark <= entry * sl:
+            return "stop_loss", f"premium stop {sl:g}×"
+    else:  # net credit (short premium)
+        if tp is not None and mark <= entry * tp:
+            return "take_profit", f"premium target {tp:g}× credit"
+        if sl is not None and mark >= entry * sl:
+            return "stop_loss", f"premium stop {sl:g}×"
+    return None, None
+
+
 # --- expiry settlement ------------------------------------------------------
 
 
@@ -559,13 +613,15 @@ def run_order_monitor(
                 cancelled += 1
                 session.commit()
                 continue
-            # Skip open positions with nothing to monitor (no SL/TP bracket
-            # AND no trailing stop). Auto-liquidation still scans them below.
+            # Skip open positions with nothing to monitor (no SL/TP bracket,
+            # no trailing stop AND no premium-denominated TP/SL).
+            # Auto-liquidation still scans them below.
             if (
                 trade.status == "open"
                 and trade.stop_loss is None
                 and trade.take_profit is None
                 and not _has_trailing_stop(trade)
+                and not _has_premium_exit(trade)
             ):
                 continue
             if trade.symbol not in spot_cache:
@@ -680,6 +736,35 @@ def _liquidation_spot(
     return None
 
 
+def _flatten_book(
+    session,
+    positions,
+    marks: dict[int, tuple[float, float]],
+    now: datetime,
+    unrealized_for,
+    note: str,
+    start_balance: float,
+) -> float:
+    """Force-close every position in `positions` at its cached mark — the
+    day-lock flatten path: each close books through `_book_close`
+    (close_reason "liquidation"), gets `note` appended, and cascades to
+    follower copies via mirror_close. Returns the realized balance after all
+    cuts (start_balance plus each close's booked slice) so the caller can run
+    the MLL fail test. Caller owns the commit."""
+    from services.copy_trade import mirror_close
+
+    realized_base = start_balance
+    for t in positions:
+        spot, _unreal = marks[t.id]
+        prior_realized = t.realized_pnl or 0.0
+        _book_close(t, spot, now, unrealized_for, "liquidation")
+        t.notes = (t.notes or "") + note
+        session.flush()
+        mirror_close(session, t)
+        realized_base += (t.realized_pnl or 0.0) - prior_realized
+    return realized_base
+
+
 def _auto_liquidate(
     session, now: datetime, spot_for, unrealized_for, spot_cache: dict[str, float | None]
 ) -> int:
@@ -771,28 +856,28 @@ def _auto_liquidate(
             # DLL branch active unless the owner disabled it (Step 3 toggle).
             dll_active = _combine_dll_enabled(session, combine)
 
-            # DLL DAY-LOCK FLATTEN (Topstep semantics: DLL hit → flatten +
-            # lock). Once the REALIZED day-loss alone exhausts the budget the
-            # combine is day-locked and `_breaches_floor`'s DLL branch goes
-            # dead for the rest of the day (it only fires while realized is
-            # under budget) — leaving the open book to bleed down to the MLL.
-            # Flatten everything the moment the lock engages instead.
-            if dll_active and snap.day_locked:
+            # DLL DAY-LOCK / PROFIT-LOCK FLATTEN (Topstep semantics: lock
+            # engaged → flatten). Once the REALIZED day-loss alone exhausts
+            # the blocking budget the combine is day-locked and
+            # `_breaches_floor`'s DLL branch goes dead for the rest of the
+            # day (it only fires while realized is under budget) — leaving
+            # the open book to bleed down to the MLL. Flatten everything the
+            # moment the lock engages instead. snap.day_locked also folds in
+            # the personal profit-target lock (snap.profit_locked), which
+            # flattens even with the DLL disabled.
+            if (dll_active and snap.day_locked) or snap.profit_locked:
                 from services.combine_state import record_event
 
-                realized_base = snap.balance
-                for t in positions:
-                    spot, _unreal = marks[t.id]
-                    prior_realized = t.realized_pnl or 0.0
-                    _book_close(t, spot, now, unrealized_for, "liquidation")
-                    t.notes = (
-                        (t.notes or "")
-                        + " · auto-liquidated (daily loss limit hit — day-locked)"
-                    )
-                    session.flush()
-                    mirror_close(session, t)
-                    liquidated += 1
-                    realized_base += (t.realized_pnl or 0.0) - prior_realized
+                if snap.profit_locked:
+                    note = " · auto-liquidated (profit target reached — day protected)"
+                    lock_reason = "profit target reached"
+                else:
+                    note = " · auto-liquidated (daily loss limit hit — day-locked)"
+                    lock_reason = "daily loss limit hit"
+                realized_base = _flatten_book(
+                    session, positions, marks, now, unrealized_for, note, snap.balance
+                )
+                liquidated += len(positions)
                 if realized_base <= snap.mll and combine.outcome in ("active", "passed"):
                     # The flatten locked in losses through the permanent floor.
                     combine.outcome = "failed"
@@ -804,7 +889,7 @@ def _auto_liquidate(
                         session,
                         combine,
                         "liquidated",
-                        f"Day-lock flatten — daily loss limit hit; closed "
+                        f"Day-lock flatten — {lock_reason}; closed "
                         f"{len(positions)} open position"
                         f"{'s' if len(positions) != 1 else ''}.",
                     )
@@ -812,6 +897,15 @@ def _auto_liquidate(
                 continue
 
             if not _breaches_floor(snap, snap.balance, urpl, dll_active):
+                # No FIRM floor breach this tick — evaluate the PERSONAL
+                # (junior) triggers instead: the daily profit target and the
+                # alert / liquidate DLL override modes. The firm tier-default
+                # DLL and the MLL stay senior — when they fire (above/below),
+                # personal triggers don't run.
+                liquidated += _personal_triggers(
+                    session, combine, snap, positions, marks, urpl,
+                    dll_active, now, unrealized_for,
+                )
                 continue
 
             # The breach reason at pass start (MLL takes precedence — it's the
@@ -890,6 +984,104 @@ def _auto_liquidate(
             session.rollback()
             log.exception("order_monitor: auto-liquidation for combine %s failed", combine_id)
     return liquidated
+
+
+def _personal_triggers(
+    session,
+    combine,
+    snap,
+    positions,
+    marks: dict[int, tuple[float, float]],
+    urpl: float,
+    dll_active: bool,
+    now: datetime,
+    unrealized_for,
+) -> int:
+    """PERSONAL (junior) risk triggers for one combine — run only on a tick
+    where no FIRM floor fired (the tier-default DLL day-lock, the live DLL
+    budget, and the MLL are senior and handled in `_auto_liquidate`).
+
+    1) Personal daily PROFIT target ("protect the green day"), on the same
+       day-P&L basis as the live DLL test (today's realized + open URPL):
+       lock=True → flatten + day-lock (combine.profit_locked_at stamped;
+       lifts at the 5pm-PT boundary); lock=False → one event per trading day.
+    2) Personal DLL override in "alert" / "liquidate" mode, on the live
+       day-loss basis (realized day-loss + the loss-only open book):
+       "alert" → one event per trading day, no flatten, no lock;
+       "liquidate" → flatten (same close path as the day-lock flatten,
+       cascading to followers) but NO day-lock — re-opens stay allowed.
+       ("liquidate_block" is not handled here: it IS the blocking dll_budget,
+       enforced by the day-lock flatten.)
+
+    Returns the number of positions force-closed. Commits its own writes,
+    mirroring _auto_liquidate's per-combine commit discipline."""
+    from services.combine_state import event_recorded_today, record_event
+
+    closed = 0
+
+    # 1) Personal daily profit target.
+    if snap.profit_target_amount is not None and not snap.profit_locked:
+        day_pnl = snap.today_realized + urpl
+        if day_pnl >= snap.profit_target_amount:
+            if snap.profit_target_lock:
+                _flatten_book(
+                    session, positions, marks, now, unrealized_for,
+                    " · auto-liquidated (profit target reached — day protected)",
+                    snap.balance,
+                )
+                closed += len(positions)
+                combine.profit_locked_at = now
+                record_event(
+                    session, combine, "profit_target",
+                    "Profit target reached — day protected.",
+                )
+                session.commit()
+                return closed
+            if not event_recorded_today(session, combine.id, "profit_target", now):
+                record_event(session, combine, "profit_target", "Profit target reached.")
+                session.commit()
+            # lock=False: nothing else happens — and a green day can't also
+            # be at the personal loss limit, so falling through is safe.
+
+    # 2) Personal DLL — alert / liquidate modes.
+    if (
+        dll_active
+        and snap.personal_dll_amount is not None
+        and snap.personal_dll_mode in ("alert", "liquidate")
+    ):
+        live_day_loss = snap.dll_used + max(0.0, -urpl)
+        if live_day_loss >= snap.personal_dll_amount:
+            if snap.personal_dll_mode == "alert":
+                if not event_recorded_today(session, combine.id, "personal_dll", now):
+                    record_event(
+                        session, combine, "personal_dll",
+                        "Personal daily loss limit hit — alert only.",
+                    )
+                    session.commit()
+            else:  # "liquidate": flatten, but do NOT day-lock
+                realized_base = _flatten_book(
+                    session, positions, marks, now, unrealized_for,
+                    " · auto-liquidated (personal daily loss limit hit — no day-lock)",
+                    snap.balance,
+                )
+                closed += len(positions)
+                if realized_base <= snap.mll and combine.outcome in ("active", "passed"):
+                    # The flatten locked in losses through the permanent floor.
+                    combine.outcome = "failed"
+                    record_event(
+                        session, combine, "failed", "Auto-liquidated — MLL floor breached."
+                    )
+                else:
+                    record_event(
+                        session,
+                        combine,
+                        "liquidated",
+                        f"Personal daily loss limit hit — flattened {len(positions)}"
+                        f" open position{'s' if len(positions) != 1 else ''};"
+                        " trading stays open.",
+                    )
+                session.commit()
+    return closed
 
 
 def _breaches_floor(
@@ -1063,6 +1255,18 @@ def _process_open(
     if _has_trailing_stop(trade) and option_mark is not None:
         mark = option_mark(trade, spot)
         if _process_trailing_stop(trade, mark, spot, now, unrealized_for):
+            _cancel_oco_siblings(session, trade)
+            return True
+
+    # Premium-denominated TP/SL (Tastytrade "manage winners") — tested on the
+    # same live option mark the trailing stop uses. Coexists with the
+    # underlying-price brackets below: whichever exit triggers first wins (the
+    # trade is closed, the other becomes moot).
+    if _has_premium_exit(trade) and option_mark is not None:
+        reason, note = _premium_exit_reason(trade, option_mark(trade, spot))
+        if reason is not None:
+            _book_close(trade, spot, now, unrealized_for, reason)
+            trade.notes = (trade.notes or "") + f" · {note}"
             _cancel_oco_siblings(session, trade)
             return True
 

@@ -138,6 +138,10 @@ export interface OpenMultiLegInput {
   strategy?: string;
   stop_loss?: number | null;
   take_profit?: number | null;
+  /** Optional premium-exit multiples of the entry premium — TP/SL on the
+   *  structure's net mark (fraction of the credit for net-credit opens). */
+  tp_premium_mult?: number | null;
+  sl_premium_mult?: number | null;
 }
 
 // -- WS5: Monte-Carlo scenario / backtest -----------------------------------

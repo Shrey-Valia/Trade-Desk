@@ -437,33 +437,76 @@ export const updateCopyConfig = (input: CopyConfigInput): Promise<CombinesOut> =
 
 // -- DLL overrides + disable flags (server-enforced) -------------------------
 
+/** PDLL enforcement mode for a tier's daily-loss-limit override:
+ *  - "alert"           — toast/event only; trading continues.
+ *  - "liquidate"       — flattens open positions; re-opening allowed.
+ *  - "liquidate_block" — flattens AND locks the day (until 5pm-PT reset). */
+export const DLL_MODES = ["alert", "liquidate", "liquidate_block"] as const;
+export type DllMode = (typeof DLL_MODES)[number];
+
+const DllOverrideObjectSchema = z.object({
+  amount: z.number(),
+  mode: z.enum(DLL_MODES),
+});
+export type DllOverrideSetting = z.infer<typeof DllOverrideObjectSchema>;
+
+/** An override value — the modern {amount, mode} object, or a legacy bare
+ *  number (which means liquidate_block, the historical behavior). */
+const DllOverrideValueSchema = z.union([z.number(), DllOverrideObjectSchema]);
+export type DllOverrideValue = z.infer<typeof DllOverrideValueSchema>;
+
+/** Daily profit target — lock=true means "flatten & end my day when hit". */
+const ProfitTargetSchema = z.object({
+  amount: z.number(),
+  lock: z.boolean(),
+});
+export type ProfitTarget = z.infer<typeof ProfitTargetSchema>;
+
 const DllOverridesSchema = z.object({
-  overrides: z.record(z.number()),
+  overrides: z.record(DllOverrideValueSchema),
   // Tier keys with the DLL switched OFF (the DLL-off toggle). Defaulted so an
   // older backend response (no `disabled` key) still parses.
   disabled: z.array(z.string()).default([]),
+  // nullable().optional() so the UI degrades gracefully while the backend
+  // field is in flight; null = no profit target set.
+  profit_target: ProfitTargetSchema.nullable().optional(),
 });
 
-/** The user's per-tier DLL overrides + disable flags. */
+/** The user's per-tier DLL overrides + disable flags + profit target. */
 export interface DllOverridesConfig {
-  overrides: Record<string, number>;
+  overrides: Record<string, DllOverrideValue>;
   disabled: string[];
+  profit_target?: ProfitTarget | null;
+}
+
+/** Normalize both override shapes to the object form for the UI — a legacy
+ *  bare number means "liquidate & block" (the historical behavior). */
+export function normalizeDllOverride(
+  v: DllOverrideValue | null | undefined,
+): DllOverrideSetting | null {
+  if (v == null) return null;
+  if (typeof v === "number") return { amount: v, mode: "liquidate_block" };
+  return v;
 }
 
 export const fetchDllOverrides = (): Promise<DllOverridesConfig> =>
   request("/api/account/dll-overrides", DllOverridesSchema);
 
-/** Replace the user's per-tier DLL overrides + disable flags. `disabled`
- *  omitted leaves the existing disable set untouched server-side. */
+/** Replace the user's per-tier DLL overrides + disable flags + profit
+ *  target. `disabled` / `profitTarget` omitted (undefined) leave the
+ *  existing values untouched server-side; profitTarget null CLEARS it. */
 export const updateDllOverrides = (
-  overrides: Record<string, number>,
+  overrides: Record<string, DllOverrideValue>,
   disabled?: string[],
+  profitTarget?: ProfitTarget | null,
 ): Promise<DllOverridesConfig> =>
   mutate("/api/account/dll-overrides", DllOverridesSchema, {
     method: "PUT",
-    body: JSON.stringify(
-      disabled === undefined ? { overrides } : { overrides, disabled },
-    ),
+    body: JSON.stringify({
+      overrides,
+      ...(disabled === undefined ? {} : { disabled }),
+      ...(profitTarget === undefined ? {} : { profit_target: profitTarget }),
+    }),
   });
 
 // -- auth --------------------------------------------------------------------
@@ -596,16 +639,28 @@ export const fetchContractPreview = (
 
 /** Open an ATM straddle paper Trade on `symbol` expiring today.
  *  action="buy" = long straddle (debit); action="sell" = short straddle
- *  (credit). Returns the created Trade — caller sets it as the active
+ *  (credit). Optional premium-exit multiples (tp/sl as multiples of the
+ *  entry premium — fractions of the credit for a short) attach exits at
+ *  open. Returns the created Trade — caller sets it as the active
  *  position. */
 export const openZeroDteStraddle = (
   symbol: string,
   action: "buy" | "sell" = "buy",
   contracts: number = 1,
+  premiumExits?: {
+    tp_premium_mult?: number | null;
+    sl_premium_mult?: number | null;
+  },
 ): Promise<Trade> =>
   mutate("/api/zerodte/open", TradeOutSchema, {
     method: "POST",
-    body: JSON.stringify({ symbol, action, contracts }),
+    body: JSON.stringify({
+      symbol,
+      action,
+      contracts,
+      tp_premium_mult: premiumExits?.tp_premium_mult ?? null,
+      sl_premium_mult: premiumExits?.sl_premium_mult ?? null,
+    }),
   });
 
 /** WS5: open a multi-leg 0DTE structure (vertical / condor / butterfly /

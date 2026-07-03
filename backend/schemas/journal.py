@@ -179,6 +179,12 @@ class TradeOut(BaseModel):
     trail_hwm: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
+    # Premium-denominated TP/SL (Tastytrade "manage winners"): multiples of
+    # |net entry premium| the monitor exits at. NET-DEBIT: tp > 1, 0 < sl < 1.
+    # NET-CREDIT the semantics invert: tp is the buy-back fraction of the
+    # credit (0 < tp < 1), sl the cut multiple (> 1).
+    tp_premium_mult: float | None = None
+    sl_premium_mult: float | None = None
     # OCO group id pairing sibling working orders (one fill cancels the other).
     oco_group: str | None = None
     close_reason: CloseReason | None = None

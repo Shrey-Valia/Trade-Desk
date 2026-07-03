@@ -125,7 +125,9 @@ def test_require_tradeable_enforces_custom_dll_override(auth_client, session_fac
         "/api/account/dll-overrides", json={"overrides": {"50K": 800}}
     )
     assert res.status_code == 200
-    assert res.json()["overrides"]["50K"] == 800
+    assert res.json()["overrides"]["50K"]["amount"] == 800
+    # A legacy bare-number PUT maps to liquidate_block (today's behavior).
+    assert res.json()["overrides"]["50K"]["mode"] == "liquidate_block"
 
     session = session_factory()
     # -$1,000 today: under the $1,500 default but OVER the $800 override.
@@ -142,8 +144,9 @@ def test_dll_override_clamped_to_band(auth_client):
     # 50K band = 1-10% of $50,000 = $500-$5,000. $50 clamps up to $500.
     res = auth_client.put("/api/account/dll-overrides", json={"overrides": {"50K": 50}})
     assert res.status_code == 200
-    assert res.json()["overrides"]["50K"] == 500
-    assert auth_client.get("/api/account/dll-overrides").json()["overrides"]["50K"] == 500
+    assert res.json()["overrides"]["50K"]["amount"] == 500
+    got = auth_client.get("/api/account/dll-overrides").json()
+    assert got["overrides"]["50K"]["amount"] == 500
 
 
 def test_dll_override_rejects_unknown_tier(auth_client):

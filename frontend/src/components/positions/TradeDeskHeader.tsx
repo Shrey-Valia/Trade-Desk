@@ -4,12 +4,14 @@ import { AlertsBell } from "@/components/alerts/AlertsBell";
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
 import { useAccountState } from "@/hooks/useAccountState";
+import { useCachedChainTable } from "@/hooks/useChainTable";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
 import { usePreLiquidationWarnings } from "@/hooks/usePreLiquidationWarnings";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { useTrades } from "@/hooks/useTrades";
 import { fetchTradeAnalytics } from "@/lib/api";
+import { expectedMoveFromChain } from "@/lib/expectedMove";
 import { formatPercent, formatPrice } from "@/lib/formatters";
 import { isZeroDteTrade } from "@/types/journal";
 import type { TierKey } from "@/types/account";
@@ -155,8 +157,36 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
         {sign}
         {detail.change_dollar.toFixed(2)} ({formatPercent(detail.change_pct)})
       </span>
+      <ExpectedMovePill symbol={symbol} spot={detail.price} />
       <FreshnessPill asOf={detail.as_of ?? null} servedStale={detail.served_stale ?? false} />
     </div>
+  );
+}
+
+/**
+ * Expected-move readout (ToS "MMM"-style): the ATM straddle mid off the
+ * chain table the terminal ALREADY polls (passive cache read — no extra
+ * request). "±$X.XX (±Y.Y%)" is the options market's implied move by
+ * today's close; it visibly shrinks on each chain refetch as theta burns.
+ * Hidden entirely when the chain or spot isn't available.
+ */
+function ExpectedMovePill({ symbol, spot }: { symbol: string; spot: number }) {
+  const chain = useCachedChainTable(symbol);
+  const em = useMemo(
+    () => expectedMoveFromChain(chain?.rows, spot),
+    [chain, spot],
+  );
+  if (!em) return null;
+  return (
+    <span
+      className="text-fg-secondary tabular-nums whitespace-nowrap"
+      style={{ fontSize: 11 }}
+      title={`Expected move to today's close — the ATM (${em.strike}) straddle price: what the options market charges for a move in either direction by the bell. Shrinks through the day as theta burns.`}
+      aria-label={`Expected move plus or minus $${em.em.toFixed(2)} (${em.pct.toFixed(1)} percent)`}
+    >
+      EM ±${em.em.toFixed(2)}{" "}
+      <span className="text-fg-tertiary-2">(±{em.pct.toFixed(1)}%)</span>
+    </span>
   );
 }
 

@@ -13,6 +13,12 @@ import {
 import { useActivateCombine } from "@/hooks/useCombines";
 import { useMe, useSignout } from "@/hooks/useAuth";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
+import {
+  normalizeDllOverride,
+  type DllMode,
+  type DllOverrideValue,
+  type ProfitTarget,
+} from "@/lib/api";
 import { TIER_SPECS } from "@/lib/tierSpecs";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { APPEARANCE_DEFAULTS, useUserSettings } from "@/stores/userSettings";
@@ -371,7 +377,12 @@ function RiskManagementSection() {
       <div className="text-tiny text-fg-tertiary-2 px-1 py-6">Loading risk settings…</div>
     );
   }
-  return <DailyLossLimitRow tiers={tiers} />;
+  return (
+    <>
+      <DailyLossLimitRow tiers={tiers} />
+      <ProfitTargetRow />
+    </>
+  );
 }
 
 // Shared tier-spec mirror — a hand-typed copy here once drifted to a $4,000
@@ -394,9 +405,21 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
   const disabled = config?.disabled ?? [];
   const update = useUpdateDllOverrides();
   const setOverride = (tierKey: TierKey, amount: number | null) => {
-    const next: Record<string, number> = { ...overrides };
+    const next: Record<string, DllOverrideValue> = { ...overrides };
     if (amount == null) delete next[tierKey];
-    else next[tierKey] = amount;
+    else {
+      // Preserve the tier's chosen mode; a fresh override starts at the
+      // legacy default (liquidate & block).
+      const mode =
+        normalizeDllOverride(overrides[tierKey])?.mode ?? "liquidate_block";
+      next[tierKey] = { amount, mode };
+    }
+    update.mutate({ overrides: next });
+  };
+  const setMode = (tierKey: TierKey, mode: DllMode, fallbackAmount: number) => {
+    const next: Record<string, DllOverrideValue> = { ...overrides };
+    const current = normalizeDllOverride(overrides[tierKey]);
+    next[tierKey] = { amount: current?.amount ?? fallbackAmount, mode };
     update.mutate({ overrides: next });
   };
   const setDisabled = (tierKey: TierKey, off: boolean) => {
@@ -419,18 +442,22 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
           className="text-fg-tertiary mt-0.5"
           style={{ fontSize: 11, lineHeight: 1.35 }}
         >
-          How much you can lose in one trading day before the DLL pill warns,
-          then breaches. Once realized losses hit it, new opens are blocked
-          until the 5pm-PT settlement. Range: 1-10% of the tier&rsquo;s
-          starting balance. Switch it OFF to trade with only the MLL floor —
-          matching Topstep, which dropped the DLL in 2024.
+          How much you can lose in one trading day before the limit fires.
+          What happens when it fires is the enforcement mode below: Alert
+          only warns, Liquidate flattens, Liquidate &amp; Block flattens and
+          locks the day. Range: 1-10% of the tier&rsquo;s starting balance.
+          Switch it OFF to trade with only the MLL floor — matching Topstep,
+          which dropped the DLL in 2024. Fair warning: once set, a Liquidate
+          &amp; Block limit cannot be raised, removed, or weakened until the
+          5pm-PT reset.
         </div>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-3 pb-3 pt-1">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-3 pb-2 pt-1">
         {tiers.map((t) => {
           const tierKey = t.key as TierKey;
-          const override = overrides[tierKey];
-          const value = override ?? t.dll_amount;
+          const override = normalizeDllOverride(overrides[tierKey]);
+          const value = override?.amount ?? t.dll_amount;
+          const mode = override?.mode ?? "liquidate_block";
           const isDefault = override == null;
           const off = disabled.includes(tierKey);
           const min = Math.round(t.starting_balance * 0.01);
@@ -501,10 +528,233 @@ function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
                     ? "default"
                     : `default $${t.dll_amount.toLocaleString()}`}
               </span>
+              <div className={off ? "opacity-40 pointer-events-none" : ""}>
+                <DllModeSelector
+                  tierKey={tierKey}
+                  mode={mode}
+                  onChange={(m) => setMode(tierKey, m, value)}
+                />
+              </div>
             </div>
           );
         })}
       </div>
+      {update.isError && (
+        <div
+          className="px-3 pb-3 text-bearish"
+          style={{ fontSize: 11, lineHeight: 1.4 }}
+          role="alert"
+        >
+          {(update.error as Error)?.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One-line honest explanations per PDLL enforcement mode — shown under the
+// selector and as tooltips. Order matters (soft → hard).
+const DLL_MODE_OPTIONS: Array<{ key: DllMode; label: string; explain: string }> = [
+  {
+    key: "alert",
+    label: "alert",
+    explain: "Alert only — warns (toast/event); trading continues.",
+  },
+  {
+    key: "liquidate",
+    label: "liquidate",
+    explain: "Liquidate — flattens open positions; you can re-open today.",
+  },
+  {
+    key: "liquidate_block",
+    label: "liq + block",
+    explain:
+      "Liquidate & Block — flattens and locks the day. Can't be raised, removed, or weakened until the 5pm-PT reset.",
+  },
+];
+
+/** Three-option PDLL enforcement mode selector for one tier. */
+function DllModeSelector({
+  tierKey,
+  mode,
+  onChange,
+}: {
+  tierKey: TierKey;
+  mode: DllMode;
+  onChange: (m: DllMode) => void;
+}) {
+  const active = DLL_MODE_OPTIONS.find((o) => o.key === mode);
+  return (
+    <div className="flex flex-col gap-0.5 mt-1">
+      <div
+        className="flex"
+        style={{ gap: 4 }}
+        role="radiogroup"
+        aria-label={`${tierKey} DLL enforcement mode`}
+      >
+        {DLL_MODE_OPTIONS.map((o) => {
+          const on = o.key === mode;
+          return (
+            <button
+              key={o.key}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              onClick={() => {
+                if (!on) onChange(o.key);
+              }}
+              title={o.explain}
+              className={[
+                "uppercase tracking-label-up rounded-btn px-1.5 transition-colors duration-100 select-none",
+                on
+                  ? "bg-tier-3 border border-amber text-amber"
+                  : "bg-tier-2 border border-tier-3 text-fg-tertiary-2 hover:text-fg-secondary",
+              ].join(" ")}
+              style={{ height: 20, fontSize: 10 }}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+      <span className="text-fg-tertiary-2" style={{ fontSize: 11, lineHeight: 1.35 }}>
+        {active?.explain}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Daily profit target — the green-side twin of the DLL. Dollar amount +
+ * a "flatten & end my day when hit" toggle (the backend's `lock`).
+ * Stored on the same /api/account/dll-overrides config; overrides +
+ * disabled are always sent alongside so nothing is dropped (PUT
+ * semantics). A backend 409 (e.g. weakening a locked limit) surfaces
+ * verbatim below the controls.
+ */
+function ProfitTargetRow() {
+  const { data: config } = useDllOverrides();
+  const update = useUpdateDllOverrides();
+  const target = config?.profit_target ?? null;
+  const overrides = config?.overrides ?? {};
+  const disabled = config?.disabled ?? [];
+
+  const [text, setText] = useState(target ? String(target.amount) : "");
+  useEffect(() => {
+    setText(target ? String(target.amount) : "");
+  }, [target]);
+
+  const save = (pt: ProfitTarget | null) =>
+    update.mutate({ overrides, disabled, profit_target: pt });
+
+  const commitAmount = () => {
+    const n = Number(text);
+    if (!Number.isFinite(n) || n <= 0 || text.trim() === "") {
+      setText(target ? String(target.amount) : "");
+      return;
+    }
+    const amount = Math.round(n);
+    setText(String(amount));
+    if (target?.amount !== amount) save({ amount, lock: target?.lock ?? false });
+  };
+
+  const on = target != null;
+  return (
+    <div className="border-b border-hairline">
+      <div className="px-3 pt-3 pb-1 flex items-start justify-between gap-3">
+        <div>
+          <div
+            className="uppercase tracking-label-up text-fg-secondary"
+            style={{ fontSize: 11, letterSpacing: "0.08em" }}
+          >
+            Daily profit target
+          </div>
+          <div
+            className="text-fg-tertiary mt-0.5"
+            style={{ fontSize: 11, lineHeight: 1.35 }}
+          >
+            Bank the day: when today&rsquo;s net P&amp;L reaches this amount
+            you&rsquo;re alerted — and, with the toggle on, everything is
+            flattened and the day locks until the 5pm-PT reset. Off by
+            default; discipline is opt-in.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => save(on ? null : { amount: 500, lock: false })}
+          aria-pressed={on}
+          disabled={update.isPending}
+          className={[
+            "uppercase tracking-label-up rounded-btn px-1.5 shrink-0",
+            on
+              ? "border border-amber text-amber bg-tier-2"
+              : "border border-tier-3 text-fg-tertiary-2 hover:text-fg-secondary",
+          ].join(" ")}
+          style={{ fontSize: 11, height: 18 }}
+          title={
+            on
+              ? "Remove the daily profit target."
+              : "Set a daily profit target (defaults to $500 — edit below)."
+          }
+        >
+          {on ? "on" : "off"}
+        </button>
+      </div>
+      {on && (
+        <div className="flex flex-wrap items-center gap-3 px-3 pb-2">
+          <label className="flex items-center gap-1 tabular-nums" style={{ fontSize: 12 }}>
+            <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+              $
+            </span>
+            <input
+              type="number"
+              value={text}
+              min={1}
+              step={50}
+              onChange={(e) => setText(e.target.value)}
+              onBlur={commitAmount}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+              className="h-7 px-1.5 text-xs2 font-mono tabular-nums bg-tier-2 border border-tier-3 text-fg-primary rounded-btn"
+              style={{ width: 80 }}
+              aria-label="Daily profit target amount"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() =>
+              target && save({ amount: target.amount, lock: !target.lock })
+            }
+            aria-pressed={target?.lock ?? false}
+            disabled={update.isPending}
+            className={[
+              "uppercase tracking-label-up rounded-btn px-2 transition-colors duration-100 select-none",
+              target?.lock
+                ? "bg-tier-3 border border-amber text-amber"
+                : "bg-tier-2 border border-tier-3 text-fg-tertiary-2 hover:text-fg-secondary",
+            ].join(" ")}
+            style={{ height: 22, fontSize: 10 }}
+            title="When the target is hit: flatten every open position and lock trading until the 5pm-PT reset. Off = alert only, keep trading."
+          >
+            flatten &amp; end my day when hit
+          </button>
+          <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+            {target?.lock
+              ? "hit target → flatten + day locks"
+              : "hit target → alert only, keep trading"}
+          </span>
+        </div>
+      )}
+      {update.isError && (
+        <div
+          className="px-3 pb-3 text-bearish"
+          style={{ fontSize: 11, lineHeight: 1.4 }}
+          role="alert"
+        >
+          {(update.error as Error)?.message}
+        </div>
+      )}
     </div>
   );
 }

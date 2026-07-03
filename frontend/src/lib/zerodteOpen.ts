@@ -28,6 +28,11 @@ export async function openZeroDteLeg(input: {
   /** Optional SL/TP brackets (underlying price levels). */
   stop_loss?: number | null;
   take_profit?: number | null;
+  /** Optional premium-exit multiples (of the entry premium): TP/SL close
+   *  when the option mark reaches mult × entry. For a short (credit) open,
+   *  tp < 1 buys back at that fraction of the credit ("50% max profit"). */
+  tp_premium_mult?: number | null;
+  sl_premium_mult?: number | null;
 }): Promise<Trade> {
   const res = await fetch(`${API_BASE}/api/zerodte/open-leg`, {
     method: "POST",
@@ -50,6 +55,8 @@ export async function openZeroDteLeg(input: {
       trail_amount: input.trail_amount ?? null,
       stop_loss: input.stop_loss ?? null,
       take_profit: input.take_profit ?? null,
+      tp_premium_mult: input.tp_premium_mult ?? null,
+      sl_premium_mult: input.sl_premium_mult ?? null,
     }),
   });
   if (!res.ok) {

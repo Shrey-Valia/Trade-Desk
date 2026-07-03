@@ -147,6 +147,11 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("trail_hwm", "FLOAT"),
     ("stop_loss", "FLOAT"),
     ("take_profit", "FLOAT"),
+    # Premium-denominated TP/SL (Tastytrade "manage winners"): multiples of
+    # |net entry premium| the monitor exits at (see models/trade.py for the
+    # net-debit vs net-credit semantics). Nullable — unset for legacy rows.
+    ("tp_premium_mult", "FLOAT"),
+    ("sl_premium_mult", "FLOAT"),
     # OCO grouping: one fill/close cancels still-working siblings in the group.
     ("oco_group", "VARCHAR(36)"),
     ("close_reason", "VARCHAR(16)"),
@@ -212,6 +217,10 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # the lead trade's stop_loss / take_profit on a mirrored open.
     ("copy_stop_loss", "FLOAT"),
     ("copy_take_profit", "FLOAT"),
+    # Personal profit-target day-protect lock stamp ("protect the green day").
+    # NULL = not locked; a stamp within the current 5pm-PT trading day
+    # day-locks the combine until the boundary.
+    ("profit_locked_at", "DATETIME"),
 ]
 
 # Copy trading added a lead pointer to users; per-tier DLL overrides added the
@@ -222,6 +231,8 @@ _USER_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("dll_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
     # Per-tier DLL DISABLE flags (JSON list of tier keys). [] = DLL on.
     ("dll_disabled_json", "TEXT NOT NULL DEFAULT '[]'"),
+    # Personal daily profit target as JSON {"amount", "lock"}; 'null' = unset.
+    ("profit_target_json", "TEXT NOT NULL DEFAULT 'null'"),
 ]
 
 

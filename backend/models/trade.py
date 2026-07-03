@@ -90,6 +90,15 @@ class Trade(Base):
     trail_hwm: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
     take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Premium-denominated TP/SL (Tastytrade "manage winners") — multiples of
+    # the position's |net entry premium| the monitor exits at, tested on the
+    # live |net premium| mark. NET-DEBIT (long premium): TP at entry×tp
+    # (tp > 1), SL at entry×sl (0 < sl < 1). NET-CREDIT (short premium) the
+    # semantics invert: tp is the FRACTION of the credit to buy back at
+    # (0 < tp < 1, e.g. 0.5 = close at 50% of max profit) and sl is the cut
+    # multiple (sl > 1, e.g. 2.0 = stop at 2× the credit). None = unset.
+    tp_premium_mult: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sl_premium_mult: Mapped[float | None] = mapped_column(Float, nullable=True)
     # OCO (one-cancels-the-other): orders sharing an oco_group are siblings —
     # when one FILLS (working entry) or its position CLOSES on a bracket, the
     # monitor cancels the still-working siblings in the group. None = no pairing.

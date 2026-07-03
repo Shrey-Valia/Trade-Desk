@@ -103,6 +103,14 @@ class Combine(Base):
     eval_reset_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True
     )
+    # Personal profit-target day-protect lock ("protect the green day").
+    # Stamped when the owner's daily profit target (user.profit_target with
+    # lock=true) is reached; the combine is day-locked while the stamp falls
+    # within the current 5pm-PT trading day, then lifts implicitly at the
+    # boundary (no un-stamp needed).
+    profit_locked_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,

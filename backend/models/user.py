@@ -20,6 +20,37 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
 
+# Enforcement modes for a PERSONAL per-tier DLL override (TopstepX-style).
+#   "alert"           — event only; no day-lock, no flatten.
+#   "liquidate"       — flatten the open book, but keep trading allowed.
+#   "liquidate_block" — flatten + day-lock (today's historical behavior).
+# Strength order backs the same-day tighten-only rule:
+# liquidate_block > liquidate > alert.
+DLL_MODES = ("alert", "liquidate", "liquidate_block")
+DLL_MODE_STRENGTH: dict[str, int] = {"alert": 1, "liquidate": 2, "liquidate_block": 3}
+DEFAULT_DLL_MODE = "liquidate_block"
+
+
+def _normalize_override(value: object) -> dict | None:
+    """One stored override value → {"amount": float, "mode": str, "set_at": str|None}.
+
+    BACKWARD COMPAT: the legacy shape was a bare float (dollars). It maps to
+    mode "liquidate_block" — exactly the pre-modes behavior (budget hit →
+    day-lock → flatten) — with no set_at stamp (so it is freely editable)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return {"amount": float(value), "mode": DEFAULT_DLL_MODE, "set_at": None}
+    if isinstance(value, dict):
+        try:
+            amount = float(value["amount"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        mode = value.get("mode", DEFAULT_DLL_MODE)
+        if mode not in DLL_MODES:
+            mode = DEFAULT_DLL_MODE
+        set_at = value.get("set_at")
+        return {"amount": amount, "mode": mode, "set_at": str(set_at) if set_at else None}
+    return None
+
 
 class User(Base):
     __tablename__ = "users"
@@ -49,6 +80,15 @@ class User(Base):
     dll_disabled_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="[]"
     )
+    # Personal daily PROFIT target ("protect the green day") as JSON
+    # {"amount": dollars, "lock": bool} — or the literal null when unset.
+    # Per-USER (not per-tier): when a combine's day P&L (realized + open
+    # URPL, same basis as the DLL check) reaches +amount, lock=true →
+    # flatten + day-lock until the 5pm-PT reset; lock=false → a
+    # once-per-day combine_events entry only.
+    profit_target_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="null"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
@@ -63,15 +103,70 @@ class User(Base):
     )
 
     @property
-    def dll_overrides(self) -> dict[str, float]:
+    def dll_override_entries(self) -> dict[str, dict]:
+        """Per-tier personal DLL overrides, normalized to
+        {"amount": float, "mode": "alert"|"liquidate"|"liquidate_block",
+        "set_at": iso8601|None}. Legacy bare-float values read as
+        liquidate_block (today's behavior) with no stamp."""
         try:
-            return {k: float(v) for k, v in json.loads(self.dll_overrides_json or "{}").items()}
+            raw = json.loads(self.dll_overrides_json or "{}")
         except (ValueError, TypeError, AttributeError):
             return {}
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, dict] = {}
+        for k, v in raw.items():
+            entry = _normalize_override(v)
+            if entry is not None:
+                out[str(k)] = entry
+        return out
+
+    @dll_override_entries.setter
+    def dll_override_entries(self, value: dict[str, dict]) -> None:
+        self.dll_overrides_json = json.dumps(value)
+
+    @property
+    def dll_overrides(self) -> dict[str, float]:
+        """AMOUNT-only view of the overrides — kept for call sites that only
+        need the dollar level (mode-agnostic)."""
+        return {k: v["amount"] for k, v in self.dll_override_entries.items()}
 
     @dll_overrides.setter
     def dll_overrides(self, value: dict[str, float]) -> None:
-        self.dll_overrides_json = json.dumps(value)
+        # Legacy setter: bare amounts become liquidate_block entries (the
+        # pre-modes behavior), unstamped.
+        self.dll_overrides_json = json.dumps(
+            {
+                k: {"amount": float(v), "mode": DEFAULT_DLL_MODE, "set_at": None}
+                for k, v in value.items()
+            }
+        )
+
+    @property
+    def profit_target(self) -> dict | None:
+        """Personal daily profit target — {"amount": float, "lock": bool} or
+        None when unset / unparseable."""
+        try:
+            raw = json.loads(self.profit_target_json or "null")
+        except (ValueError, TypeError, AttributeError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        try:
+            amount = float(raw["amount"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if amount <= 0:
+            return None
+        return {"amount": amount, "lock": bool(raw.get("lock", False))}
+
+    @profit_target.setter
+    def profit_target(self, value: dict | None) -> None:
+        self.profit_target_json = json.dumps(
+            None
+            if value is None
+            else {"amount": float(value["amount"]), "lock": bool(value.get("lock", False))}
+        )
 
     @property
     def dll_disabled(self) -> list[str]:

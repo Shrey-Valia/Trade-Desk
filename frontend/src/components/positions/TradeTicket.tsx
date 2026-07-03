@@ -12,7 +12,9 @@ import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
 import {
+  premiumExitForDirection,
   useTradeTicket,
+  type PremiumExitConfig,
   type TicketSelection,
   type TicketOrderType,
 } from "@/stores/tradeTicket";
@@ -63,6 +65,8 @@ export function TradeTicket() {
   const setTrailAmount = useTradeTicket((s) => s.setTrailAmount);
   const timeInForce = useTradeTicket((s) => s.timeInForce);
   const setTimeInForce = useTradeTicket((s) => s.setTimeInForce);
+  const premiumExit = useTradeTicket((s) => s.premiumExit);
+  const setPremiumExit = useTradeTicket((s) => s.setPremiumExit);
   const clear = useTradeTicket((s) => s.clear);
 
   const legMutation = useOpenZeroDteLeg();
@@ -159,12 +163,17 @@ export function TradeTicket() {
     const onSettled = () => {
       submittingRef.current = false;
     };
+    // Premium-exit presets resolve per direction at fire time: a BUY is a
+    // net-debit (long) open, a SELL a net-credit (short) one.
+    const exits = premiumExitForDirection(premiumExit, action === "buy");
     if (selection.kind === "straddle") {
       straddleMutation.mutate(
         {
           symbol: selection.symbol,
           action,
           contracts,
+          tp_premium_mult: exits.tp,
+          sl_premium_mult: exits.sl,
         },
         {
           onSuccess: () => clear(),
@@ -187,6 +196,8 @@ export function TradeTicket() {
         limit_price: needsLimit ? limitPrice : null,
         stop_price: needsStop ? stopPrice : null,
         trail_amount: trailAmount && trailAmount > 0 ? trailAmount : null,
+        tp_premium_mult: exits.tp,
+        sl_premium_mult: exits.sl,
       },
       {
         onSuccess: () => clear(),
@@ -220,7 +231,7 @@ export function TradeTicket() {
       {passed && <PassedBanner />}
       {locked && <LockBanner reason={lockReason} />}
       {!locked && atCap && <LockBanner reason={atCapReason} />}
-      <Summary selection={selection} contracts={contracts} />
+      <Summary selection={selection} contracts={contracts} premiumExit={premiumExit} />
       {isLeg && (
         <OrderTypeRow
           orderType={orderType}
@@ -236,6 +247,7 @@ export function TradeTicket() {
       {isLeg && (
         <TrailStopRow trailAmount={trailAmount} setTrailAmount={setTrailAmount} />
       )}
+      <PremiumExitRow config={premiumExit} onChange={setPremiumExit} />
       <QuantityRow
         contracts={contracts}
         setContracts={setContracts}
@@ -412,9 +424,11 @@ function Header() {
 function Summary({
   selection,
   contracts,
+  premiumExit,
 }: {
   selection: TicketSelection | null;
   contracts: number;
+  premiumExit?: PremiumExitConfig;
 }) {
   // Subtle live-price affordance: the chain refetch re-syncs the selected
   // contract's price (see RightChain), so flash the estimate briefly when it
@@ -465,7 +479,69 @@ function Summary({
           <span className="text-tiny text-position">{beRange}</span>
         </>
       )}
+      {/* Premium-exit $ targets — entry premium × mult × 100 × qty, per
+          direction. Only when the feature is armed; tracks the live price. */}
+      {premiumExit?.enabled && (
+        <PremiumExitTargets
+          price={selection.price}
+          contracts={contracts}
+          config={premiumExit}
+        />
+      )}
     </div>
+  );
+}
+
+/** Computed $ premium targets shown in the Summary. `null` mult = exit off. */
+function PremiumExitTargets({
+  price,
+  contracts,
+  config,
+}: {
+  price: number;
+  contracts: number;
+  config: PremiumExitConfig;
+}) {
+  const dollars = (mult: number) => (price * mult * 100 * contracts).toFixed(2);
+  const group = (
+    label: string,
+    tp: number | null,
+    sl: number | null,
+    title: string,
+  ) => {
+    if (tp == null && sl == null) return null;
+    return (
+      <span className="text-tiny text-fg-tertiary-2 whitespace-nowrap" title={title}>
+        {label}{" "}
+        {tp != null && (
+          <>
+            tp <span className="text-position">${dollars(tp)}</span>
+          </>
+        )}
+        {tp != null && sl != null && " · "}
+        {sl != null && (
+          <>
+            sl <span className="text-bearish">${dollars(sl)}</span>
+          </>
+        )}
+      </span>
+    );
+  };
+  return (
+    <>
+      {group(
+        "exit·long",
+        config.longTpMult,
+        config.longSlMult,
+        "If BOUGHT: close when the position's premium value reaches the target (take-profit) or falls to the stop.",
+      )}
+      {group(
+        "exit·short",
+        config.shortTpMult,
+        config.shortSlMult,
+        "If SOLD: buy back at the target premium (a fraction of the credit = that share of max profit kept) or stop out at the stop premium.",
+      )}
+    </>
   );
 }
 
@@ -699,6 +775,211 @@ function TrailStopRow({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Optional PREMIUM EXIT presets — "close at 2× / 50% max profit".
+ * Collapsed (a single toggle) until armed. Two preset groups because the
+ * semantics flip with direction:
+ *   - long · buy (net-debit): TP/SL as multiples of the entry premium.
+ *   - short · sell (net-credit): Tastytrade-style — TP as the fraction of
+ *     the credit to buy back at (50% = keep half of max profit), SL at a
+ *     multiple of the credit (2× = stop when the mark doubles).
+ * Clicking the active chip turns that exit off (null). Last-used config
+ * persists in the ticket store.
+ */
+function PremiumExitRow({
+  config,
+  onChange,
+}: {
+  config: PremiumExitConfig;
+  onChange: (patch: Partial<PremiumExitConfig>) => void;
+}) {
+  const on = config.enabled;
+  return (
+    <div
+      className="flex flex-col gap-1 px-3 pb-1 tabular-nums shrink-0"
+      style={{ fontSize: 12 }}
+    >
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onChange({ enabled: !on })}
+          aria-pressed={on}
+          aria-expanded={on}
+          className={[
+            "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+            on
+              ? "bg-tier-3 border border-amber text-amber"
+              : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+          ].join(" ")}
+          style={{ height: 24, fontSize: 11 }}
+          title="Attach premium-based exits at open: take-profit / stop-loss as multiples of the entry premium (e.g. sell at 2× the debit, or buy a short back at 50% of the credit). The direction you fire picks which row applies."
+        >
+          premium exit
+        </button>
+        {!on && (
+          <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+            off
+          </span>
+        )}
+      </div>
+      {on && (
+        <div className="flex flex-col gap-1 pl-0.5">
+          <MultPresetLine
+            label="long · buy"
+            tpValue={config.longTpMult}
+            tpPresets={[
+              { mult: 1.5, label: "1.5×" },
+              { mult: 2, label: "2×" },
+              { mult: 3, label: "3×" },
+            ]}
+            tpTitle={(m) =>
+              `Take profit: sell when the premium reaches ${m}× entry.`
+            }
+            slValue={config.longSlMult}
+            slPresets={[
+              { mult: 0.5, label: "0.5×" },
+              { mult: 0.25, label: "0.25×" },
+            ]}
+            slTitle={(m) => `Stop loss: cut when the premium falls to ${m}× entry.`}
+            onTp={(v) => onChange({ longTpMult: v })}
+            onSl={(v) => onChange({ longSlMult: v })}
+          />
+          <MultPresetLine
+            label="short · sell"
+            tpValue={config.shortTpMult}
+            tpPresets={[
+              { mult: 0.5, label: "50%" },
+              { mult: 0.25, label: "25%" },
+            ]}
+            tpTitle={(m) =>
+              `Take profit at ${Math.round((1 - m) * 100)}% of max profit: buy the short back at ${Math.round(m * 100)}% of the credit received.`
+            }
+            slValue={config.shortSlMult}
+            slPresets={[{ mult: 2, label: "2×" }]}
+            slTitle={(m) =>
+              `Stop loss: buy back when the mark reaches ${m}× the credit received.`
+            }
+            onTp={(v) => onChange({ shortTpMult: v })}
+            onSl={(v) => onChange({ shortSlMult: v })}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One direction's TP + SL preset chips + custom multiple inputs. */
+function MultPresetLine({
+  label,
+  tpValue,
+  tpPresets,
+  tpTitle,
+  slValue,
+  slPresets,
+  slTitle,
+  onTp,
+  onSl,
+}: {
+  label: string;
+  tpValue: number | null;
+  tpPresets: Array<{ mult: number; label: string }>;
+  tpTitle: (m: number) => string;
+  slValue: number | null;
+  slPresets: Array<{ mult: number; label: string }>;
+  slTitle: (m: number) => string;
+  onTp: (v: number | null) => void;
+  onSl: (v: number | null) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 10, width: 72 }}
+      >
+        {label}
+      </span>
+      <MultGroup
+        name="tp"
+        value={tpValue}
+        presets={tpPresets}
+        title={tpTitle}
+        onChange={onTp}
+      />
+      <MultGroup
+        name="sl"
+        value={slValue}
+        presets={slPresets}
+        title={slTitle}
+        onChange={onSl}
+      />
+    </div>
+  );
+}
+
+function MultGroup({
+  name,
+  value,
+  presets,
+  title,
+  onChange,
+}: {
+  name: string;
+  value: number | null;
+  presets: Array<{ mult: number; label: string }>;
+  title: (m: number) => string;
+  onChange: (v: number | null) => void;
+}) {
+  const isCustom =
+    value != null && !presets.some((p) => Math.abs(p.mult - value) < 1e-9);
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 10 }}
+      >
+        {name}
+      </span>
+      {presets.map((p) => {
+        const active = value != null && Math.abs(p.mult - value) < 1e-9;
+        return (
+          <button
+            key={p.mult}
+            type="button"
+            onClick={() => onChange(active ? null : p.mult)}
+            aria-pressed={active}
+            title={`${title(p.mult)} Click again to turn this exit off.`}
+            className={[
+              "tabular-nums tracking-label-up rounded-btn px-1.5 transition-colors duration-100 select-none",
+              active
+                ? "bg-tier-3 border border-amber text-amber"
+                : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+            ].join(" ")}
+            style={{ height: 20, fontSize: 10 }}
+          >
+            {p.label}
+          </button>
+        );
+      })}
+      <input
+        type="number"
+        inputMode="decimal"
+        min={0.05}
+        step={0.05}
+        value={isCustom ? value : ""}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value);
+          onChange(Number.isFinite(v) && v > 0 ? v : null);
+        }}
+        placeholder="×"
+        aria-label={`Custom ${name} premium multiple`}
+        title="Custom multiple of the entry premium (blank = off)."
+        className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1"
+        style={{ width: 44, height: 20, fontSize: 10 }}
+      />
+    </span>
   );
 }
 

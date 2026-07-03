@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  PREMIUM_EXIT_DEFAULTS,
   useTradeTicket,
   type TicketSelection,
 } from "@/stores/tradeTicket";
@@ -19,6 +20,7 @@ function reset() {
       stopPrice: null,
       trailAmount: null,
       timeInForce: "gtc",
+      premiumExit: PREMIUM_EXIT_DEFAULTS,
     },
     false,
   );
@@ -147,6 +149,42 @@ describe("tradeTicket store", () => {
       // clear() intentionally does NOT reset the quantity — the user's
       // chosen size carries to the next ticket.
       expect(s.contracts).toBe(5);
+    });
+  });
+
+  describe("premium exit config", () => {
+    it("is OFF by default with the documented preset mults remembered", () => {
+      const px = useTradeTicket.getState().premiumExit;
+      expect(px.enabled).toBe(false);
+      expect(px.longTpMult).toBe(2); // sell at 2× the debit
+      expect(px.longSlMult).toBe(0.5); // cut at half the debit
+      expect(px.shortTpMult).toBe(0.5); // buy back at 50% of credit = 50% max profit
+      expect(px.shortSlMult).toBe(2); // stop at 2× the credit
+    });
+
+    it("setPremiumExit merges a partial patch", () => {
+      const g = useTradeTicket.getState();
+      g.setPremiumExit({ enabled: true, longTpMult: 3 });
+      const px = useTradeTicket.getState().premiumExit;
+      expect(px.enabled).toBe(true);
+      expect(px.longTpMult).toBe(3);
+      // Untouched fields survive the patch.
+      expect(px.shortSlMult).toBe(2);
+    });
+
+    it("allows turning an individual exit off (null)", () => {
+      useTradeTicket.getState().setPremiumExit({ longSlMult: null });
+      expect(useTradeTicket.getState().premiumExit.longSlMult).toBeNull();
+    });
+
+    it("survives clear() — the last-used config carries to the next ticket", () => {
+      const g = useTradeTicket.getState();
+      g.setSelection(legSel);
+      g.setPremiumExit({ enabled: true, shortTpMult: 0.25 });
+      useTradeTicket.getState().clear();
+      const px = useTradeTicket.getState().premiumExit;
+      expect(px.enabled).toBe(true);
+      expect(px.shortTpMult).toBe(0.25);
     });
   });
 });

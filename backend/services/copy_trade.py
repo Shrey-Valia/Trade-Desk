@@ -30,6 +30,7 @@ from models.trade import Trade
 from models.user import User
 from schemas.journal import TradeLeg, compute_net_debit_credit
 from services.account_tiers import TIERS, resolve_dll_budget
+from services.combine_settlement import trading_day_start
 from services.combine_state import dll_used_today_for_combine
 from services.scaling_plan import max_contracts as scaling_max_contracts
 
@@ -62,7 +63,6 @@ def _day_locked(
     session: Session,
     combine: Combine,
     now: datetime,
-    dll_overrides: dict | None,
     owner: User | None = None,
 ) -> bool:
     # Gate copy trades on the SAME budget the direct open path enforces
@@ -71,13 +71,29 @@ def _day_locked(
     # raw tier default, so a follower who tightened their DLL kept receiving
     # mirrored trades past their configured floor (and a loosened one locked
     # early).
+    # Personal profit-target day-protect lock: a stamp within the current
+    # 5pm-PT trading day blocks mirrored opens exactly like any day-lock
+    # (mirrors combine_snapshot's profit_locked fold-in).
+    if (
+        combine.profit_locked_at is not None
+        and combine.profit_locked_at >= trading_day_start(now)
+    ):
+        return True
     # DLL-off toggle: a disabled DLL never day-locks — mirror combine_snapshot
     # (`day_locked = (not dll_disabled) and used >= budget`) so a follower whose
     # DLL is switched OFF keeps receiving mirrored trades (the MLL still binds).
     if owner is not None and not owner.dll_enabled_for(combine.tier):
         return False
     used = dll_used_today_for_combine(session, combine.id, now, combine.eval_reset_at)
-    budget = resolve_dll_budget(combine.tier, (dll_overrides or {}).get(combine.tier))
+    # Mode-aware blocking budget, mirroring combine_snapshot: only a
+    # "liquidate_block" override replaces the firm tier default as the
+    # day-lock budget; "alert"/"liquidate" overrides never block mirrors
+    # (they are monitor-side triggers).
+    entry = owner.dll_override_entries.get(combine.tier) if owner else None
+    override = (
+        entry["amount"] if entry is not None and entry["mode"] == "liquidate_block" else None
+    )
+    budget = resolve_dll_budget(combine.tier, override)
     return used >= budget
 
 
@@ -115,7 +131,7 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
         if cap < 1:
             result.skipped.append((f.id, "no contract allowance"))
             continue
-        if _day_locked(session, f, now, user.dll_overrides, owner=user):
+        if _day_locked(session, f, now, owner=user):
             result.skipped.append((f.id, "daily loss limit hit"))
             continue
 
@@ -176,6 +192,11 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             trail_amount=lead_trade.trail_amount,
             trail_pct=lead_trade.trail_pct,
             trail_hwm=None,
+            # Premium-denominated TP/SL copied VERBATIM: each follower copy
+            # carries the same multiples and self-closes via its own monitor
+            # pass (same mechanism as the mirrored stop_loss/take_profit).
+            tp_premium_mult=lead_trade.tp_premium_mult,
+            sl_premium_mult=lead_trade.sl_premium_mult,
             is_paper=True,
             notes=f"{lead_trade.notes or ''} · copied from {lead_combine.name}".strip(" ·"),
             tier=f.tier,

@@ -23,7 +23,7 @@ def test_get_dll_overrides_default_empty_before_any_combine(auth_client):
     """The Settings editor must work before a combine is purchased, so the
     GET returns empty defaults (no 404) for a fresh signup."""
     body = auth_client.get("/api/account/dll-overrides").json()
-    assert body == {"overrides": {}, "disabled": []}
+    assert body == {"overrides": {}, "disabled": [], "profit_target": None}
 
 
 def test_dll_overrides_isolated_per_user(auth_client, second_user_client):
@@ -34,4 +34,4 @@ def test_dll_overrides_isolated_per_user(auth_client, second_user_client):
     assert rival["overrides"] == {}
     # And the original user's value persisted (clamped into the 50K band).
     mine = auth_client.get("/api/account/dll-overrides").json()
-    assert mine["overrides"]["50K"] == 900
+    assert mine["overrides"]["50K"]["amount"] == 900

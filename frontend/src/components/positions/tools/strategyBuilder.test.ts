@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { presetLegs, strikeStep } from "./StrategyBuilder";
+import { netPremiumPerShare, presetLegs, strikeStep } from "./StrategyBuilder";
 
 describe("strikeStep", () => {
   it("returns the median gap of a strike grid", () => {
@@ -40,5 +40,51 @@ describe("presetLegs (WS5 builder presets)", () => {
     expect(body?.action).toBe("sell");
     expect(body?.ratio).toBe(2);
     expect(legs.filter((l) => l.action === "buy")).toHaveLength(2);
+  });
+});
+
+describe("netPremiumPerShare (premium-exit direction)", () => {
+  // Minimal priced grid — only strike/call_price/put_price matter here.
+  const rows = [
+    { strike: 95, call_price: 6.0, put_price: 0.5 },
+    { strike: 100, call_price: 2.0, put_price: 1.8 },
+    { strike: 105, call_price: 0.6, put_price: 4.9 },
+  ];
+
+  it("prices a debit vertical as net-positive (long semantics)", () => {
+    const net = netPremiumPerShare(rows, [
+      { side: "call", action: "buy", strike: 100, ratio: 1 },
+      { side: "call", action: "sell", strike: 105, ratio: 1 },
+    ]);
+    expect(net).toBeCloseTo(1.4, 10); // 2.0 − 0.6 → debit
+  });
+
+  it("prices an iron condor as net-negative (credit/short semantics)", () => {
+    const net = netPremiumPerShare(rows, [
+      { side: "put", action: "buy", strike: 95, ratio: 1 },
+      { side: "put", action: "sell", strike: 100, ratio: 1 },
+      { side: "call", action: "sell", strike: 100, ratio: 1 },
+      { side: "call", action: "buy", strike: 105, ratio: 1 },
+    ]);
+    expect(net).toBeCloseTo(0.5 - 1.8 - 2.0 + 0.6, 10);
+    expect(net!).toBeLessThan(0);
+  });
+
+  it("scales sold body legs by ratio (butterfly)", () => {
+    const net = netPremiumPerShare(rows, [
+      { side: "call", action: "buy", strike: 95, ratio: 1 },
+      { side: "call", action: "sell", strike: 100, ratio: 2 },
+      { side: "call", action: "buy", strike: 105, ratio: 1 },
+    ]);
+    expect(net).toBeCloseTo(6.0 - 4.0 + 0.6, 10);
+  });
+
+  it("returns null when a leg can't be priced off the grid — don't guess direction", () => {
+    expect(
+      netPremiumPerShare(rows, [
+        { side: "call", action: "buy", strike: 112.5, ratio: 1 },
+      ]),
+    ).toBeNull();
+    expect(netPremiumPerShare(rows, [])).toBeNull();
   });
 });

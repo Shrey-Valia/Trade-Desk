@@ -15,6 +15,7 @@ Combine switching lives in POST /api/combines/{id}/activate.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,9 +25,10 @@ from sqlalchemy.orm import Session
 
 from database import get_session
 from models.combine import Combine
-from models.user import User
+from models.user import DLL_MODE_STRENGTH, User
 from services.account_tiers import ALL_TIERS, TIERS, resolve_dll_budget
 from services.auth import get_current_user
+from services.combine_settlement import trading_day_start
 from services.combine_state import combine_snapshot
 
 router = APIRouter(prefix="/api/account", tags=["account"])
@@ -217,9 +219,43 @@ def get_account_state(
     )
 
 
+class DllOverrideEntryIn(BaseModel):
+    """One structured personal DLL override: dollar amount + enforcement mode.
+    Modes (TopstepX signature): "alert" = event only; "liquidate" = flatten
+    the open book but keep trading allowed; "liquidate_block" = flatten +
+    day-lock until the 5pm-PT reset (the historical behavior)."""
+
+    amount: float = Field(gt=0)
+    mode: Literal["alert", "liquidate", "liquidate_block"] = "liquidate_block"
+
+
+class DllOverrideEntryOut(BaseModel):
+    amount: float
+    mode: Literal["alert", "liquidate", "liquidate_block"]
+    # When this override was last set/changed (ISO-8601 UTC). None for legacy
+    # rows written before modes existed. Drives the same-day tighten-only
+    # lock-in on liquidate_block overrides.
+    set_at: str | None = None
+
+
+class ProfitTargetSpec(BaseModel):
+    """Personal daily profit target ('protect the green day'). At +amount of
+    day P&L (realized + open URPL — same basis as the DLL check), lock=true
+    flattens the book and day-locks until the 5pm-PT reset; lock=false only
+    records a once-per-day combine event."""
+
+    amount: float = Field(gt=0)
+    lock: bool = False
+
+
 class DllOverridesOut(BaseModel):
-    overrides: dict[str, float] = Field(
-        default_factory=dict, description="User's per-tier DLL overrides (dollars)."
+    overrides: dict[str, DllOverrideEntryOut] = Field(
+        default_factory=dict,
+        description=(
+            "User's per-tier personal DLL overrides: {amount (dollars), mode,"
+            " set_at}. Legacy bare-float rows read back as mode"
+            " 'liquidate_block'."
+        ),
     )
     disabled: list[str] = Field(
         default_factory=list,
@@ -228,22 +264,44 @@ class DllOverridesOut(BaseModel):
             " toggle). The MLL floor still binds for these tiers."
         ),
     )
+    profit_target: ProfitTargetSpec | None = Field(
+        default=None,
+        description="Personal daily profit target (per-user). null when unset.",
+    )
 
 
 class DllOverridesIn(BaseModel):
-    overrides: dict[str, float]
+    # Values may be a bare number (legacy compat → mode "liquidate_block") or
+    # a structured {amount, mode} entry.
+    overrides: dict[str, float | DllOverrideEntryIn]
     # Tier keys to switch the DLL OFF for. Omitted (None) leaves the existing
     # disabled set untouched, so a pure amount-edit doesn't clear it.
     disabled: list[str] | None = None
+    # Personal daily profit target. OMITTED → left untouched; explicit null →
+    # cleared; {amount, lock} → set. (Distinguished via model_fields_set.)
+    profit_target: ProfitTargetSpec | None = None
+
+
+def _overrides_out(user: User) -> DllOverridesOut:
+    pt = user.profit_target
+    return DllOverridesOut(
+        overrides={
+            k: DllOverrideEntryOut(amount=v["amount"], mode=v["mode"], set_at=v.get("set_at"))
+            for k, v in user.dll_override_entries.items()
+        },
+        disabled=user.dll_disabled,
+        profit_target=ProfitTargetSpec(**pt) if pt else None,
+    )
 
 
 @router.get("/dll-overrides", response_model=DllOverridesOut)
 def get_dll_overrides(
     user: User = Depends(get_current_user),
 ) -> DllOverridesOut:
-    """The user's per-tier DLL overrides + disable flags (available with zero
-    combines, so the Settings editor works before any account is purchased)."""
-    return DllOverridesOut(overrides=user.dll_overrides, disabled=user.dll_disabled)
+    """The user's per-tier DLL overrides (+ enforcement modes), disable flags,
+    and personal daily profit target (available with zero combines, so the
+    Settings editor works before any account is purchased)."""
+    return _overrides_out(user)
 
 
 @router.put("/dll-overrides", response_model=DllOverridesOut)
@@ -252,25 +310,97 @@ def set_dll_overrides(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> DllOverridesOut:
-    """Set per-tier DLL overrides + the DLL-off disable flags. Override values
-    are clamped to the 1-10%-of-starting-balance band; unknown tiers are
-    rejected. Both are ENFORCED server-side (combine_state resolves the budget
-    + suppresses the day-lock for disabled tiers; the auto-liquidation gate
-    skips the DLL branch for them too)."""
-    cleaned: dict[str, float] = {}
-    for tier_key, amount in payload.overrides.items():
+    """Set per-tier personal DLL overrides (+ enforcement mode), the DLL-off
+    disable flags, and the personal daily profit target.
+
+    Override values: a bare number (legacy shape) maps to mode
+    "liquidate_block"; structured values carry {amount, mode}. Amounts are
+    clamped to the 1-10%-of-starting-balance band; unknown tiers → 422. All
+    of it is ENFORCED server-side (combine_state resolves the blocking budget
+    mode-aware; order_monitor drives the alert/liquidate triggers and the
+    profit-target flatten).
+
+    SAME-DAY TIGHTEN-ONLY LOCK-IN (Topstep rule — the simple, honest
+    version): once a "liquidate_block" override exists for a tier (stamped
+    with set_at when written), it cannot be RAISED, REMOVED, or WEAKENED
+    (mode strength: liquidate_block > liquidate > alert) — nor can that
+    tier's DLL be switched OFF — until the next 5pm-PT trading-day boundary.
+    Tightening (lowering the amount) is always allowed and re-stamps the
+    lock. liquidate_block overrides stamped on a PRIOR trading day (and
+    legacy unstamped rows) are freely editable. Violations → 409.
+
+    profit_target: omitted → untouched; explicit null → cleared;
+    {amount, lock} → set."""
+    now = datetime.now(timezone.utc)
+    day_start = trading_day_start(now)
+    existing = user.dll_override_entries
+
+    cleaned: dict[str, dict] = {}
+    for tier_key, value in payload.overrides.items():
         if tier_key not in TIERS:
             raise HTTPException(422, f"unknown tier {tier_key}")
-        cleaned[tier_key] = resolve_dll_budget(tier_key, amount)  # type: ignore[arg-type]
-    user.dll_overrides = cleaned
+        if isinstance(value, DllOverrideEntryIn):
+            amount, mode = float(value.amount), value.mode
+        else:  # bare number — legacy compat, maps to today's behavior
+            amount, mode = float(value), "liquidate_block"
+        cleaned[tier_key] = {
+            "amount": resolve_dll_budget(tier_key, amount),  # type: ignore[arg-type]
+            "mode": mode,
+        }
+
     if payload.disabled is not None:
         for tier_key in payload.disabled:
             if tier_key not in TIERS:
                 raise HTTPException(422, f"unknown tier {tier_key}")
+
+    # Same-day tighten-only lock-in on existing liquidate_block overrides.
+    for tier_key, old in existing.items():
+        if old["mode"] != "liquidate_block" or not old.get("set_at"):
+            continue
+        try:
+            stamped = datetime.fromisoformat(old["set_at"])
+        except ValueError:
+            continue
+        if stamped.tzinfo is None:
+            stamped = stamped.replace(tzinfo=timezone.utc)
+        if stamped < day_start:
+            continue  # set on a prior trading day — freely editable
+        locked_msg = (
+            f"{tier_key} daily loss limit is locked in for today — it can only"
+            " be tightened until the next 5pm-PT reset"
+        )
+        new = cleaned.get(tier_key)
+        if new is None:
+            raise HTTPException(409, f"{locked_msg} (it cannot be removed).")
+        if DLL_MODE_STRENGTH[new["mode"]] < DLL_MODE_STRENGTH["liquidate_block"]:
+            raise HTTPException(409, f"{locked_msg} (its mode cannot be weakened).")
+        if new["amount"] > old["amount"] + 1e-9:
+            raise HTTPException(409, f"{locked_msg} (the amount cannot be raised).")
+        disabled_next = payload.disabled if payload.disabled is not None else user.dll_disabled
+        if tier_key in disabled_next:
+            raise HTTPException(409, f"{locked_msg} (the DLL cannot be switched off).")
+
+    # Stamp set_at: preserved when an entry is unchanged, refreshed otherwise
+    # (so a fresh liquidate_block override locks in for the rest of the day).
+    for tier_key, new in cleaned.items():
+        old = existing.get(tier_key)
+        if old is not None and old["amount"] == new["amount"] and old["mode"] == new["mode"]:
+            new["set_at"] = old.get("set_at")
+        else:
+            new["set_at"] = now.isoformat()
+
+    user.dll_override_entries = cleaned
+    if payload.disabled is not None:
         user.dll_disabled = list(payload.disabled)
+    if "profit_target" in payload.model_fields_set:
+        user.profit_target = (
+            None
+            if payload.profit_target is None
+            else {"amount": payload.profit_target.amount, "lock": payload.profit_target.lock}
+        )
     session.add(user)
     session.commit()
-    return DllOverridesOut(overrides=cleaned, disabled=user.dll_disabled)
+    return _overrides_out(user)
 
 
 def _active_combine_or_404(session: Session, user: User) -> Combine:

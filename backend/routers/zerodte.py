@@ -443,6 +443,29 @@ class OpenRequest(BaseModel):
     # optional here.
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
+    # Premium-denominated TP/SL (Tastytrade "manage winners") — see
+    # _validate_premium_mults for the direction-dependent bands.
+    tp_premium_mult: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Take-profit multiple of |net entry premium|. NET-DEBIT (buy):"
+            " close when the mark reaches entry × mult (must be > 1)."
+            " NET-CREDIT (sell) the semantics INVERT: the FRACTION of the"
+            " collected credit to buy back at (0 < mult < 1; 0.5 = close at"
+            " 50% of max profit)."
+        ),
+    )
+    sl_premium_mult: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Stop-loss multiple of |net entry premium|. NET-DEBIT (buy):"
+            " close when the mark decays to entry × mult (0 < mult < 1)."
+            " NET-CREDIT (sell): the cut multiple of the credit (must be"
+            " > 1; 2.0 = stop when the mark reaches 2× the credit)."
+        ),
+    )
 
 
 class OpenLegRequest(BaseModel):
@@ -486,6 +509,29 @@ class OpenLegRequest(BaseModel):
     # "day" is cancelled by the monitor if it survives unfilled into a later
     # session. Ignored for market orders. Defaults to "gtc".
     time_in_force: Literal["day", "gtc"] = "gtc"
+    # Premium-denominated TP/SL (Tastytrade "manage winners") — see
+    # _validate_premium_mults for the direction-dependent bands.
+    tp_premium_mult: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Take-profit multiple of |net entry premium|. NET-DEBIT (buy):"
+            " close when the mark reaches entry × mult (must be > 1)."
+            " NET-CREDIT (sell) the semantics INVERT: the FRACTION of the"
+            " collected credit to buy back at (0 < mult < 1; 0.5 = close at"
+            " 50% of max profit)."
+        ),
+    )
+    sl_premium_mult: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Stop-loss multiple of |net entry premium|. NET-DEBIT (buy):"
+            " close when the mark decays to entry × mult (0 < mult < 1)."
+            " NET-CREDIT (sell): the cut multiple of the credit (must be"
+            " > 1; 2.0 = stop when the mark reaches 2× the credit)."
+        ),
+    )
 
 
 # Per-contract size-impact slippage: each contract above the first nudges the
@@ -673,6 +719,14 @@ def _require_tradeable(
             detail="Combine FAILED — the MLL floor was breached. Reset the evaluation to trade again.",
         )
     if snap.day_locked:
+        if getattr(snap, "profit_locked", False):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Profit target reached — day protected. No further trading"
+                    " today; the lock lifts at the 5pm-PT settlement."
+                ),
+            )
         raise HTTPException(
             status_code=403,
             detail="Daily loss limit hit — no further trading today. The day-lock lifts at the 5pm-PT settlement.",
@@ -742,6 +796,48 @@ def _validate_brackets(
             )
 
 
+def _validate_premium_mults(
+    is_credit: bool, tp: float | None, sl: float | None
+) -> None:
+    """Direction-aware sanity check on the premium TP/SL multiples (400s).
+
+    NET-DEBIT (long premium): tp > 1 (profit = premium expands) and
+    0 < sl < 1 (stop = premium decays). NET-CREDIT (short premium) the
+    semantics INVERT: tp is the fraction of the credit to buy back at
+    (0 < tp < 1, e.g. 0.5 = close at 50% of max profit) and sl is the cut
+    multiple (sl > 1, e.g. 2.0 = stop at 2× the credit)."""
+    if tp is None and sl is None:
+        return
+    if is_credit:
+        if tp is not None and not (0.0 < tp < 1.0):
+            raise HTTPException(
+                400,
+                "tp_premium_mult must be between 0 and 1 for a net-credit"
+                " position — the fraction of the collected credit to buy back"
+                " at (e.g. 0.5 = close at 50% of max profit).",
+            )
+        if sl is not None and sl <= 1.0:
+            raise HTTPException(
+                400,
+                "sl_premium_mult must be > 1 for a net-credit position — the"
+                " multiple of the credit to cut at (e.g. 2.0).",
+            )
+    else:
+        if tp is not None and tp <= 1.0:
+            raise HTTPException(
+                400,
+                "tp_premium_mult must be > 1 for a net-debit position — the"
+                " multiple of the entry premium to take profit at (e.g. 2.0).",
+            )
+        if sl is not None and not (0.0 < sl < 1.0):
+            raise HTTPException(
+                400,
+                "sl_premium_mult must be between 0 and 1 for a net-debit"
+                " position — the fraction of the entry premium to stop at"
+                " (e.g. 0.5).",
+            )
+
+
 def _require_today_expiry(target_expiry: date) -> None:
     """0DTE-only rule: the contract must expire TODAY. Earlier the chain
     fallback picked the nearest future expiry when 0DTE wasn't listed;
@@ -773,6 +869,11 @@ def open_zerodte_straddle(
     Strict 0DTE — refuses to open if today's expiry isn't listed.
     Refuses to open if the NYSE session is not OPEN."""
     _require_market_open()
+    # buy = net debit, sell = net credit — validate the premium TP/SL bands
+    # per direction before any pricing work.
+    _validate_premium_mults(
+        payload.action == "sell", payload.tp_premium_mult, payload.sl_premium_mult
+    )
     # A straddle is TWO legs, so it consumes 2× the per-leg size against the
     # total-contract cap. Gate and clamp on that effective total, then back out
     # the per-leg size. (Defense-in-depth: _require_tradeable already 422s an
@@ -827,6 +928,8 @@ def open_zerodte_straddle(
         status="open",
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
+        tp_premium_mult=payload.tp_premium_mult,
+        sl_premium_mult=payload.sl_premium_mult,
         is_paper=True,
         notes=notes,
         tier=combine.tier,
@@ -860,6 +963,11 @@ def open_zerodte_leg(
     Strict 0DTE: today's expiry must be listed for `symbol`. Refuses to
     open if the NYSE session is not OPEN."""
     _require_market_open()
+    # buy = net debit, sell = net credit — validate the premium TP/SL bands
+    # per direction before any pricing work.
+    _validate_premium_mults(
+        payload.action == "sell", payload.tp_premium_mult, payload.sl_premium_mult
+    )
     _require_tradeable(session, combine, contracts=payload.contracts)
     # WS5: defense-in-depth — clamp the persisted size to the scaling cap.
     contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
@@ -952,6 +1060,8 @@ def open_zerodte_leg(
         time_in_force=payload.time_in_force if is_working else "gtc",
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
+        tp_premium_mult=payload.tp_premium_mult,
+        sl_premium_mult=payload.sl_premium_mult,
         is_paper=True,
         notes=notes,
         tier=combine.tier,
@@ -1007,6 +1117,30 @@ class OpenMultiLegRequest(BaseModel):
     strategy: str | None = Field(default=None, max_length=32)
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
+    # Premium-denominated TP/SL. Direction is derived from the PRICED net
+    # entry premium (net debit vs net credit), so the bands are validated
+    # after the legs are priced — see _validate_premium_mults.
+    tp_premium_mult: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Take-profit multiple of |net entry premium|. NET-DEBIT"
+            " structure: close when the mark reaches entry × mult (must be"
+            " > 1). NET-CREDIT structure the semantics INVERT: the FRACTION"
+            " of the collected credit to buy back at (0 < mult < 1; 0.5 ="
+            " close at 50% of max profit)."
+        ),
+    )
+    sl_premium_mult: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Stop-loss multiple of |net entry premium|. NET-DEBIT structure:"
+            " close when the mark decays to entry × mult (0 < mult < 1)."
+            " NET-CREDIT structure: the cut multiple of the credit (must be"
+            " > 1; 2.0 = stop when the mark reaches 2× the credit)."
+        ),
+    )
 
 
 def _resolve_same_day_quotes(symbol: str) -> tuple[str, float, date, dict]:
@@ -1095,6 +1229,20 @@ def open_zerodte_multi_leg(
     typed_legs = [TradeLeg(**leg) for leg in legs_json]
     net = compute_net_debit_credit(typed_legs)
 
+    # Premium TP/SL direction comes from the PRICED net entry premium:
+    # net > 0 → debit (long premium), net < 0 → credit (short premium). A
+    # zero-net structure has no premium scale to multiply — reject the mults.
+    if payload.tp_premium_mult is not None or payload.sl_premium_mult is not None:
+        if net == 0:
+            raise HTTPException(
+                400,
+                "Premium TP/SL requires a non-zero net entry premium — this"
+                " structure priced at exactly zero net.",
+            )
+        _validate_premium_mults(
+            net < 0, payload.tp_premium_mult, payload.sl_premium_mult
+        )
+
     strategy = (payload.strategy or "custom").strip().lower() or "custom"
     notes = f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · indicative fill"
 
@@ -1107,6 +1255,8 @@ def open_zerodte_multi_leg(
         status="open",
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
+        tp_premium_mult=payload.tp_premium_mult,
+        sl_premium_mult=payload.sl_premium_mult,
         is_paper=True,
         notes=notes,
         tier=combine.tier,
@@ -1150,6 +1300,8 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         oco_group=trade.oco_group,
         stop_loss=trade.stop_loss,
         take_profit=trade.take_profit,
+        tp_premium_mult=trade.tp_premium_mult,
+        sl_premium_mult=trade.sl_premium_mult,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,

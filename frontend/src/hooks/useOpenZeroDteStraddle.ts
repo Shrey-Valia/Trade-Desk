@@ -21,11 +21,20 @@ export function useOpenZeroDteStraddle() {
       symbol,
       action = "buy",
       contracts,
+      tp_premium_mult,
+      sl_premium_mult,
     }: {
       symbol: string;
       action?: "buy" | "sell";
       contracts?: number;
-    }) => openZeroDteStraddle(symbol, action, contracts ?? 1),
+      /** Optional premium-exit multiples of the entry premium. */
+      tp_premium_mult?: number | null;
+      sl_premium_mult?: number | null;
+    }) =>
+      openZeroDteStraddle(symbol, action, contracts ?? 1, {
+        tp_premium_mult: tp_premium_mult ?? null,
+        sl_premium_mult: sl_premium_mult ?? null,
+      }),
     onSuccess: (trade) => {
       // useTrades keys queries as ["journal","trades",filters]. An
       // invalidation key of ["trades"] silently no-matches (wrong prefix)
