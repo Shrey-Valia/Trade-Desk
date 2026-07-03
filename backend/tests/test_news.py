@@ -23,7 +23,8 @@ def _clean(monkeypatch):
     ac.cache._store.clear()  # type: ignore[attr-defined]
     reset_breakers()
     # Never sleep on the token bucket in tests.
-    monkeypatch.setattr(ac._alpaca_bucket, "take", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ac._interactive_bucket, "take", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ac._background_bucket, "take", lambda *a, **k: 0.0)
     yield
     ac.cache._store.clear()  # type: ignore[attr-defined]
     reset_breakers()

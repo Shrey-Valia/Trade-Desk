@@ -128,6 +128,14 @@ class ChainStrikeRow(BaseModel):
     put_price: float
     put_source: Literal["quote", "bs"]
     put_open_interest: int | None = None
+    # Raw two-sided quote + today's per-contract volume, straight off the
+    # chain snapshot. None when the feed has no quote/volume for the side.
+    call_bid: float | None = None
+    call_ask: float | None = None
+    call_volume: int | None = None
+    put_bid: float | None = None
+    put_ask: float | None = None
+    put_volume: int | None = None
     is_atm: bool = False
     # Per-share greeks (display-only, at-a-glance on the chain). Computed
     # from the EXISTING bs_greeks engine at the ATM-implied IV — same
@@ -149,6 +157,10 @@ class ChainTableOut(BaseModel):
     rows: list[ChainStrikeRow]
     t_years_to_close: float
     session_close_iso: str
+    # Freshest observation timestamp behind this snapshot (ISO-8601) — the
+    # max of the underlying quote's trade stamp and the contracts' last-trade
+    # stamps. None when the feed omits timestamps entirely.
+    as_of: str | None = None
     indicative: bool = True
     notice: str = "Paper · indicative pricing (approximate)"
 
@@ -270,9 +282,11 @@ def get_chain_table(
 
     Performance: the underlying chain snapshot is already cached 5min
     in alpaca_client; the windowing + BS fallback here is O(strikes)
-    so the endpoint adds ~1ms on a warm cache."""
+    so the endpoint adds ~1ms on a warm cache. `with_volume=True` so the
+    per-strike volume columns carry real data — the ticker page fetches
+    the same cache key, so the expensive bars pass is typically warm."""
     sym = symbol.upper().strip()
-    chain = get_chain_snapshot(sym, with_volume=False)
+    chain = get_chain_snapshot(sym, with_volume=True)
     if not chain:
         raise HTTPException(503, f"{sym} options chain unavailable")
     quote = get_quotes([sym]).get(sym)
@@ -370,6 +384,12 @@ def get_chain_table(
                 put_price=round(float(put_px), 4),
                 put_source=put_source,
                 put_open_interest=getattr(put, "open_interest", None) if put else None,
+                call_bid=getattr(call, "bid", None) if call else None,
+                call_ask=getattr(call, "ask", None) if call else None,
+                call_volume=getattr(call, "volume", None) if call else None,
+                put_bid=getattr(put, "bid", None) if put else None,
+                put_ask=getattr(put, "ask", None) if put else None,
+                put_volume=getattr(put, "volume", None) if put else None,
                 is_atm=(k == atm),
                 call_delta=round(cg["delta"], 4),
                 call_theta=round(cg["theta"], 4),
@@ -388,7 +408,23 @@ def get_chain_table(
         rows=rows,
         t_years_to_close=t_close,
         session_close_iso=_session_close_et().isoformat(),
+        as_of=_chain_as_of(quote, same_day),
     )
+
+
+def _chain_as_of(quote, contract_rows) -> str | None:
+    """Freshest observation timestamp behind a chain payload — the underlying
+    quote's trade stamp and each contract's last-trade stamp, max'd (naive
+    stamps assumed UTC). None when the feed omits timestamps entirely, so the
+    client can render an explicit 'age unknown' instead of a fake freshness."""
+    stamps = [getattr(quote, "as_of", None)]
+    stamps.extend(getattr(r, "as_of", None) for r in contract_rows)
+    aware = [
+        s.replace(tzinfo=UTC) if s.tzinfo is None else s
+        for s in stamps
+        if s is not None
+    ]
+    return max(aware).isoformat() if aware else None
 
 
 # ---------------------------------------------------------------------------
@@ -413,19 +449,23 @@ class OpenLegRequest(BaseModel):
     """Click-to-open from the chain table: a single call/put leg at the
     given strike, expiring today. `action` is buy (long) or sell (short).
 
-    order_type="market" (default) fills immediately at `entry_price` (what
-    the UI showed at click time). order_type="limit"/"stop" places a WORKING
+    order_type="market" (default) fills immediately at the SERVER-priced
+    live chain quote (mid + deterministic slippage — the same machinery the
+    straddle path uses); `entry_price` is DISPLAY-ONLY and ignored (kept for
+    API compat — trusting the click-time price let a trader book a stale
+    premium as instant edge). order_type="limit"/"stop" places a WORKING
     order — `limit_price` is the OPTION-premium trigger the monitor fills
-    against; `entry_price` is ignored. order_type="stop_limit" ARMS at
-    `stop_price` (mark crosses it) then RESTS as a limit at `limit_price`.
-    Optional stop_loss/take_profit are UNDERLYING price levels (the draggable
-    chart brackets)."""
+    against. order_type="stop_limit" ARMS at `stop_price` (mark crosses it)
+    then RESTS as a limit at `limit_price`. Optional stop_loss/take_profit
+    are UNDERLYING price levels (the draggable chart brackets)."""
 
     symbol: str = Field(min_length=1, max_length=16)
     side: Literal["call", "put"]
     action: Literal["buy", "sell"] = "buy"
     strike: float = Field(gt=0)
-    entry_price: float = Field(ge=0)
+    # DEPRECATED / IGNORED — market fills are priced server-side (see class
+    # docstring). Retained so older clients still validate.
+    entry_price: float = Field(ge=0, default=0.0)
     contracts: int = Field(gt=0, le=100, default=1)
     order_type: Literal["market", "limit", "stop", "stop_limit"] = "market"
     limit_price: float | None = Field(default=None, gt=0)
@@ -637,6 +677,15 @@ def _require_tradeable(
             status_code=403,
             detail="Daily loss limit hit — no further trading today. The day-lock lifts at the 5pm-PT settlement.",
         )
+    # Realized-balance MLL gate, no open book required. A funded (passed)
+    # account keeps its recorded outcome, so a realized balance already
+    # at/through the MLL floor never flips snap.outcome to "failed" — without
+    # this it could re-open a fresh position every tick with the floor gone.
+    if snap.balance <= snap.mll:
+        raise HTTPException(
+            status_code=403,
+            detail="Balance is at/through the MLL floor — the account cannot open new positions.",
+        )
     # Mark-to-market gate: the realized-only snapshot above can read "tradeable"
     # while the LIVE balance (incl. open-position URPL) is already through the
     # MLL floor or has exhausted today's DLL budget. The ~20s monitor would
@@ -814,27 +863,10 @@ def open_zerodte_leg(
     _require_tradeable(session, combine, contracts=payload.contracts)
     # WS5: defense-in-depth — clamp the persisted size to the scaling cap.
     contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
-    sym = payload.symbol.upper().strip()
-    chain = get_chain_snapshot(sym, with_volume=False)
-    if not chain:
-        raise HTTPException(503, f"{sym} options chain unavailable")
-    today = datetime.now(_ET).date()
-    same_day = [c for c in chain if c.expiry == today]
-    if not same_day:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"0DTE-only: {sym} has no contracts expiring today "
-                f"({today.isoformat()})."
-            ),
-        )
-    target_expiry = today
+    sym, spot, target_expiry, by_key = _resolve_same_day_quotes(payload.symbol)
 
-    quote = get_quotes([sym]).get(sym)
-    if quote is None:
-        raise HTTPException(503, f"{sym} quote unavailable")
-    spot = float(quote.price)
-
+    action = payload.action
+    side = payload.side
     is_working = payload.order_type in ("limit", "stop", "stop_limit")
     if is_working:
         if payload.limit_price is None or payload.limit_price <= 0:
@@ -847,14 +879,33 @@ def open_zerodte_leg(
         # fill premium when the option mark crosses the trigger.
         fill_ref = round(float(payload.limit_price), 4)
     else:
-        if payload.entry_price <= 0:
-            raise HTTPException(400, "entry_price must be > 0")
-        fill_ref = round(float(payload.entry_price), 4)
+        # SERVER-SIDE market pricing off the LIVE chain quote, through the
+        # same slippage machinery as the straddle/multi-leg paths. The
+        # client-sent entry_price is display-only: trusting it let a trader
+        # select at one premium, wait for the market to move, and book the
+        # stale click-time price as instant edge.
+        contract_row = by_key.get((round(float(payload.strike), 2), side))
+        if contract_row is None:
+            raise HTTPException(
+                422, f"No {side} at strike {payload.strike:g} for {sym} 0DTE today."
+            )
+        q = _LegQuote(
+            symbol=f"{sym} {side}",
+            strike=payload.strike,
+            side=side,
+            bid=getattr(contract_row, "bid", None),
+            ask=getattr(contract_row, "ask", None),
+            last=getattr(contract_row, "last", None),
+        )
+        fill_px = _pick_fill_price(q, action, contracts)
+        if fill_px == 0:
+            raise HTTPException(
+                503, f"{sym} indicative quote unavailable at {side} {payload.strike:g}"
+            )
+        fill_ref = round(float(fill_px), 4)
 
     _validate_brackets(spot, payload.stop_loss, payload.take_profit)
 
-    action = payload.action
-    side = payload.side
     if action == "buy":
         strategy = "long_call" if side == "call" else "long_put"
         notes = f"0DTE long {side} · indicative fill"
@@ -1281,7 +1332,11 @@ def _close_one(session: Session, trade: Trade, spot: float, now: datetime, reaso
     trade.close_reason = reason
     trade.exit_date = now
     trade.exit_underlying_price = spot
-    trade.realized_pnl = realized
+    # ACCUMULATE onto any realized already booked by prior scale-outs — the
+    # recompute above covers only the REMAINING contracts, exactly like the
+    # monitor's _book_close. A bare assignment here wiped every booked
+    # scale-out slice on a flatten/reverse.
+    trade.realized_pnl = round((trade.realized_pnl or 0.0) + realized, 2)
     session.flush()
     mirror_close(session, trade)
     return realized

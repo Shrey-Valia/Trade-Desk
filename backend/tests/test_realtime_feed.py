@@ -43,7 +43,8 @@ def _clean(monkeypatch):
     reset_breakers()
     set_realtime_feed(None)
     # Never sleep on the shared token bucket in tests.
-    monkeypatch.setattr(ac._alpaca_bucket, "take", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ac._interactive_bucket, "take", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ac._background_bucket, "take", lambda *a, **k: 0.0)
     # Flag defaults OFF; cases that need it on flip it explicitly. The feed
     # reads `config.settings.realtime_feed_enabled` at call time (lazy import),
     # so patch the shared settings object itself.

@@ -269,16 +269,38 @@ def update_trade(
 ) -> TradeOut:
     trade = _owned_trade(session, user, trade_id)
 
-    # A trade transitioning INTO closed this request books realized P&L. We
-    # detect the transition (was-not-closed → status='closed') so editing an
-    # already-closed trade's notes/tags doesn't re-book it.
-    closing_now = payload.status == "closed" and trade.status != "closed"
+    # STATUS WHITELIST: open → closed is the ONLY transition this endpoint
+    # performs (a same-status no-op is tolerated for idempotent clients).
+    # Everything else rewrites the combine ledger: closed → open/cancelled
+    # erases a booked loss from the DLL/MLL window, working → open self-fills
+    # at the placeholder entry_price, working → closed books P&L on an order
+    # that never filled. Working orders are pulled via the dedicated /cancel
+    # endpoint (which cascades to follower copies); fills belong to the order
+    # monitor; a decided trade (closed/cancelled) accepts metadata-only edits.
+    closing_now = payload.status == "closed" and trade.status == "open"
+    if (
+        payload.status is not None
+        and payload.status != trade.status
+        and not closing_now
+    ):
+        if trade.status == "working" and payload.status == "cancelled":
+            raise HTTPException(
+                409,
+                "working orders are cancelled via POST /api/journal/trades/{id}/cancel",
+            )
+        raise HTTPException(
+            409,
+            f"illegal status transition {trade.status} → {payload.status} — "
+            "this endpoint only closes an open position",
+        )
 
     if payload.status is not None:
         trade.status = payload.status
-    if payload.exit_date is not None:
+    # Exit fields are part of the CLOSE transition only — a decided trade's
+    # settlement record can't be rewritten after the fact.
+    if closing_now and payload.exit_date is not None:
         trade.exit_date = _as_utc(payload.exit_date)
-    if payload.exit_underlying_price is not None:
+    if closing_now and payload.exit_underlying_price is not None:
         trade.exit_underlying_price = payload.exit_underlying_price
     # INTEGRITY: `payload.realized_pnl` is DEPRECATED + IGNORED. On a close we
     # RECOMPUTE realized server-side from the live mark (recompute unrealized,
@@ -306,7 +328,9 @@ def update_trade(
     session.commit()
     session.refresh(trade)
     # Copy trading: a lead close cascades to its follower copies (best-effort).
-    if trade.status == "closed":
+    # Only on the actual transition — a metadata edit to an already-closed
+    # trade must not re-run the cascade.
+    if closing_now:
         mirror_close(session, trade)
     return _to_out(trade)
 

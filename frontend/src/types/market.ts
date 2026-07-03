@@ -5,12 +5,20 @@ export const MarketStatusSchema = z.object({
   label: z.string(),
   next_open: z.string().nullable(),
   next_close: z.string().nullable(),
+  // Early-close surfacing (half days). nullable().optional() so the UI works
+  // both before and after the backend starts sending them.
+  today_close: z.string().nullable().optional(),
+  is_early_close: z.boolean().nullable().optional(),
 });
 
 const IndexQuoteSchema = z.object({
   symbol: z.string(),
   price: z.number(),
   change_pct: z.number(),
+  // True when the value is a prior-session close (VIX comes from FRED's
+  // end-of-day series) — the UI labels it instead of faking a live delta.
+  prev_close_only: z.boolean().nullable().optional(),
+  as_of: z.string().nullable().optional(),
 });
 
 export const IndicesResponseSchema = z.object({

@@ -3,8 +3,10 @@ import { Link } from "react-router-dom";
 
 import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
 import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
+import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useAccountState } from "@/hooks/useAccountState";
+import { useCombines } from "@/hooks/useCombines";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import { downloadCsv, tradesToCsv } from "@/lib/exportCsv";
@@ -22,24 +24,37 @@ import { STRATEGY_LABELS } from "@/types/journal";
 
 type PaperFilter = "all" | "paper" | "live";
 type Range = "Today" | "Week" | "Month" | "All";
+type AccountScope = "active" | "all";
 
 /**
  * Trade Desk analytics — the understanding surface.
  *
  * Restyled to the design kit (ui_kits/analytics): a metric hero, a
  * prominent equity curve, and performance breakdowns. The header carries
- * a Today/Week/Month/All range, the active combine tier, and a paper/live
- * filter. All numbers come from /api/analytics — the page only composes
- * filters and presents the result. The active tier's MLL trail is passed
- * through so the risk panel can flag days that ran near the limit.
+ * a Today/Week/Month/All range, the combine switcher + account scope, and
+ * a paper/live filter. All numbers come from /api/analytics — the page only
+ * composes filters and presents the result.
+ *
+ * Account scoping: defaults to the ACTIVE combine so the numbers match the
+ * account the header names; the ALL toggle opts into the cross-account
+ * aggregate. The MLL trail is only passed when scoped to one account —
+ * grading pooled losses against a single tier's trail would be nonsense.
  */
 export function AnalyticsPage() {
   const [paperFilter, setPaperFilter] = useState<PaperFilter>("all");
   const [range, setRange] = useState<Range>("All");
+  const [accountScope, setAccountScope] = useState<AccountScope>("active");
 
   const account = useAccountState();
-  const tier = account.data?.active_tier ?? null;
-  const trail = account.data?.tiers.find((t) => t.key === tier)?.trailing_distance ?? null;
+  const { data: combinesData } = useCombines();
+  const activeCombineId = combinesData?.active_combine_id ?? null;
+  const scopedToActive = accountScope === "active";
+  const combineId = scopedToActive ? activeCombineId : null;
+
+  const tier = scopedToActive ? (account.data?.active_tier ?? null) : null;
+  const trail = scopedToActive
+    ? (account.data?.tiers.find((t) => t.key === tier)?.trailing_distance ?? null)
+    : null;
 
   const filters = useMemo(() => {
     const { since, until } = rangeToDates(range);
@@ -49,37 +64,51 @@ export function AnalyticsPage() {
       since,
       until,
       trail,
+      combineId,
     };
-  }, [paperFilter, range, trail]);
+  }, [paperFilter, range, trail, combineId]);
 
   const { data, isLoading, isError, error } = useJournalAnalytics(filters);
 
-  // CSV export (WS6): the closed trades behind the analytics, scoped to the
-  // same paper/live filter. Reuses the journal's tradesToCsv/downloadCsv
-  // helpers so the file format matches the journal export exactly.
+  // CSV export (WS6): exactly the closed trades behind the visible analytics —
+  // same account scope, paper/live filter, and Today/Week/Month range. The
+  // range is applied to exit_date, mirroring /api/analytics' since/until
+  // semantics. Reuses the journal's tradesToCsv/downloadCsv helpers so the
+  // file format matches the journal export exactly.
   const exportPaper = paperFilter === "all" ? undefined : paperFilter === "paper";
   const { data: tradesData } = useTrades({
     status: "closed",
     ...(exportPaper === undefined ? {} : { isPaper: exportPaper }),
+    ...(combineId != null ? { combineId } : {}),
   });
+  const exportTrades = useMemo(() => {
+    const { since, until } = rangeToDates(range);
+    return (tradesData?.trades ?? []).filter((t) => {
+      const exit = t.exit_date?.slice(0, 10);
+      if (!exit) return false;
+      if (since && exit < since) return false;
+      if (until && exit > until) return false;
+      return true;
+    });
+  }, [tradesData, range]);
   const onExport = () => {
-    const trades = tradesData?.trades ?? [];
-    if (trades.length === 0) return;
+    if (exportTrades.length === 0) return;
     const stamp = new Date().toISOString().slice(0, 10);
-    downloadCsv(`trade-desk-analytics-${stamp}.csv`, tradesToCsv(trades));
+    downloadCsv(`trade-desk-analytics-${stamp}.csv`, tradesToCsv(exportTrades));
   };
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
       <Toolbar
-        tier={tier}
+        accountScope={accountScope}
+        onAccountScopeChange={setAccountScope}
         range={range}
         onRangeChange={setRange}
         paperFilter={paperFilter}
         onPaperChange={setPaperFilter}
         loading={isLoading}
         onExport={onExport}
-        exportDisabled={(tradesData?.trades?.length ?? 0) === 0}
+        exportDisabled={exportTrades.length === 0}
       />
       <main className="flex-1 min-h-0 overflow-y-auto">
         {isError ? (
@@ -90,7 +119,7 @@ export function AnalyticsPage() {
           <AnalyticsBody
             data={data}
             tier={tier}
-            filtered={range !== "All" || paperFilter !== "all"}
+            filtered={range !== "All" || paperFilter !== "all" || scopedToActive}
           />
         )}
       </main>
@@ -99,7 +128,8 @@ export function AnalyticsPage() {
 }
 
 function Toolbar({
-  tier,
+  accountScope,
+  onAccountScopeChange,
   range,
   onRangeChange,
   paperFilter,
@@ -108,7 +138,8 @@ function Toolbar({
   onExport,
   exportDisabled,
 }: {
-  tier: string | null;
+  accountScope: AccountScope;
+  onAccountScopeChange: (s: AccountScope) => void;
   range: Range;
   onRangeChange: (r: Range) => void;
   paperFilter: PaperFilter;
@@ -126,14 +157,32 @@ function Toolbar({
       <h1 className="text-xs2 uppercase tracking-label-up text-fg-secondary font-normal m-0">
         Analytics
       </h1>
-      {tier && (
-        <span
-          className="inline-flex items-center h-6 px-2.5 border border-tier-3 bg-tier-2 text-fg-secondary uppercase tracking-label-up"
-          style={{ fontSize: 12, borderRadius: 2 }}
-        >
-          {tier} Combine
-        </span>
-      )}
+      {/* Which account the numbers describe: the switcher (re-scopes on
+          switch) + the ACTIVE / ALL toggle. */}
+      {accountScope === "active" && <CombineSwitcher />}
+      <div className="flex items-stretch border border-hairline" style={{ borderRadius: 0 }}>
+        {(["active", "all"] as AccountScope[]).map((opt, i) => (
+          <button
+            key={opt}
+            type="button"
+            onClick={() => onAccountScopeChange(opt)}
+            title={
+              opt === "active"
+                ? "Only trades on the active combine"
+                : "Trades across all your combines"
+            }
+            className={[
+              "h-6 px-2 text-tiny uppercase tracking-label-up",
+              accountScope === opt
+                ? "text-amber bg-tier-2"
+                : "text-fg-tertiary hover:bg-tier-2 hover:text-fg-primary",
+              i > 0 ? "border-l border-hairline" : "",
+            ].join(" ")}
+          >
+            {opt === "active" ? "This account" : "All accounts"}
+          </button>
+        ))}
+      </div>
       {/* paper / live */}
       <div className="flex items-center gap-1 ml-2">
         {(["all", "paper", "live"] as PaperFilter[]).map((opt) => (
@@ -236,7 +285,7 @@ function NoTradesInRange() {
     <div className="flex items-center justify-center h-full">
       <EmptyState
         title="Nothing matches this view"
-        body="No trades fall in the current range or account filter. Widen the range (try All) or switch the paper / live filter to see your history."
+        body="No trades fall in the current range or account filter. Widen the range (try All), switch the paper / live filter, or flip the account scope to All accounts to see your history."
       />
     </div>
   );
@@ -711,7 +760,7 @@ function RiskPanel({
               <b className="text-fg-secondary font-medium">{Math.abs(streaks.worst_loss)}</b>.
             </>
           ) : (
-            "Connect a combine tier to measure loss sizing against the MLL trail."
+            "Scope Analytics to a single account to grade loss sizing against its MLL trail — a pooled cross-account view has no one trail to grade against."
           )}
         </div>
       </div>

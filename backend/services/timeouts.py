@@ -8,24 +8,33 @@ scheduled jobs make 30+ sequential calls; a single 10s stall on the
 wire can still chain into a >60s tick that collides with the next
 APScheduler fire.
 
-This module gives the job layer a uniform way to enforce a deadline
-without touching the underlying SDK code (which is also tagged as
-frozen elsewhere): `run_with_timeout(fn, *args, timeout_s=N)` submits
-the call to a single-worker `ThreadPoolExecutor` and gives up after
-`timeout_s` seconds. The thread itself keeps running until the SDK
-call returns or the process exits — but the SCHEDULER tick is freed
-to return control, so APScheduler doesn't pile up missed runs.
+This module gives callers a uniform way to enforce a deadline without
+touching the underlying SDK code (which is also tagged as frozen
+elsewhere): `run_with_timeout(fn, *args, timeout_s=N)` submits the
+call to a `ThreadPoolExecutor` and gives up after `timeout_s` seconds.
+The thread itself keeps running until the SDK call returns or the
+process exits — but the CALLER is freed to return control, so a
+scheduler tick doesn't pile up missed runs and a request handler can
+fail fast with a 5xx.
 
-Use this from the job layer (jobs/*.py), not from request handlers —
-request handlers should fail fast with a 5xx if a dependency is slow,
-not silently swallow the call.
+Two layers use it:
+  * The JOB layer (jobs/*.py) calls it directly on the shared job
+    executor below; those calls also run under the BACKGROUND Alpaca
+    rate budget (services.rate_limit.background_budget) so a warming
+    fan-out can never starve interactive requests.
+  * The REQUEST path inherits a per-network-hop deadline from
+    `services.alpaca_client._spaced`, which passes its own larger
+    executor here — request handlers never queue behind stuck job
+    calls, and vice versa.
 """
 
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as _TimeoutError
+from concurrent.futures import Executor, ThreadPoolExecutor, TimeoutError as _TimeoutError
 from typing import Any, Callable, TypeVar
+
+from services.rate_limit import background_budget
 
 log = logging.getLogger(__name__)
 
@@ -41,28 +50,48 @@ class CallTimeout(Exception):
     """
 
 
-# Single shared executor per process so we don't churn threads on every
-# call. Two workers is enough for a job layer that processes symbols
-# sequentially: one for the live call, one in reserve so a stuck call
-# doesn't block a NEW timeout attempt from registering.
-_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="td-timeout")
+# Shared JOB-layer executor per process so we don't churn threads on every
+# call. Jobs process symbols sequentially, so four workers leaves headroom
+# for the handful of concurrent scheduler jobs plus a stuck call or two —
+# a single wedged worker no longer halves capacity the way the previous
+# two-worker pool did.
+_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="td-timeout")
 
 
 def run_with_timeout(
     fn: Callable[..., T],
     *args: Any,
     timeout_s: float,
+    executor: Executor | None = None,
     **kwargs: Any,
 ) -> T:
     """Run `fn(*args, **kwargs)` and raise CallTimeout after `timeout_s`.
 
     Any exception raised by `fn` propagates as normal. CallTimeout is
     raised if the deadline elapses; callers typically catch it and skip
-    that symbol/iteration."""
-    future = _EXECUTOR.submit(fn, *args, **kwargs)
+    that symbol/iteration.
+
+    `executor` selects the pool; None means the shared JOB executor, in
+    which case the call also runs under the background Alpaca rate budget
+    (jobs are the only callers of the shared pool — request paths pass
+    their own executor via alpaca_client)."""
+    if executor is None:
+        pool: Executor = _EXECUTOR
+
+        def _call() -> T:
+            with background_budget():
+                return fn(*args, **kwargs)
+
+        future = pool.submit(_call)
+    else:
+        future = executor.submit(fn, *args, **kwargs)
     try:
         return future.result(timeout=timeout_s)
     except _TimeoutError:
+        # Cancel if still QUEUED so a backlog of doomed calls doesn't burn
+        # rate-limit tokens once a worker frees up; a RUNNING call can't be
+        # interrupted and keeps its worker until the SDK returns.
+        future.cancel()
         log.warning("call to %s timed out after %.1fs", fn.__qualname__, timeout_s)
         raise CallTimeout(
             f"{fn.__qualname__} exceeded {timeout_s:.0f}s deadline"

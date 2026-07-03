@@ -28,6 +28,8 @@ import threading
 import time
 from typing import Callable, TypeVar
 
+from services.timeouts import CallTimeout
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -155,7 +157,9 @@ def resilient_call(
     Raises CircuitOpenError immediately if the breaker is open (caller's
     existing except returns None/cached). Retries transient failures with
     exponential backoff; rate-limit errors are NOT retried and trip the
-    breaker. The breaker records exactly one failure per exhausted call."""
+    breaker, and neither are deadline stalls (CallTimeout) — each retry
+    would burn another full timeout while the caller blocks. The breaker
+    records exactly one failure per exhausted call."""
     breaker = get_breaker(name, **(breaker_kwargs or {}))
     if not breaker.allow():
         raise CircuitOpenError(f"{name} circuit open")
@@ -164,7 +168,7 @@ def resilient_call(
         try:
             result = fn()
         except Exception as exc:  # noqa: BLE001
-            if _is_rate_limited(exc) or attempt >= retries:
+            if _is_rate_limited(exc) or isinstance(exc, CallTimeout) or attempt >= retries:
                 breaker.record_failure()
                 raise
             attempt += 1

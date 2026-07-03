@@ -16,6 +16,11 @@ class TickerDetailOut(BaseModel):
     avg_volume_20d: int
     next_earnings_date: str | None = None
     days_to_earnings: int | None = None
+    # Freshness metadata (frontend contract: exact names as_of/served_stale).
+    # `as_of` is the DATA timestamp — the last trade behind `price` — not the
+    # fetch time; None when the feed didn't supply one.
+    as_of: str | None = None
+    served_stale: bool = False
 
 
 class BarPoint(BaseModel):
@@ -55,6 +60,11 @@ class ChartResponse(BaseModel):
     # Free-tier indicative feed has no open_interest; we substitute daily
     # volume per contract as a proxy. UI surfaces this for transparency.
     oi_source: str  # "open_interest" or "volume_proxy"
+    # Freshness metadata (frontend contract: exact names as_of/served_stale).
+    # `as_of` is the newest bar's timestamp; `served_stale` is True when the
+    # feed was degraded and these are the cached last-good candles.
+    as_of: str | None = None
+    served_stale: bool = False
 
 
 class MetricsResponse(BaseModel):
@@ -64,6 +74,9 @@ class MetricsResponse(BaseModel):
     skew_25d: float | None = None
     pc_ratio: float | None = None
     max_pain: float | None = None
+    # Freshness metadata (frontend contract: exact names as_of/served_stale).
+    as_of: str | None = None
+    served_stale: bool = False
 
 
 class IndicatorSeries(BaseModel):

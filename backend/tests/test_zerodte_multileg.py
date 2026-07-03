@@ -248,7 +248,8 @@ def test_open_leg_persisted_size_never_exceeds_cap(auth_client, session_factory,
     monkeypatch.setattr(
         "routers.zerodte.combine_snapshot",
         lambda sess, comb: types.SimpleNamespace(
-            outcome="active", day_locked=False, max_contracts=2
+            outcome="active", day_locked=False, max_contracts=2,
+            balance=50_000.0, mll=48_000.0,
         ),
     )
     res = auth_client.post(

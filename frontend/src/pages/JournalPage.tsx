@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { DayModal } from "@/components/journal/DayModal";
@@ -6,6 +6,8 @@ import { JournalCalendar } from "@/components/journal/JournalCalendar";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { TradeEntryModal } from "@/components/positions/journal/TradeEntryModal";
 import { TradeList } from "@/components/positions/journal/TradeList";
+import { useCombines } from "@/hooks/useCombines";
+import { useJournalScope } from "@/hooks/useJournalCalendar";
 import { useTrades } from "@/hooks/useTrades";
 import { downloadCsv, tradesToCsv } from "@/lib/exportCsv";
 import { useSelectedTicker } from "@/stores/selectedTicker";
@@ -13,6 +15,7 @@ import type { Trade } from "@/types/journal";
 
 type View = "calendar" | "list";
 type PaperScope = "all" | "paper" | "live";
+type AccountScope = "active" | "all";
 
 /**
  * /journal — the trade ledger + learning tool.
@@ -24,16 +27,34 @@ type PaperScope = "all" | "paper" | "live";
  *
  * Both views share the paper/live scope filter and the + Log Trade
  * button so behavior is consistent across modes.
+ *
+ * Account scoping: defaults to the ACTIVE combine (what the switcher
+ * pill shows), with an explicit ALL toggle for the cross-account view —
+ * so the numbers on screen match the account the header claims.
  */
 export function JournalPage() {
   const selectedSymbol = useSelectedTicker((s) => s.symbol);
   const [view, setView] = useState<View>("calendar");
   const [paperScope, setPaperScope] = useState<PaperScope>("all");
+  const [accountScope, setAccountScope] = useState<AccountScope>("active");
   const [listScope, setListScope] = useState<"current" | "all">("all");
   const [modalOpen, setModalOpen] = useState(false);
   const [activeDay, setActiveDay] = useState<{ date: string; trade_ids: number[] } | null>(null);
 
-  const { data, isError, refetch } = useTrades();
+  const { data: combinesData } = useCombines();
+  const activeCombineId = combinesData?.active_combine_id ?? null;
+  const combineId = accountScope === "active" ? activeCombineId : null;
+
+  // The calendar owns its own fetch — sync the resolved scope into the
+  // shared journal-scope store so its query re-keys with the pages'.
+  const setScopeCombineId = useJournalScope((s) => s.setCombineId);
+  useEffect(() => {
+    setScopeCombineId(combineId);
+  }, [combineId, setScopeCombineId]);
+
+  const { data, isError, refetch } = useTrades(
+    combineId != null ? { combineId } : {},
+  );
   const allTrades = data?.trades ?? [];
   // JOURNAL is closed-only — open positions live on the CHART view's
   // chain panel now. The calendar view already bucketed by exit_date so
@@ -93,6 +114,8 @@ export function JournalPage() {
         }}
         paperScope={paperScope}
         onPaperScopeChange={setPaperScope}
+        accountScope={accountScope}
+        onAccountScopeChange={setAccountScope}
         onAddTrade={() => setModalOpen(true)}
         onExport={() => {
           // Export honors the paper/live scope filter; closed trades
@@ -146,6 +169,8 @@ function Toolbar({
   onViewChange,
   paperScope,
   onPaperScopeChange,
+  accountScope,
+  onAccountScopeChange,
   onAddTrade,
   onExport,
   exportDisabled,
@@ -154,6 +179,8 @@ function Toolbar({
   onViewChange: (v: View) => void;
   paperScope: PaperScope;
   onPaperScopeChange: (s: PaperScope) => void;
+  accountScope: AccountScope;
+  onAccountScopeChange: (s: AccountScope) => void;
   onAddTrade: () => void;
   onExport: () => void;
   exportDisabled: boolean;
@@ -200,6 +227,30 @@ function Toolbar({
       </div>
       <div className="ml-auto flex items-center gap-2">
         <CombineSwitcher />
+        {/* Account scope — ACTIVE (the switcher's combine) vs ALL accounts. */}
+        <div className="flex items-stretch border border-hairline" style={{ borderRadius: 0 }}>
+          {(["active", "all"] as AccountScope[]).map((opt, i) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => onAccountScopeChange(opt)}
+              title={
+                opt === "active"
+                  ? "Only trades on the active combine"
+                  : "Trades across all your combines"
+              }
+              className={[
+                "h-6 px-2 text-tiny uppercase tracking-label-up",
+                accountScope === opt
+                  ? "text-amber bg-tier-2"
+                  : "text-fg-tertiary hover:bg-tier-2 hover:text-fg-primary",
+                i > 0 ? "border-l border-hairline" : "",
+              ].join(" ")}
+            >
+              {opt === "active" ? "This account" : "All accounts"}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           onClick={onExport}
@@ -207,7 +258,7 @@ function Toolbar({
           title={
             exportDisabled
               ? "Nothing to export yet"
-              : "Download the closed trades shown (respects the paper/live filter) as CSV"
+              : "Download the closed trades shown (respects the account + paper/live filters) as CSV"
           }
           className="h-6 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ borderRadius: 0 }}

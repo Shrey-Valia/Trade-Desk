@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-import { useAccountState } from "@/hooks/useAccountState";
 import { useChainTable } from "@/hooks/useChainTable";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useMarketStatus } from "@/hooks/useMarket";
-import { useTrades, useCancelOrder } from "@/hooks/useTrades";
+import { useOpenContractsCount } from "@/hooks/useOpenContractsCount";
+import { useCancelOrder } from "@/hooks/useTrades";
 import {
   cellKey,
   useWorkingOrdersByStrike,
@@ -47,13 +47,17 @@ interface Props {
   onPickSymbol: (sym: string) => void;
 }
 
-// Topstep DOM-style ladder — taller rows (20px), wider center strike
-// column anchored with a subtle bg-tier-1 tint, hairline every 5 rows.
-const ROW_HEIGHT = 20;
+// Topstep DOM-style ladder — two-line rows (32px: bid×ask on top, greeks +
+// volume/OI below), wider center strike column anchored with a subtle
+// bg-tier-1 tint, hairline every 5 rows.
+const ROW_HEIGHT = 32;
 const CALL_W = 168;
 const STRIKE_W = 88;
 const PUT_W = 168;
 const GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
+
+/** Strike-span choices (± strikes around ATM) — feeds useChainTable. */
+const SPAN_OPTIONS = [5, 10, 20] as const;
 
 /** Above this many strikes the ladder is windowed (only on-screen rows
  *  mount). The default chain pulls ~11 rows, so day-to-day rendering is the
@@ -126,16 +130,17 @@ function strikeRank(
 // ── end WS5 ─────────────────────────────────────────────────────────────────
 
 export function RightChain({ symbol, onPickSymbol }: Props) {
-  // Pull 5 strikes above + 5 below ATM ⇒ ~11 rows visible without
-  // scrolling. The previous redesign asked for 16; the simplification
-  // pass dropped that to reduce the right column's visual weight.
-  const { data, isLoading, isError, error } = useChainTable(symbol, 5);
+  // User-selectable strike span (± strikes around ATM). ±5 keeps the ladder
+  // light by default; ±10/±20 pull the deeper wings for wide-move days.
+  const [span, setSpan] = useState<number>(5);
+  const { data, isLoading, isError, error } = useChainTable(symbol, span);
   // ── WS5: chain filters (additive — narrows the rendered strikes; composes
   // with WS4's virtualization downstream since it only shrinks the row list).
   const [filters, setFilters] = useState<ChainFilters>(DEFAULT_CHAIN_FILTERS);
   // ── end WS5
   const setSelection = useTradeTicket((s) => s.setSelection);
   const currentSelection = useTradeTicket((s) => s.selection);
+  const refreshSelectionPrice = useTradeTicket((s) => s.refreshSelectionPrice);
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
 
@@ -152,28 +157,10 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
   );
   const cancelOrder = useCancelOrder();
 
-  // Scaling-cap remaining capacity for the quick-order popover — mirrors the
-  // TradeTicket math so a one-click order can't exceed what the server accepts.
-  const { data: accountState } = useAccountState();
-  const { data: tradesData } = useTrades();
-  const maxContracts = accountState?.max_contracts ?? 99;
-  const activeTier = accountState?.active_tier ?? "50K";
-  const openContracts = useMemo(() => {
-    const ts = tradesData?.trades ?? [];
-    return ts
-      .filter(
-        (t) =>
-          (t.status === "open" || t.status === "working") &&
-          (t.tier ?? "50K") === activeTier,
-      )
-      .reduce(
-        (sum, t) =>
-          sum +
-          (t.legs.length ? Math.max(...t.legs.map((l) => l.contracts ?? 1)) : 1),
-        0,
-      );
-  }, [tradesData, activeTier]);
-  const remainingCap = Math.max(0, maxContracts - openContracts);
+  // Scaling-cap remaining capacity for the quick-order popover — the SAME
+  // sum-of-legs hook TradeTicket sizes with, so a one-click order can't
+  // exceed what the server accepts.
+  const { remaining: remainingCap } = useOpenContractsCount();
 
   // Quick-order popover target (right-click / long-press) + the row to flash
   // amber on a successful fire (keyed by strike).
@@ -232,6 +219,23 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
     );
     if (row) row.scrollIntoView({ block: "center", behavior: "auto" });
   }, [atmStrike, symbol]);
+
+  // Keep the ticket's SELECTED contract priced off the live chain: each 10s
+  // refetch re-syncs selection.price (identity untouched) so the Summary /
+  // RiskPreview / DLL hint track the market instead of freezing at click time.
+  useEffect(() => {
+    if (!data || isError || !currentSelection) return;
+    if (currentSelection.symbol !== data.underlying) return;
+    const row = data.rows.find((r) => r.strike === currentSelection.strike);
+    if (!row) return;
+    const next =
+      currentSelection.kind === "straddle"
+        ? row.call_price + row.put_price
+        : (currentSelection.side ?? "call") === "put"
+          ? row.put_price
+          : row.call_price;
+    if (next > 0) refreshSelectionPrice(next);
+  }, [data, isError, currentSelection, refreshSelectionPrice]);
 
   // Cells are clickable to PREVIEW a contract (payoff/greeks in the detail
   // panel) whenever a chain exists — even with the market closed. Trading
@@ -303,6 +307,7 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
         spot={showChain ? data?.spot ?? null : null}
         atm={showChain ? data?.atm_strike ?? null : null}
         iv={showChain ? data?.iv_used ?? null : null}
+        asOf={showChain ? data?.as_of ?? null : null}
       />
       <ColumnHeader />
       {/* ── WS5: filter bar — additive; narrows the rendered strikes. ── */}
@@ -310,6 +315,8 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
         <ChainFilterBar
           filters={filters}
           onChange={setFilters}
+          span={span}
+          onSpanChange={setSpan}
           filteredOut={filteredOut}
           total={data?.rows.length ?? 0}
         />
@@ -327,7 +334,13 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
       <div
         ref={bodyRef}
         className="overflow-y-auto"
-        style={{ scrollbarGutter: "stable", maxHeight: 360 }}
+        // Flex to the viewport instead of a hard cap: tall screens get a
+        // deeper ladder (the ±10/±20 spans are actually scannable) while the
+        // 360px floor keeps the ticket + detail panel usable below.
+        style={{
+          scrollbarGutter: "stable",
+          maxHeight: "max(360px, calc(100vh - 560px))",
+        }}
       >
         {!symbol && <EmptyMessage>Pick a ticker in the header.</EmptyMessage>}
         {symbol && isLoading && !data && (
@@ -539,11 +552,16 @@ function ChainRows(props: ChainRowsProps) {
 function ChainFilterBar({
   filters,
   onChange,
+  span,
+  onSpanChange,
   filteredOut,
   total,
 }: {
   filters: ChainFilters;
   onChange: (f: ChainFilters) => void;
+  /** ± strikes around ATM actually FETCHED (useChainTable's strikes param). */
+  span: number;
+  onSpanChange: (s: number) => void;
   filteredOut: number;
   total: number;
 }) {
@@ -557,6 +575,24 @@ function ChainFilterBar({
       >
         filter
       </span>
+      {/* Strike span — how deep the fetched ladder goes (vs. the ±band
+          filter below, which only narrows what's already fetched). */}
+      <label className="flex items-center gap-1" style={{ fontSize: 10 }}>
+        <span className="uppercase tracking-label-up text-fg-tertiary-2">±span</span>
+        <select
+          value={span}
+          onChange={(e) => onSpanChange(parseInt(e.target.value, 10))}
+          aria-label="Strike span (strikes fetched around ATM)"
+          className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary px-1 tabular-nums"
+          style={{ height: 20, fontSize: 11 }}
+        >
+          {SPAN_OPTIONS.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </label>
       {/* Moneyness band */}
       <label className="flex items-center gap-1" style={{ fontSize: 10 }}>
         <span className="uppercase tracking-label-up text-fg-tertiary-2">±band</span>
@@ -625,13 +661,17 @@ function Header({
   spot,
   atm,
   iv,
+  asOf,
 }: {
   symbol: string;
   expiry: string | null;
   spot: number | null;
   atm: number | null;
   iv: number | null;
+  /** Quote timestamp (ISO) — when the chain's prices were sourced. */
+  asOf: string | null;
 }) {
+  const asOfLabel = asOf ? formatClockEtSeconds(asOf) : null;
   return (
     <div className="border-b border-hairline bg-tier-1 shrink-0">
       <div className="flex items-baseline gap-2 px-3 pt-1.5 tabular-nums">
@@ -645,8 +685,9 @@ function Header({
         <span
           className="ml-auto text-fg-tertiary-2"
           style={{ fontSize: 12 }}
+          title={asOfLabel ? `Quotes sourced ${asOfLabel} ET` : undefined}
         >
-          indicative pricing
+          {asOfLabel ? `quotes ${asOfLabel} · ` : ""}indicative pricing
         </span>
       </div>
       <div className="flex items-baseline gap-3 px-3 pb-1 tabular-nums">
@@ -681,12 +722,12 @@ function ColumnHeader() {
           gridTemplateColumns: GRID,
           fontSize: 11,
           letterSpacing: "0.08em",
-          height: ROW_HEIGHT,
+          height: 20,
         }}
       >
-        <span className="text-right pr-3">Call</span>
+        <span className="text-right pr-3">Call bid×ask</span>
         <span className="text-center">Strike</span>
-        <span className="text-left pl-3">Put</span>
+        <span className="text-left pl-3">Put bid×ask</span>
       </div>
     </div>
   );
@@ -757,6 +798,10 @@ function Row({
         align="right"
         price={row.call_price}
         source={row.call_source}
+        bid={row.call_bid ?? null}
+        ask={row.call_ask ?? null}
+        volume={row.call_volume ?? null}
+        openInterest={row.call_open_interest}
         delta={row.call_delta}
         theta={row.call_theta}
         disabled={disabled || row.call_price <= 0}
@@ -802,6 +847,10 @@ function Row({
         align="left"
         price={row.put_price}
         source={row.put_source}
+        bid={row.put_bid ?? null}
+        ask={row.put_ask ?? null}
+        volume={row.put_volume ?? null}
+        openInterest={row.put_open_interest}
         delta={row.put_delta}
         theta={row.put_theta}
         disabled={disabled || row.put_price <= 0}
@@ -823,6 +872,10 @@ function Cell({
   align,
   price,
   source,
+  bid,
+  ask,
+  volume,
+  openInterest,
   delta,
   theta,
   disabled,
@@ -839,6 +892,12 @@ function Cell({
   align: "left" | "right";
   price: number;
   source: "quote" | "bs";
+  /** Per-side NBBO — null until the backend sends quotes (then bid×ask is
+   *  the primary cell content; the mid/model price is the fallback). */
+  bid: number | null;
+  ask: number | null;
+  volume: number | null;
+  openInterest: number | null;
   delta: number;
   theta: number;
   disabled: boolean;
@@ -879,30 +938,50 @@ function Cell({
         : dim
           ? "text-fg-tertiary-2"
           : "text-fg-primary";
-  // Price hugs the strike (call → right edge, put → left edge); the
-  // dimmer Δ/Θ greeks sit outboard so they read as secondary info
-  // without displacing the price's anchor on the strike. Greeks are
-  // display-only — same per-share values the backend already returns.
-  const priceEl = (
+  // On 0DTE the SPREAD is the trade: bid×ask is the primary line whenever
+  // both sides quote. Without quotes the mid/model price falls back, marked
+  // ·mid (quote-derived mid) or ·m (BS model) so a synthetic number is never
+  // mistaken for a market. Line 2 carries the secondary read: Δ/Θ + session
+  // volume + OI, all display-only values the backend already returns.
+  const hasQuote = bid != null && ask != null;
+  const priceEl = hasQuote ? (
+    <span className="whitespace-nowrap">
+      {bid.toFixed(2)}
+      <span className="text-fg-tertiary" aria-hidden>
+        ×
+      </span>
+      {ask.toFixed(2)}
+    </span>
+  ) : (
     <span className="whitespace-nowrap">
       {price.toFixed(2)}
-      {source === "bs" && (
-        <span
-          className="text-fg-tertiary ml-0.5"
-          style={{ fontSize: 11 }}
-          aria-hidden
-        >
-          ·m
-        </span>
-      )}
+      <span
+        className="text-fg-tertiary ml-0.5"
+        style={{ fontSize: 11 }}
+        aria-hidden
+      >
+        {source === "bs" ? "·m" : "·mid"}
+      </span>
     </span>
   );
-  const greeksEl = (
+  const volOiEl = (volume != null || openInterest != null) && (
+    <span className="whitespace-nowrap">
+      {volume != null ? `V ${fmtCount(volume)}` : ""}
+      {volume != null && openInterest != null ? " · " : ""}
+      {openInterest != null ? `OI ${fmtCount(openInterest)}` : ""}
+    </span>
+  );
+  const subEl = (
     <span
-      className={`whitespace-nowrap ${disabled ? "text-fg-disabled" : "text-fg-tertiary-2"}`}
-      style={{ fontSize: 11, fontWeight: 400 }}
+      className={`flex gap-1.5 whitespace-nowrap overflow-hidden ${
+        disabled ? "text-fg-disabled" : "text-fg-tertiary-2"
+      } ${align === "right" ? "justify-end" : "justify-start"}`}
+      style={{ fontSize: 10, fontWeight: 400 }}
     >
-      Δ{delta.toFixed(2)} Θ{theta.toFixed(2)}
+      <span className="whitespace-nowrap">
+        Δ{delta.toFixed(2)} Θ{theta.toFixed(2)}
+      </span>
+      {volOiEl}
     </span>
   );
   const badge = orders && orders.length > 0 && (
@@ -921,9 +1000,11 @@ function Cell({
   // or the ContextMenu key opens it, anchored at the cell's center.
   const actionLabel = disabled
     ? `${side} ${strike} — unavailable (market closed or no 0DTE today)`
-    : `Select ${side} option at strike ${strike}, premium ${price.toFixed(
-        2,
-      )}. Shift+Enter for a quick order.`;
+    : `Select ${side} option at strike ${strike}, ${
+        hasQuote
+          ? `bid ${bid.toFixed(2)} ask ${ask.toFixed(2)}`
+          : `premium ${price.toFixed(2)}`
+      }. Shift+Enter for a quick order.`;
   const cellRef = useRef<HTMLButtonElement>(null);
   const openQuickFromKeyboard = () => {
     if (disabled) return;
@@ -977,8 +1058,8 @@ function Cell({
         onTouchCancel={clearPress}
         disabled={disabled}
         className={[
-          "h-full px-2 tabular-nums font-medium flex items-baseline gap-1.5",
-          align === "right" ? "justify-end" : "justify-start",
+          "h-full px-2 tabular-nums font-medium flex flex-col justify-center leading-tight min-w-0",
+          align === "right" ? "items-end" : "items-start",
           baseColor,
           disabled ? "" : "hover:text-amber",
         ].join(" ")}
@@ -987,21 +1068,20 @@ function Cell({
           disabled
             ? "Market closed or no 0DTE today"
             : `Select ${side} at ${strike} · ${
-                source === "bs" ? "BS-model price (no live quote)" : "indicative quote"
-              } · Δ ${delta.toFixed(2)} · Θ ${theta.toFixed(2)}/day · right-click to quick-order`
+                hasQuote
+                  ? `bid ${bid.toFixed(2)} × ask ${ask.toFixed(2)} · mid ${price.toFixed(2)}`
+                  : source === "bs"
+                    ? `BS-model price ${price.toFixed(2)} (no live quote)`
+                    : `indicative mid ${price.toFixed(2)} (no live quote)`
+              } · Δ ${delta.toFixed(2)} · Θ ${theta.toFixed(2)}/day · vol ${
+                volume != null ? fmtCount(volume) : "—"
+              } · OI ${
+                openInterest != null ? fmtCount(openInterest) : "—"
+              } · right-click to quick-order`
         }
       >
-        {align === "right" ? (
-          <>
-            {greeksEl}
-            {priceEl}
-          </>
-        ) : (
-          <>
-            {priceEl}
-            {greeksEl}
-          </>
-        )}
+        {priceEl}
+        {subEl}
       </button>
   );
   // Badge sits OUTBOARD of the price (away from the strike column): left of
@@ -1074,6 +1154,30 @@ function WorkingBadge({
       </button>
     </span>
   );
+}
+
+/** Compact count for volume/OI — 12345 → "12.3k". */
+function fmtCount(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}k`;
+  return `${Math.round(v)}`;
+}
+
+/** HH:MM:SS in ET — the quotes stamp in the chain header. */
+function formatClockEtSeconds(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(11, 19);
+  try {
+    return d.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZone: "America/New_York",
+    });
+  } catch {
+    return iso.slice(11, 19);
+  }
 }
 
 function EmptyMessage({

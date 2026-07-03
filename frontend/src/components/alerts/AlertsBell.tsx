@@ -2,7 +2,6 @@ import { useState } from "react";
 
 import { Modal } from "@/components/ui/Modal";
 import {
-  useAlertEvaluator,
   useAlerts,
   useCreateAlert,
   useDeleteAlert,
@@ -17,15 +16,13 @@ import type { Alert, AlertDirection } from "@/types/alert";
  * (and tinted bear-red when any have triggered), opening a modal to create,
  * list, re-arm, and delete price / earnings / fill alerts.
  *
- * Mounting this also mounts {@link useAlertEvaluator}, which drives the
- * server-side price evaluation on the quote-poll cadence and raises a toast
- * when an alert trips — so a single bell in the header is all the wiring the
- * feature needs.
+ * Purely presentational — the 15s evaluation loop (useAlertEvaluator) is
+ * mounted by RailShell so alerts keep firing on routes where this bell
+ * isn't rendered.
  */
 export function AlertsBell({ symbol }: { symbol: string | null }) {
   const [open, setOpen] = useState(false);
   const { data } = useAlerts();
-  useAlertEvaluator(true);
 
   const alerts = data?.alerts ?? [];
   const activeCount = alerts.filter((a) => a.status === "active").length;

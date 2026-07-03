@@ -11,7 +11,9 @@ const HOTKEYS: Array<{ keys: string; action: string }> = [
   { keys: "/", action: "Symbol search" },
   { keys: "B", action: "Pre-arm BUY on the selected contract" },
   { keys: "S", action: "Pre-arm SELL on the selected contract" },
-  { keys: "C", action: "Close the active position" },
+  { keys: "C C", action: "Close the active position (press twice to confirm)" },
+  { keys: "F F", action: "FLATTEN all open positions (press twice to confirm)" },
+  { keys: "X X", action: "Cancel all working orders (press twice to confirm)" },
   { keys: "Esc", action: "Close any overlay" },
 ];
 

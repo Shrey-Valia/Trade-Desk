@@ -10,8 +10,8 @@ Purchase uses SIMULATED economics: the product is a paper prop firm, so
 no real money moves, but the pricing is real (services/pricing.py). A
 purchase records a paid payments row at the matrix monthly price; once an
 account funds it is activated via /activate-account ($149 on the activation
-path, $0 on no-activation). When Stripe lands, /api/payments/checkout takes
-over the charge and this endpoint becomes a fallback.
+path, $0 on no-activation). With Stripe configured the free purchase path
+is CLOSED — /api/payments/checkout owns the charge and this endpoint 409s.
 """
 
 from __future__ import annotations
@@ -29,11 +29,16 @@ from models.combine import Combine
 from models.combine_event import CombineEvent
 from models.payment import Payment
 from models.user import User
-from services import pricing
+from services import payments, pricing
 from services.account_tiers import TIERS
 from services.auth import get_current_user
 from services.combine_provision import MAX_COMBINES, provision_combine
-from services.combine_state import combine_snapshot, record_event
+from services.combine_state import (
+    combine_snapshot,
+    has_open_book,
+    realized_by_trading_day,
+    record_event,
+)
 from services.rate_limit import enforce_user, financial_limiter
 
 router = APIRouter(prefix="/api/combines", tags=["combines"])
@@ -45,12 +50,14 @@ router = APIRouter(prefix="/api/combines", tags=["combines"])
 # duplicate into a clear 409 instead of two legitimate-looking events.
 PAYOUT_IDEMPOTENCY_WINDOW_S = 10
 
-# Idempotency window for payout requests: a second payout on the same combine
-# within this many seconds is rejected as a likely duplicate (double-click, a
-# retried request, or two racing tabs). The FOR UPDATE lock below already makes
-# double-booking impossible; this is the belt to that suspenders, turning a
-# duplicate into a clear 409 instead of two legitimate-looking events.
-PAYOUT_IDEMPOTENCY_WINDOW_S = 10
+# Payout policy (Topstep-aligned): a request must be at least the minimum,
+# the account needs a track record of winning days in the FUNDED stage (a
+# day whose realized P&L meets the winning-day bar), and requests are paced
+# to one per interval. All are 409s with distinct human-readable details.
+PAYOUT_MIN_AMOUNT = 125.0
+PAYOUT_MIN_WINNING_DAYS = 5
+PAYOUT_WINNING_DAY_PROFIT = 150.0
+PAYOUT_MIN_INTERVAL_H = 24.0
 
 
 class CombineOut(BaseModel):
@@ -149,6 +156,11 @@ class PurchaseIn(BaseModel):
 
 class RenameIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
+
+
+class PayoutIn(BaseModel):
+    # Absent (or null) → request the full available payout.
+    amount: float | None = Field(default=None, gt=0)
 
 
 class PayoutOut(BaseModel):
@@ -372,6 +384,15 @@ def purchase_combine(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
+    # Paywall: with Stripe configured, checkout is the ONLY purchase path —
+    # this endpoint would otherwise provision a combine for free. Checked
+    # before the throttle (like checkout's Stripe-off short-circuit) so a
+    # misrouted call doesn't consume the purchase budget.
+    if payments.stripe_enabled():
+        raise HTTPException(
+            409,
+            "purchases go through Stripe checkout — POST /api/payments/checkout",
+        )
     # Per-user throttle: provisioning a combine writes a payment + a combine row;
     # a double-click or scripted loop shouldn't be able to spin up many at once.
     enforce_user(financial_limiter, user.id, "purchase")
@@ -451,23 +472,54 @@ def reset_combine(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
-    """Restart a FAILED evaluation. Stamps eval_reset_at (the engine then
+    """Restart a FAILED evaluation. Books a reset fee at the combine's
+    monthly rate (Topstep model), stamps eval_reset_at (the engine then
     counts only trades opened after it), re-baselines the HWM/MLL to the
-    tier start, and clears the outcome — the trade history is preserved."""
+    tier start, and clears the outcome — the trade history is preserved.
+    Requires a FLAT book: an open position's eventual P&L would escape
+    eval accounting entirely (only entry_date >= eval_reset_at counts)."""
+    # Per-user throttle: a reset books a fee payment — same budget as the
+    # other financial endpoints (purchase / payout / activation).
+    enforce_user(financial_limiter, user.id, "reset")
     combine = _owned_combine(session, user, combine_id)
     if combine.outcome != "failed":
         raise HTTPException(409, "only a failed combine can be reset")
+    if has_open_book(session, combine.id):
+        raise HTTPException(
+            409,
+            "close all open positions and cancel working orders before resetting",
+        )
     now = datetime.now(timezone.utc)
     tier = TIERS[combine.tier]
+    fee = pricing.reset_fee(combine.tier, combine.pricing_path, combine.profit_split)
+    session.add(
+        Payment(
+            user_id=user.id,
+            combine_id=combine.id,
+            tier=combine.tier,
+            amount=fee,
+            status="reset_paid",
+        )
+    )
     combine.outcome = "active"
     combine.funded_at = None
+    # A terminated funded account resets back to the EVAL stage: clear the
+    # activation stamp + accounting epoch along with the funding itself.
+    combine.funded_activated_at = None
+    combine.funded_epoch_at = None
     combine.eval_reset_at = now
     combine.hwm = tier.starting_balance
     combine.settled_hwm = tier.starting_balance
     # Treat the reset instant as the day's settlement so the next read
     # doesn't immediately log a spurious "settled" event.
     combine.last_settled_at = now
-    record_event(session, combine, "reset", "Evaluation reset — fresh start.")
+    record_event(
+        session,
+        combine,
+        "reset",
+        f"Evaluation reset — ${fee:,.0f} reset fee paid.",
+        amount=fee,
+    )
     session.add(combine)
     session.commit()
     session.refresh(combine)
@@ -477,12 +529,20 @@ def reset_combine(
 @router.post("/{combine_id}/payout", response_model=PayoutOut)
 def request_payout(
     combine_id: int,
+    payload: PayoutIn | None = None,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> PayoutOut:
     """Request a payout on a FUNDED, ACTIVATED account: the trader's split
-    (80/20 or 50/50) of realized profit, net of prior requests. Simulated —
-    records a payout event but moves no money.
+    (80/20 or 50/50) of FUNDED-STAGE realized profit, net of prior requests.
+    Body is optional JSON {amount?: number}; absent → the full available
+    amount. Simulated — records a payout event but moves no money. The
+    booked amount DEBITS the funded balance (services/combine_state).
+
+    Policy gates (each a distinct 409): the PAYOUT_* minimums above — at
+    least $125, within the available balance, 5 funded-stage winning days
+    (realized ≥ +$150 in a 5pm-PT trading day), one request per 24h — and
+    the post-debit balance must stay above the MLL floor.
 
     CONCURRENCY (P0): two payout requests racing on the same combine used to
     each read `available` before either booked an event, so both could book the
@@ -519,6 +579,22 @@ def request_payout(
             "activation fee to unlock payouts",
         )
 
+    # Track-record gate: enough FUNDED-STAGE winning days (realized meets the
+    # winning-day bar within a 5pm-PT trading day) since the accounting epoch.
+    epoch = combine.funded_epoch_at or combine.funded_activated_at
+    winning_days = sum(
+        1
+        for pnl in realized_by_trading_day(session, combine.id, epoch).values()
+        if pnl >= PAYOUT_WINNING_DAY_PROFIT
+    )
+    if winning_days < PAYOUT_MIN_WINNING_DAYS:
+        raise HTTPException(
+            409,
+            f"payouts unlock after {PAYOUT_MIN_WINNING_DAYS} winning days "
+            f"(realized ≥ ${PAYOUT_WINNING_DAY_PROFIT:,.0f} in a day) on the "
+            f"funded account — {winning_days} so far",
+        )
+
     # Re-acquire the combine row WITH a write lock, opening the booking
     # transaction. Everything from here to the commit is serialized per combine.
     locked = session.execute(
@@ -549,20 +625,55 @@ def request_payout(
             "before requesting another",
         )
 
+    # Pacing: at most one payout request per interval on this combine.
+    interval_cutoff = now - timedelta(hours=PAYOUT_MIN_INTERVAL_H)
+    paced = session.execute(
+        select(CombineEvent.id)
+        .where(
+            CombineEvent.combine_id == combine.id,
+            CombineEvent.type == "payout",
+            CombineEvent.created_at >= interval_cutoff,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if paced is not None:
+        raise HTTPException(
+            409,
+            f"only one payout request per {PAYOUT_MIN_INTERVAL_H:,.0f} hours — "
+            "try again later",
+        )
+
     # `available` is read UNDER the lock so a racing request can't have booked
     # against the same balance without us seeing it.
     available = max(0.0, snap.payout_eligible - _payouts_requested(session, combine.id))
     if available <= 0:
         raise HTTPException(409, "no payout currently available")
+    amount = available if payload is None or payload.amount is None else float(payload.amount)
+    if amount > available + 1e-9:
+        raise HTTPException(
+            409,
+            f"requested ${amount:,.2f} exceeds the ${available:,.2f} available payout",
+        )
+    if amount < PAYOUT_MIN_AMOUNT:
+        raise HTTPException(
+            409, f"minimum payout is ${PAYOUT_MIN_AMOUNT:,.0f}"
+        )
+    # The withdrawal debits the balance — it must stay ABOVE the MLL floor.
+    if snap.balance - amount <= snap.mll:
+        raise HTTPException(
+            409,
+            "payout would drop the balance to the Maximum Loss Limit — "
+            "reduce the amount",
+        )
     record_event(
         session,
         locked,
         "payout",
-        f"Payout requested — ${available:,.2f}.",
-        amount=available,
+        f"Payout requested — ${amount:,.2f}.",
+        amount=amount,
     )
     session.commit()
-    return PayoutOut(combine_id=combine.id, amount=available, requested_at=now)
+    return PayoutOut(combine_id=combine.id, amount=amount, requested_at=now)
 
 
 @router.post("/{combine_id}/activate-account", response_model=CombineOut)
@@ -574,7 +685,11 @@ def activate_account(
     """Activate a funded account — one unified flow for both paths. Charges
     the $149 fee on the activation path and $0 on the no-activation path
     (simulated), records the activation event, and unlocks payouts. 409 if
-    the account isn't funded or is already activated."""
+    the account isn't funded, is already activated, or still has open or
+    working trades. Activation stamps the funded-stage accounting EPOCH:
+    the balance restarts at the tier start (realized-since-activation minus
+    booked payouts), the HWM/MLL re-seed, and payout eligibility starts at
+    0 — the profit used to PASS stays with the firm."""
     # Per-user throttle: activation charges a fee + writes a payment row.
     enforce_user(financial_limiter, user.id, "activation")
     combine = _owned_combine(session, user, combine_id)
@@ -583,9 +698,23 @@ def activate_account(
         raise HTTPException(409, "account is not funded")
     if not snap.activation_required:
         raise HTTPException(409, "funded account is already activated")
+    # Flat book required: the funded epoch counts trades opened at/after it,
+    # so an open position's eventual P&L would straddle the two accountings.
+    if has_open_book(session, combine.id):
+        raise HTTPException(
+            409,
+            "close all open positions and cancel working orders before activating",
+        )
     fee = pricing.activation_fee(combine.pricing_path)
     now = datetime.now(timezone.utc)
+    tier = TIERS[combine.tier]
     combine.funded_activated_at = now
+    combine.funded_epoch_at = now
+    combine.hwm = tier.starting_balance
+    combine.settled_hwm = tier.starting_balance
+    # Treat the activation instant as the day's settlement so the next read
+    # doesn't immediately log a spurious "settled" event.
+    combine.last_settled_at = now
     # Only the activation path charges; no $0 payment rows for no-activation.
     if fee > 0:
         session.add(

@@ -1,19 +1,30 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { PageHeader } from "@/components/layout/PageHeader";
+import { Modal } from "@/components/ui/Modal";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadError } from "@/components/ui/LoadError";
 import { MetricPill } from "@/components/ui/MetricPill";
-import { useActivateAccount, useCombines, useRequestPayout } from "@/hooks/useCombines";
+import {
+  useActivateAccount,
+  useCombineEvents,
+  useCombines,
+  useRequestPayout,
+} from "@/hooks/useCombines";
 import { splitPct, splitTokenFromValue } from "@/lib/pricing";
-import type { CombineOut } from "@/types/combine";
+import type { CombineEvent, CombineOut } from "@/types/combine";
 
 /**
  * /payouts — funded-account payouts (Topstep's Payouts tab). Lists every
  * FUNDED combine with its available payout (the trader's chosen 80/20 or
- * 50/50 split of realized profit, net of prior requests) and a request
- * button. Accounts on the activation path must pay the one-time $149 fee
- * first. Simulated: requesting logs an event and moves no money.
+ * 50/50 split of realized profit, net of prior requests), the split math
+ * spelled out, and a request flow: pick an amount (defaults to the max
+ * eligible), confirm, and the backend's payout gates (minimum, winning-day
+ * count, 24h spacing, MLL buffer) answer with a 409 detail we surface
+ * verbatim. A ledger of prior payout events sits below. Accounts on the
+ * activation path must pay the one-time $149 fee first. Simulated:
+ * requesting logs an event and moves no money.
  */
 export function PayoutsPage() {
   const { data, isPending, isError, refetch } = useCombines();
@@ -64,6 +75,8 @@ export function PayoutsPage() {
             </div>
           )}
 
+          <PayoutLedger />
+
           <span className="text-tiny text-fg-tertiary-2 leading-relaxed">
             Payouts are simulated — requesting records the event and reduces
             the available figure, but moves no real money. Your split (80/20 or
@@ -78,9 +91,12 @@ export function PayoutsPage() {
 function PayoutRow({ combine }: { combine: CombineOut }) {
   const payout = useRequestPayout();
   const activate = useActivateAccount();
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const available = combine.payout_eligible;
   const needsActivation = combine.activation_required;
-  const splitText = `${splitPct(splitTokenFromValue(combine.profit_split))}%`;
+  const profit = Math.max(0, combine.realized_pnl);
+  const pct = splitPct(splitTokenFromValue(combine.profit_split));
+  const splitText = `${pct}%`;
   return (
     <div
       className="border border-hairline-strong bg-tier-1 flex items-center gap-4 px-3 py-2.5"
@@ -107,8 +123,16 @@ function PayoutRow({ combine }: { combine: CombineOut }) {
         <div className="text-fg-tertiary-2 tabular-nums mt-0.5" style={{ fontSize: 12 }}>
           {combine.tier} · {combine.account_code}
         </div>
+        {/* The split math, spelled out — where "available" comes from. */}
+        {!needsActivation && (
+          <div className="text-fg-tertiary tabular-nums mt-0.5" style={{ fontSize: 12 }}>
+            {formatDollar(profit)} profit × {splitText} −{" "}
+            {formatDollar(combine.payout_requested)} paid ={" "}
+            {formatDollar(available)} available
+          </div>
+        )}
       </div>
-      <Figure label="Realized profit" value={formatDollar(Math.max(0, combine.realized_pnl))} />
+      <Figure label="Realized profit" value={formatDollar(profit)} />
       <Figure label="Requested" value={formatDollar(combine.payout_requested)} />
       <Figure
         label="Available"
@@ -137,15 +161,173 @@ function PayoutRow({ combine }: { combine: CombineOut }) {
       ) : (
         <button
           type="button"
-          disabled={available <= 0 || payout.isPending}
-          onClick={() => payout.mutate(combine.id)}
+          disabled={available <= 0}
+          onClick={() => {
+            payout.reset();
+            setConfirmOpen(true);
+          }}
           className="h-8 px-3 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
           style={{ borderRadius: 0 }}
         >
-          {payout.isPending ? "…" : "Request payout"}
+          Request payout
         </button>
       )}
+      {confirmOpen && (
+        <PayoutConfirmDialog
+          combine={combine}
+          payout={payout}
+          onClose={() => setConfirmOpen(false)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Confirm step for a payout request: pick the amount (defaults to the max
+ * eligible) and confirm. A backend 409 — the minimum, winning-day, 24h, or
+ * MLL-buffer gate — renders its detail verbatim so the trader knows the
+ * exact rule that blocked the request.
+ */
+function PayoutConfirmDialog({
+  combine,
+  payout,
+  onClose,
+}: {
+  combine: CombineOut;
+  payout: ReturnType<typeof useRequestPayout>;
+  onClose: () => void;
+}) {
+  const available = combine.payout_eligible;
+  const [amountText, setAmountText] = useState(available.toFixed(2));
+  const amount = Number(amountText);
+  const valid = Number.isFinite(amount) && amount > 0 && amount <= available;
+  const profit = Math.max(0, combine.realized_pnl);
+  const splitText = `${splitPct(splitTokenFromValue(combine.profit_split))}%`;
+  const titleId = `payout-confirm-${combine.id}`;
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      labelledBy={titleId}
+      panelClassName="w-full max-w-sm bg-tier-1 border border-hairline-strong rounded-btn shadow-2xl"
+    >
+      <form
+        className="flex flex-col gap-3 px-4 py-3.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!valid || payout.isPending) return;
+          payout.mutate(
+            { id: combine.id, amount },
+            { onSuccess: onClose },
+          );
+        }}
+      >
+        <h2 id={titleId} className="text-medium font-medium text-fg-primary m-0">
+          Request payout — {combine.name}
+        </h2>
+        <div className="text-tiny text-fg-tertiary tabular-nums">
+          {formatDollar(profit)} profit × {splitText} −{" "}
+          {formatDollar(combine.payout_requested)} paid ={" "}
+          <span className="text-fg-secondary">{formatDollar(available)} available</span>
+        </div>
+        <label className="flex flex-col gap-1">
+          <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
+            Amount
+          </span>
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            max={available}
+            step={0.01}
+            value={amountText}
+            onChange={(e) => setAmountText(e.target.value)}
+            className="h-8 px-2 bg-tier-2 border border-tier-3 rounded-btn text-fg-primary text-right tabular-nums focus:border-amber focus:outline-none"
+            style={{ fontSize: 13 }}
+            aria-label="Payout amount"
+          />
+        </label>
+        {!valid && amountText.trim() !== "" && (
+          <span className="text-tiny text-warning">
+            Enter an amount between $0.01 and {formatDollar(available)}.
+          </span>
+        )}
+        {payout.isError && (
+          <div className="text-tiny text-bearish leading-relaxed" role="alert">
+            {(payout.error as Error).message}
+          </div>
+        )}
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 px-3 text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-fg-primary"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!valid || payout.isPending}
+            className="h-8 px-3 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ borderRadius: 0 }}
+          >
+            {payout.isPending ? "Requesting…" : `Confirm — ${formatDollar(valid ? amount : 0)}`}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** Prior payout requests across all accounts — date, account, amount. Fed
+ *  by the same events endpoint the dashboard feed uses, filtered to payout
+ *  events, so the ledger and the toasts can never disagree. */
+function PayoutLedger() {
+  const { data, isPending } = useCombineEvents();
+  const payouts = (data ?? []).filter((e) => e.type === "payout");
+
+  return (
+    <div className="border border-hairline-strong bg-tier-1" style={{ borderRadius: 4 }}>
+      <div className="flex items-baseline justify-between px-3 py-1.5 border-b border-hairline">
+        <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
+          Payout history
+        </span>
+        <span className="uppercase tracking-label-up text-fg-tertiary-2 tabular-nums" style={{ fontSize: 11 }}>
+          {payouts.length} request{payouts.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {isPending ? (
+        <div className="px-3 py-3 text-tiny text-fg-tertiary-2">Loading…</div>
+      ) : payouts.length === 0 ? (
+        <div className="px-3 py-3 text-tiny text-fg-tertiary-2">
+          No payouts requested yet — your requests will show up here.
+        </div>
+      ) : (
+        <ul className="divide-y divide-hairline">
+          {payouts.map((e) => (
+            <LedgerRow key={e.id} event={e} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function LedgerRow({ event }: { event: CombineEvent }) {
+  return (
+    <li className="flex items-baseline gap-3 px-3 py-1.5 tabular-nums">
+      <span className="text-tiny text-fg-tertiary-2 shrink-0" style={{ minWidth: 84 }}>
+        {formatDate(event.created_at)}
+      </span>
+      <span className="text-tiny text-fg-secondary truncate flex-1">
+        {event.combine_name ?? `Combine #${event.combine_id}`}
+      </span>
+      <span className="text-tiny text-bullish shrink-0">
+        {event.amount != null ? formatDollar(event.amount) : "—"}
+      </span>
+    </li>
   );
 }
 
@@ -181,4 +363,14 @@ function formatDollar(v: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  return d.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }

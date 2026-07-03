@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 expect.extend(toHaveNoViolations);
 
+import { MemoryRouter } from "react-router-dom";
+
 import { HelpOverlay } from "@/components/help/HelpOverlay";
 import { OnboardingTour } from "@/components/help/OnboardingTour";
 import { Modal } from "@/components/ui/Modal";
@@ -26,7 +28,11 @@ describe("a11y — WS6 overlays (axe-core)", () => {
 
   it("OnboardingTour has no axe violations", async () => {
     useOnboarding.setState({ tourOpen: true, tourSeen: false });
-    const { container } = render(<OnboardingTour />);
+    const { container } = render(
+      <MemoryRouter initialEntries={["/positions"]}>
+        <OnboardingTour />
+      </MemoryRouter>,
+    );
     expect(await axe(container)).toHaveNoViolations();
   });
 

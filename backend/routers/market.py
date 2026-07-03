@@ -18,9 +18,10 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from config import settings
-from services.alpaca_client import get_market_clock, get_quotes
+from services.alpaca_client import MarketDataUnavailable, get_market_clock, get_quotes
 from services.cache import cache
 from services.fred_client import vix_history
+from services.market_calendar import session_close_et
 
 log = logging.getLogger(__name__)
 
@@ -34,12 +35,33 @@ _ET = ZoneInfo("America/New_York")
 _PRE_OPEN = (4, 0)     # 04:00 ET
 _AFTER_CLOSE = (20, 0)  # 20:00 ET
 
+# Standard full-session close. Early-close half-days (~9/yr) end at 13:00 —
+# session_close_et() reads the actual close off the NYSE schedule.
+_STANDARD_CLOSE = time(16, 0)
+
 
 class MarketStatusResponse(BaseModel):
     status: Literal["open", "closed", "pre", "after"]
     label: str
     next_open: str | None
     next_close: str | None
+    # Today's ACTUAL session close (ISO ET; None on non-trading days) and
+    # whether it's an early close — on half-days 0DTE settles at 1pm, so the
+    # UI must be able to warn. Frontend contract: exact field names
+    # today_close / is_early_close.
+    today_close: str | None = None
+    is_early_close: bool = False
+
+
+def _now_et() -> datetime:
+    """Seam for the wall clock so the pre/after label logic is testable."""
+    return datetime.now(_ET)
+
+
+def _today_session_close() -> datetime | None:
+    """Today's actual NYSE close (tz-aware ET) from the calendar — early-close
+    aware. None when today isn't a trading day."""
+    return session_close_et(_now_et().date().isoformat())
 
 
 @router.get("/status", response_model=MarketStatusResponse)
@@ -74,17 +96,21 @@ def get_market_status() -> MarketStatusResponse:
 def _status_from_alpaca(clock) -> MarketStatusResponse:
     next_open_iso = clock.next_open.isoformat() if clock.next_open else None
     next_close_iso = clock.next_close.isoformat() if clock.next_close else None
+    today_close = _today_session_close()
+    today_close_iso = today_close.isoformat() if today_close else None
+    early = bool(today_close and today_close.astimezone(_ET).time() < _STANDARD_CLOSE)
 
     if clock.is_open:
         return MarketStatusResponse(
             status="open", label="Open",
             next_open=next_open_iso, next_close=next_close_iso,
+            today_close=today_close_iso, is_early_close=early,
         )
 
     # Closed per Alpaca. Distinguish pre/after for the header pill using
     # local ET wall clock against the conventional windows. Alpaca's clock
     # doesn't surface this directly.
-    now = datetime.now(_ET)
+    now = _now_et()
     h, m = now.hour, now.minute
     if (h, m) >= _PRE_OPEN and (h, m) < (9, 30):
         # Pre-market window, only on a trading day. If today isn't a
@@ -94,18 +120,23 @@ def _status_from_alpaca(clock) -> MarketStatusResponse:
             return MarketStatusResponse(
                 status="pre", label="Pre-market",
                 next_open=next_open_iso, next_close=next_close_iso,
+                today_close=today_close_iso, is_early_close=early,
             )
-    if (h, m) >= (16, 0) and (h, m) <= _AFTER_CLOSE:
-        # After-hours: only if today was a trading day. If the next_open
-        # is tomorrow (or later) we just spent a trading day.
+    # After-hours runs from the session's ACTUAL close (1pm on half-days,
+    # not a hardcoded 4pm) through the conventional 20:00 window.
+    if today_close is not None and now >= today_close and (h, m) <= _AFTER_CLOSE:
+        # Only if today was a trading day. If the next_open is tomorrow
+        # (or later) we just spent a trading day.
         if clock.next_open and clock.next_open.date() > now.date():
             return MarketStatusResponse(
                 status="after", label="After-hours",
                 next_open=next_open_iso, next_close=next_close_iso,
+                today_close=today_close_iso, is_early_close=early,
             )
     return MarketStatusResponse(
         status="closed", label="Closed",
         next_open=next_open_iso, next_close=next_close_iso,
+        today_close=today_close_iso, is_early_close=early,
     )
 
 
@@ -161,6 +192,11 @@ class IndexQuote(BaseModel):
     symbol: str
     price: float
     change_pct: float
+    # True when the value is a prior-session close (FRED VIXCLS publishes
+    # end-of-day with a lag) rather than a live quote — the UI labels it
+    # "(prev close)" instead of presenting a stale delta as today's move.
+    prev_close_only: bool = False
+    as_of: str | None = None
 
 
 class IndicesResponse(BaseModel):
@@ -226,4 +262,10 @@ def _vix_from_fred() -> IndexQuote | None:
     latest = series[sorted_dates[-1]]
     prev = series[sorted_dates[-2]] if len(sorted_dates) >= 2 else latest
     change_pct = (latest - prev) / prev * 100 if prev else 0.0
-    return IndexQuote(symbol="VIX", price=latest, change_pct=change_pct)
+    return IndexQuote(
+        symbol="VIX",
+        price=latest,
+        change_pct=change_pct,
+        prev_close_only=True,
+        as_of=sorted_dates[-1].isoformat() if hasattr(sorted_dates[-1], "isoformat") else str(sorted_dates[-1]),
+    )

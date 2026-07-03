@@ -21,6 +21,21 @@ class Settings(BaseSettings):
     alpaca_options_feed: str = "indicative"
 
     # ---------------------------------------------------------------------
+    # Alpaca REST call budget. The free tier allows ~200 requests/min
+    # (~3.3/s); the TOTAL across both buckets must stay under that. The
+    # budget is split so background warming (prewarm / watchlist refresh /
+    # chain collect) can never starve a live trader: request handlers draw
+    # from a RESERVED interactive share, scheduled jobs from the remainder.
+    alpaca_rate_limit_per_s: float = 3.0
+    alpaca_interactive_reserve_per_s: float = 1.0
+    # Hard deadline (seconds) on every Alpaca SDK network hop. The SDK
+    # exposes no request timeout, so without this a stalled call hangs the
+    # calling thread (request handler or scheduler job) indefinitely — the
+    # circuit breaker only trips on ERRORS, never on a stall. Kept
+    # comfortably above a healthy fetch (~1-3s).
+    alpaca_sdk_timeout_s: float = 6.0
+
+    # ---------------------------------------------------------------------
     # WS6 — real-time data feed (built behind a flag; ships DORMANT).
     #
     # OFF by default: with the flag False, `get_realtime_feed()` returns the

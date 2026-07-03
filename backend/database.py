@@ -200,6 +200,10 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("pricing_path", "VARCHAR(16) NOT NULL DEFAULT 'activation'"),
     ("profit_split", "FLOAT NOT NULL DEFAULT 0.8"),
     ("funded_activated_at", "DATETIME"),
+    # Funded-stage accounting epoch (stamped at activation): from it the
+    # balance restarts at the tier start, payouts debit it, and the HWM
+    # basis re-seeds. Backfilled from funded_activated_at below.
+    ("funded_epoch_at", "DATETIME"),
     # Copy trading: does this combine mirror the user's lead combine's trades,
     # and the size multiplier applied before clamping to its cap.
     ("copy_follow", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -262,6 +266,32 @@ def _additive_migrate_combines() -> None:
                 text(
                     "UPDATE combines SET funded_activated_at = funded_at "
                     "WHERE funded_at IS NOT NULL"
+                )
+            )
+        # Adopt already-activated funded accounts into the funded-stage
+        # accounting epoch, and re-seed their HWM basis to the tier start:
+        # the epoch basis restarts the balance at the starting balance, so
+        # keeping the eval-era HWM would park the MLL at/above the fresh
+        # balance — an instant fail on the first read after upgrading.
+        if "funded_epoch_at" in {name for name, _ in pending}:
+            from services.account_tiers import TIERS
+
+            conn.execute(
+                text(
+                    "UPDATE combines SET funded_epoch_at = funded_activated_at "
+                    "WHERE funded_activated_at IS NOT NULL"
+                )
+            )
+            tier_case = " ".join(
+                f"WHEN '{key}' THEN {tier.starting_balance}"
+                for key, tier in TIERS.items()
+            )
+            conn.execute(
+                text(
+                    f"UPDATE combines SET "
+                    f"hwm = CASE tier {tier_case} ELSE hwm END, "
+                    f"settled_hwm = CASE tier {tier_case} ELSE settled_hwm END "
+                    f"WHERE funded_activated_at IS NOT NULL"
                 )
             )
         conn.commit()

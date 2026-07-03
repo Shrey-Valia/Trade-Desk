@@ -25,5 +25,21 @@ class TTLCache:
         with self._lock:
             self._store[key] = (time.monotonic() + ttl_seconds, value)
 
+    def sweep(self) -> int:
+        """Drop every expired entry; returns the count removed.
+
+        Expiry otherwise only happens on a get() of the SAME key, so
+        date-rotated keys (bars:{sym}:{tf}:{date}, has_0dte:{sym}:{date}, …)
+        become unreachable garbage at the day roll and accumulate for the
+        life of the process — bar lists being the heavy case. A scheduler
+        job calls this periodically.
+        """
+        now = time.monotonic()
+        with self._lock:
+            dead = [k for k, (expires_at, _) in self._store.items() if expires_at < now]
+            for k in dead:
+                self._store.pop(k, None)
+            return len(dead)
+
 
 cache = TTLCache()

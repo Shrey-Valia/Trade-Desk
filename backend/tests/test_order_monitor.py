@@ -155,12 +155,12 @@ def test_working_order_cancelled_when_combine_failed(auth_client, session_factor
     s.close()
 
 
-def test_dll_exhausted_by_realized_loss_does_not_liquidate_open_winner(auth_client, session_factory):
-    """When the DAILY loss budget is already met by REALIZED (closed) trades, the
-    combine is day-locked but its OPEN positions are NOT force-closed — least of
-    all winners. Regression: the DLL liquidation branch fired on realized day-loss
-    alone (snap.dll_used >= budget), flattening profitable open positions whose
-    closure can't reduce the realized day-loss anyway."""
+def test_dll_day_lock_flattens_open_positions(auth_client, session_factory):
+    """Topstep semantics: once REALIZED day-loss exhausts the DLL budget the
+    combine is day-locked AND its open book is flattened in the same pass —
+    otherwise open positions keep bleeding with no daily enforcement until the
+    much deeper MLL floor (the DLL branch of _breaches_floor goes dead once
+    realized alone meets the budget)."""
     c = make_combine(auth_client, "50K")
     # Realized day-loss already AT the 50K DLL budget ($1,500) → day-locked.
     # Balance 48,500 + URPL stays above the 48,000 MLL floor, so MLL doesn't bind.
@@ -168,11 +168,14 @@ def test_dll_exhausted_by_realized_loss_does_not_liquidate_open_winner(auth_clie
         session_factory, c["id"], status="closed",
         realized_pnl=-1500.0, exit_date=datetime.now(timezone.utc),
     )
-    open_tid = _seed(session_factory, c["id"], status="open")  # an OPEN winner
+    open_tid = _seed(session_factory, c["id"], status="open")
     summary = _run(session_factory, unrealized_for=lambda t, s: 200.0)
-    assert summary.get("liquidated", 0) == 0
+    assert summary.get("liquidated", 0) == 1
     s = session_factory()
-    assert s.get(Trade, open_tid).status == "open"  # winner survives the day-lock
+    t = s.get(Trade, open_tid)
+    assert t.status == "closed"
+    assert t.close_reason == "liquidation"
+    assert "daily loss limit" in (t.notes or "")
     s.close()
 
 

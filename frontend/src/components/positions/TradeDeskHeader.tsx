@@ -155,7 +155,45 @@ function PriceReadout({ symbol }: { symbol: string | null }) {
         {sign}
         {detail.change_dollar.toFixed(2)} ({formatPercent(detail.change_pct)})
       </span>
+      <FreshnessPill asOf={detail.as_of ?? null} servedStale={detail.served_stale ?? false} />
     </div>
+  );
+}
+
+/**
+ * Data-freshness readout beside the price — every real terminal shows one.
+ * Normal: a quiet "as of HH:MM:SS". Degraded (server flagged served_stale,
+ * or the stamp is old): a loud STALE badge — the trader must never watch a
+ * frozen price believing it's live.
+ */
+function FreshnessPill({ asOf, servedStale }: { asOf: string | null; servedStale: boolean }) {
+  const STALE_AFTER_MS = 60_000;
+  const ageMs = asOf ? Date.now() - new Date(asOf).getTime() : null;
+  const isStale = servedStale || (ageMs != null && ageMs > STALE_AFTER_MS);
+  if (asOf == null && !servedStale) return null;
+  if (isStale) {
+    return (
+      <span
+        className="inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
+        style={{ fontSize: 11, height: 14 }}
+        title={
+          servedStale
+            ? "The data feed stalled — this is the last good snapshot, not a live price."
+            : `Last update ${formatClockEt(asOf!)} ET — older than ${STALE_AFTER_MS / 1000}s.`
+        }
+      >
+        STALE
+      </span>
+    );
+  }
+  return (
+    <span
+      className="text-fg-tertiary-2"
+      style={{ fontSize: 11 }}
+      title="Timestamp of the quote behind this price."
+    >
+      as of {formatClockEt(asOf!)}
+    </span>
   );
 }
 
@@ -429,9 +467,15 @@ function MetricPill({
 function MarketPill() {
   const { data: status } = useMarketStatus();
   const isOpen = status?.status === "open";
+  const earlyClose = status?.is_early_close === true;
   const detail = useMemo(() => {
     if (!status) return "—";
     if (isOpen) {
+      // On half days the close time IS the risk event — 0DTE settles at the
+      // early bell, so lead with it.
+      if (earlyClose && status.today_close) {
+        return `early close ${formatClockEt(status.today_close)} ET`;
+      }
       if (status.next_close) {
         return `until ${formatClockEt(status.next_close)} ET`;
       }
@@ -441,19 +485,23 @@ function MarketPill() {
       return `until ${formatClockEt(status.next_open)} ET`;
     }
     return status.label;
-  }, [status, isOpen]);
-  const tone = isOpen ? "text-bullish" : "text-bearish";
+  }, [status, isOpen, earlyClose]);
+  const tone = isOpen ? (earlyClose ? "text-warning" : "text-bullish") : "text-bearish";
   return (
     <div
       className="bg-tier-2 border border-tier-3 rounded-btn px-2 py-1 flex flex-col leading-tight shrink-0"
       style={{ height: 44 }}
-      title={status?.label}
+      title={
+        earlyClose && status?.today_close
+          ? `Early close today — the session (and every 0DTE contract) ends at ${formatClockEt(status.today_close)} ET.`
+          : status?.label
+      }
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
         style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
-        MKT
+        {earlyClose ? "MKT ⚠" : "MKT"}
       </span>
       <span
         className={`tabular-nums font-medium uppercase tracking-label-up whitespace-nowrap ${tone}`}

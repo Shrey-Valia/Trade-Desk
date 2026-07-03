@@ -93,6 +93,12 @@ def activation_fee(path: str) -> float:
     return ACTIVATION_FEE if path == "activation" else 0.0
 
 
+def reset_fee(tier: str, path: str = DEFAULT_PATH, split: float = DEFAULT_SPLIT) -> float:
+    """Fee to reset a FAILED evaluation: the combine's monthly rate for its
+    chosen path + split (Topstep prices resets at the monthly subscription)."""
+    return monthly_price(tier, path, split)
+
+
 def quote(tier: str, path: str = DEFAULT_PATH, split: float = DEFAULT_SPLIT) -> dict:
     """A full price quote for one (tier, path, split) — what the order
     summary and the payment ledger read."""

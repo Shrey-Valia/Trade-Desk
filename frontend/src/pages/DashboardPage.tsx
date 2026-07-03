@@ -26,7 +26,8 @@ import type { CombineOut } from "@/types/combine";
  *
  * Everything here is display + management; rule numbers come from the
  * same computed account-state/combines payloads the terminal header
- * uses. Objectives are display-only — nothing settles a combine yet.
+ * uses — the combine engine settles evaluations itself (auto-funds a
+ * pass, fails an MLL breach).
  */
 export function DashboardPage() {
   const combines = useCombines();
@@ -471,7 +472,7 @@ function PathToFunding() {
           />
           <span className="text-tiny text-fg-tertiary-2">
             {progress >= 1
-              ? "Target reached — evaluation review is a manual step for now."
+              ? "Target reached — the account funds automatically once min trading days + consistency are met."
               : `${Math.round(progress * 100)}% of the way there.`}
           </span>
         </div>
@@ -546,8 +547,9 @@ function PathToFunding() {
         <span className="text-tiny text-fg-tertiary leading-relaxed">
           Profit target, consistency, and min trading days are the pass
           conditions the combine engine evaluates; the MLL/DLL floors are
-          the same numbers as the terminal header. Funding payout is still a
-          manual step.
+          the same numbers as the terminal header. The account funds
+          automatically the moment all three are met — then you activate it
+          on the Payouts page to unlock withdrawals.
         </span>
       </div>
     </Panel>

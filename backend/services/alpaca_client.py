@@ -7,10 +7,13 @@ NOTE: this uses `alpaca-py` (the maintained package) — never the legacy
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Callable, TypeVar
 from zoneinfo import ZoneInfo
+
+from fastapi import HTTPException
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.news import NewsClient
@@ -29,48 +32,15 @@ from alpaca.trading.client import TradingClient
 from calculations.types import ContractRow
 from config import settings
 from services.cache import cache
-from services.rate_limit import TokenBucket
+from services.rate_limit import TokenBucket, in_background_budget
 from services.realtime_feed import get_realtime_feed
-from services.resilience import CircuitOpenError, get_breaker, resilient_call
-
-# Per-call spacing for the single Alpaca account key. Like the Finnhub
-# client's 0.3s spacing, this smooths the per-symbol fan-out of the
-# watchlist refresh + hot-ticker prewarm so they can't burst into a 429.
-# ~6 calls/sec sustained with a small burst budget (capacity 8) keeps us
-# comfortably under Alpaca's limit while staying responsive for one-off
-# interactive requests. The bucket is process-wide and thread-safe (the
-# refresh/prewarm/order jobs all run on the scheduler's worker threads).
-_ALPACA_RATE = 6.0
-_ALPACA_BURST = 8.0
-_alpaca_bucket = TokenBucket(_ALPACA_RATE, _ALPACA_BURST)
-
-
-def _spaced(fn: Callable[[], T]) -> T:
-    """Block on the shared Alpaca token bucket, then call `fn`. Wrap the
-    SDK call so the spacing happens right before the network hop (and
-    inside resilient_call's breaker check, so a short-circuited call costs
-    no tokens)."""
-    _alpaca_bucket.take()
-    return fn()
-
-
-class MarketDataUnavailable(RuntimeError):
-    """The upstream market-data feed is degraded — the circuit breaker is
-    open or the call was rate-limited — as opposed to a genuine "no data
-    for this symbol/timeframe" (which is an empty result, not an error).
-
-    Chart endpoints map this to a typed 503 (+ Retry-After) so the
-    frontend can render an explicit "data unavailable — retrying" state
-    with auto-retry instead of a 404 or an infinite spinner."""
-
-
-def _is_degraded(exc: Exception) -> bool:
-    """True when `exc` means the feed is throttled/circuit-open (a transient,
-    retryable degradation) rather than a malformed/empty response."""
-    if isinstance(exc, CircuitOpenError):
-        return True
-    s = str(exc).lower()
-    return "too many requests" in s or "429" in s or "rate limit" in s
+from services.resilience import (
+    CircuitOpenError,
+    breaker_retry_after,
+    get_breaker,
+    resilient_call,
+)
+from services.timeouts import CallTimeout, run_with_timeout
 
 # All Alpaca SDK calls share ONE breaker: rate limits are account-wide, so a
 # 429 on the option feed means the stock feed is throttled too. One open
@@ -78,6 +48,79 @@ def _is_degraded(exc: Exception) -> bool:
 # "too many requests" cascade. CircuitOpenError surfaces as the same graceful
 # "no data" the existing per-call try/except already returns.
 _ALPACA = "alpaca"
+
+# Per-call spacing for the single Alpaca account key. Like the Finnhub
+# client's 0.3s spacing, this smooths the per-symbol fan-out of the
+# watchlist refresh + hot-ticker prewarm so they can't burst into a 429.
+# The free tier allows ~200 requests/min (~3.3/s); the two buckets below
+# SUM to settings.alpaca_rate_limit_per_s (default 3/s) so sustained load
+# stays under quota, and the split reserves interactive headroom: request
+# handlers draw from their own bucket, so a background fan-out can never
+# queue a live trader's click behind fifty warming calls. Both buckets are
+# process-wide and thread-safe (the refresh/prewarm/order jobs all run on
+# the scheduler's worker threads).
+_ALPACA_RATE = max(0.5, float(settings.alpaca_rate_limit_per_s))
+_INTERACTIVE_RATE = min(
+    _ALPACA_RATE, max(0.25, float(settings.alpaca_interactive_reserve_per_s))
+)
+_BACKGROUND_RATE = max(0.25, _ALPACA_RATE - _INTERACTIVE_RATE)
+# Small burst budgets keep a one-off interactive hit (a ticker click =
+# quote + chain + bars) instant after any idle moment.
+_interactive_bucket = TokenBucket(_INTERACTIVE_RATE, 5.0)
+_background_bucket = TokenBucket(_BACKGROUND_RATE, 4.0)
+
+# The SDK clients accept no request timeout, so a stalled network hop would
+# otherwise hang whichever thread called it (a FastAPI worker or a scheduler
+# job) forever — the circuit breaker only trips on ERRORS, never on a stall.
+# Every SDK call runs on this dedicated executor under a hard deadline
+# (settings.alpaca_sdk_timeout_s). Sized generously so a handful of truly
+# stuck workers (blocking I/O can't be interrupted) can't starve request
+# handlers, and run_with_timeout cancels still-queued calls on timeout so a
+# backlog of doomed calls never burns rate-limit tokens later.
+_SDK_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="td-alpaca-sdk")
+
+
+def _spaced(fn: Callable[[], T], *, timeout_s: float | None = None) -> T:
+    """Block on the Alpaca token bucket for this context (background for
+    scheduled jobs, the reserved interactive bucket otherwise), then run
+    `fn` under the SDK deadline. Wraps the SDK call so the spacing happens
+    right before the network hop (and inside resilient_call's breaker
+    check, so a short-circuited call costs no tokens). Raises CallTimeout
+    on a stall — treated as degraded by `_is_degraded`, NOT as "no data"."""
+    bucket = _background_bucket if in_background_budget() else _interactive_bucket
+    bucket.take()
+    deadline = float(timeout_s if timeout_s is not None else settings.alpaca_sdk_timeout_s)
+    return run_with_timeout(fn, timeout_s=deadline, executor=_SDK_EXECUTOR)
+
+
+class MarketDataUnavailable(HTTPException):
+    """The upstream market-data feed is degraded — the circuit breaker is
+    open, the call was rate-limited, or a stalled SDK call hit its deadline
+    — as opposed to a genuine "no data for this symbol/timeframe" (which is
+    an empty result, not an error).
+
+    An HTTPException (503 + Retry-After) so endpoints that DON'T special-
+    case it (e.g. the 0DTE trade paths) still fail fast with the right
+    status instead of a 500. The chart/detail/metrics endpoints catch it to
+    serve stale candles or the typed `{"error": "market_data_unavailable"}`
+    body with auto-retry instead of a 404 or an infinite spinner."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            status_code=503,
+            detail=detail,
+            headers={"Retry-After": str(breaker_retry_after(_ALPACA))},
+        )
+
+
+def _is_degraded(exc: Exception) -> bool:
+    """True when `exc` means the feed is throttled/circuit-open/stalled (a
+    transient, retryable degradation) rather than a malformed/empty
+    response."""
+    if isinstance(exc, (CircuitOpenError, CallTimeout)):
+        return True
+    s = str(exc).lower()
+    return "too many requests" in s or "429" in s or "rate limit" in s
 
 # WS6 — dedicated breaker for the real-time STREAM read-through. Kept SEPARATE
 # from the "alpaca" REST breaker so a misbehaving stream (raising on read, a
@@ -105,16 +148,25 @@ def _stream_quote(symbol: str) -> "Quote | None":
     if not breaker.allow():
         return None
     try:
+        # The stream carries no previous daily close and no daily
+        # aggregates; reuse the most recent REST-cached snapshot so
+        # change_pct stays correct and the day range/volume don't silently
+        # zero out. If none is cached yet, fall through to REST (which
+        # fills all of it).
+        rest = _cached_rest_quote(symbol)
+        if rest is None or float(rest.prev_close) <= 0:
+            return None
         quote = Quote(
             symbol=symbol,
             price=float(fq.last),
-            # The stream carries no previous daily close; reuse the most
-            # recent REST-cached prev_close so change_pct stays correct. If
-            # none is cached yet, fall through to REST (which fills it).
-            prev_close=_cached_prev_close(symbol),
+            prev_close=float(rest.prev_close),
+            day_high=rest.day_high,
+            day_low=rest.day_low,
+            day_volume=rest.day_volume,
+            # Tick timestamp → as_of so the stale-spot guard keeps working
+            # when the stream serves the quote instead of REST.
+            as_of=_tick_ts_aware(fq.ts),
         )
-        if quote.prev_close <= 0:
-            return None
         breaker.record_success()
         return quote
     except Exception as exc:  # noqa: BLE001
@@ -123,15 +175,29 @@ def _stream_quote(symbol: str) -> "Quote | None":
         return None
 
 
-def _cached_prev_close(symbol: str) -> float:
-    """Best-effort previous daily close for a streamed quote, pulled from a
-    prior REST snapshot still in the TTLCache. Returns 0.0 when unknown (the
-    caller then declines the streamed value and lets REST repopulate)."""
+def _cached_rest_quote(symbol: str) -> "Quote | None":
+    """Best-effort last REST-fetched Quote for `symbol`, pulled from a prior
+    snapshot still in the TTLCache. Supplies the prev_close + day_* fields a
+    streamed tick lacks. Returns None when unknown (the caller then declines
+    the streamed value and lets REST repopulate)."""
     for key, value in _iter_snapshot_cache():
         q = value.get(symbol) if isinstance(value, dict) else None
         if q is not None and getattr(q, "prev_close", 0):
-            return float(q.prev_close)
-    return 0.0
+            return q
+    return None
+
+
+def _tick_ts_aware(ts: datetime | None) -> datetime | None:
+    """Coerce a stream tick timestamp to tz-aware. Provider timestamps are
+    already UTC-aware; the feed's defensive fallback is a NAIVE local
+    `datetime.now()`, so `astimezone()` (which interprets naive as local
+    time) is the correct attach — assuming UTC would fake hours of staleness
+    and trip the stale-spot fill guard."""
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        return ts.astimezone()
+    return ts
 
 
 def _iter_snapshot_cache():
@@ -391,13 +457,17 @@ def get_quotes(symbols: list[str]) -> dict[str, Quote]:
     req = StockSnapshotRequest(symbol_or_symbols=symbols)
     try:
         raw = resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_stock_snapshot(req)))
-    except Exception:  # noqa: BLE001
-        # Degrade like get_market_clock / get_year_bars: a rate-limit, open
-        # circuit, or feed error must not 500 every caller (indices widget,
-        # ticker detail/chart/metrics, the 0DTE chain). Every caller uses
-        # .get(sym) and handles a missing quote — a clean 503/404 or a
-        # fallback. Not cached, so recovery is immediate when Alpaca returns.
+    except Exception as exc:  # noqa: BLE001
         log.exception("alpaca snapshot fetch failed for %s", symbols)
+        # Degraded (open circuit / 429 / stalled hop) is a TRANSIENT state,
+        # not "these symbols don't exist" — surface the typed 503 so /detail
+        # and /metrics don't 404 a real ticker and the 0DTE paths fail fast.
+        # Not cached, so recovery is immediate when Alpaca returns.
+        if _is_degraded(exc):
+            raise MarketDataUnavailable(f"quotes degraded: {exc}") from exc
+        # Anything else degrades to {} as before: every caller uses
+        # .get(sym) and handles a missing quote — a clean 503/404 or a
+        # fallback.
         return {}
 
     out: dict[str, Quote] = {}
@@ -528,8 +598,18 @@ def _fetch_chain(symbol: str):
     client = _option_client()
     req = OptionChainRequest(underlying_symbol=symbol, feed=settings.alpaca_options_feed)
     try:
-        return resilient_call(_ALPACA, lambda: _spaced(lambda: client.get_option_chain(req)))
+        # The whole-chain snapshot is the heaviest single SDK hop (thousands
+        # of contracts on a liquid name) — give it double the per-hop budget.
+        return resilient_call(_ALPACA, lambda: _spaced(
+            lambda: client.get_option_chain(req),
+            timeout_s=settings.alpaca_sdk_timeout_s * 2,
+        ))
     except Exception as exc:  # noqa: BLE001
+        # A degraded feed must NOT come back as "no chain" — callers
+        # negative-cache that for 5 min, leaving the chain dead well after
+        # Alpaca recovers. Raise the typed 503 instead (fail-fast, uncached).
+        if _is_degraded(exc):
+            raise MarketDataUnavailable(f"{symbol} chain degraded: {exc}") from exc
         log.warning("alpaca chain fetch failed for %s: %s", symbol, exc)
         return None
 

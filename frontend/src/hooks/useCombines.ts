@@ -100,11 +100,14 @@ export function useResetCombine() {
   });
 }
 
-/** Request a payout on a funded account (simulated). */
+/** Request a payout on a funded account (simulated). `amount` omitted
+ *  books the max eligible. Gate rejections (409) carry the backend's
+ *  human-readable detail — callers surface `mutation.error` verbatim. */
 export function useRequestPayout() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => requestPayout(id),
+    mutationFn: (args: { id: number; amount?: number }) =>
+      requestPayout(args.id, args.amount),
     onSuccess: (payout) => {
       qc.invalidateQueries({ queryKey: COMBINES_KEY });
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });

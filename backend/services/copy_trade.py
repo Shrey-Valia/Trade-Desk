@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -45,6 +46,16 @@ def _follower_cap(combine: Combine) -> int:
     """Follower's max-contracts allowance (scaling-plan cap by built equity)."""
     settled_profit = max(0.0, combine.settled_hwm - TIERS[combine.tier].starting_balance)
     return scaling_max_contracts(combine.tier, settled_profit)
+
+
+def _follower_oco_group(lead_group: str, follower_id: int) -> str:
+    """Fresh per-follower OCO group that PRESERVES the sibling pairing.
+    Deterministic (uuid5 of lead group + follower id): the two legs of a lead
+    bracket pair are mirrored in separate calls, so re-deriving the same value
+    keeps the follower's copies paired with each other — while staying distinct
+    from the lead's group so a follower-side fill can't cancel the lead's (or
+    another follower's) resting sibling."""
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"copy:{lead_group}:{follower_id}"))
 
 
 def _day_locked(
@@ -115,6 +126,17 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             # at least 1 contract for an enabled follower.
             scaled = max(1, round(int(leg.get("contracts", 1)) * mult))
             leg["contracts"] = min(scaled, cap)
+        # AGGREGATE cap, same convention as the direct open path: the scaling
+        # plan limits TOTAL contracts across all legs of all open+working
+        # positions, not each leg in isolation (the per-leg clamp above lets a
+        # 2-leg straddle mirror 2× the cap). Skip when the mirror doesn't fit.
+        from routers.zerodte import _open_contracts_for_combine  # lazy — avoids import cycle
+
+        mirrored_total = sum(int(leg.get("contracts", 1) or 1) for leg in legs)
+        open_now = _open_contracts_for_combine(session, f.id)
+        if open_now + mirrored_total > cap:
+            result.skipped.append((f.id, "scaling cap exceeded"))
+            continue
         net = compute_net_debit_credit([TradeLeg(**leg) for leg in legs])
 
         # Per-follower bracket overrides win; fall back to the lead's levels
@@ -133,6 +155,16 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             status=lead_trade.status,
             order_type=lead_trade.order_type,
             limit_price=lead_trade.limit_price,
+            # stop_price verbatim: without it a mirrored buy stop-limit arms
+            # instantly against 0.0 and a sell stop-limit never arms.
+            stop_price=lead_trade.stop_price,
+            # Fresh per-follower OCO group preserving the sibling pairing —
+            # see _follower_oco_group.
+            oco_group=(
+                _follower_oco_group(lead_trade.oco_group, f.id)
+                if lead_trade.oco_group
+                else None
+            ),
             time_in_force=lead_trade.time_in_force,
             stop_loss=stop_loss,
             take_profit=take_profit,

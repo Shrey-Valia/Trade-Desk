@@ -13,12 +13,21 @@ import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
-import { fetchTradeAnalytics, scaleOutTrade, updateTrade } from "@/lib/api";
+import {
+  cancelOrder,
+  fetchTradeAnalytics,
+  scaleOutTrade,
+  updateTrade,
+} from "@/lib/api";
 import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
-import { useHotkeyActions } from "@/stores/hotkeyActions";
+import {
+  isIntentFresh,
+  useHotkeyActions,
+  useHotkeyConsumer,
+} from "@/stores/hotkeyActions";
 import { useSelectedTicker } from "@/stores/selectedTicker";
 import { toast } from "@/stores/toast";
 import { isZeroDteTrade, STRATEGY_LABELS, type Trade, type TradeAnalytics } from "@/types/journal";
@@ -94,6 +103,16 @@ export function BottomStrip() {
     [openPositions, openAnalytics],
   );
 
+  // Panic-key targets (F-F flatten / X-X cancel-all) live at strip level so
+  // they work whenever the terminal is on screen — selection or not.
+  const workingOrders = useMemo(
+    () =>
+      trades.filter(
+        (t) => t.status === "working" && (t.tier ?? "50K") === activeTier,
+      ),
+    [trades, activeTier],
+  );
+
   // No active position → pre-execution strip: KEY LEVELS inline + a TODAY
   // summary row, PLUS the live activity FEED (combine lifecycle events +
   // the user's own opens/closes). OPEN POSITION and THETA SCRUBBER stay
@@ -104,6 +123,7 @@ export function BottomStrip() {
         className="border-t border-hairline bg-tier-0 shrink-0 flex flex-col"
         style={{ height: 150 }}
       >
+        <BulkHotkeys openCount={openPositions.length} workingOrders={workingOrders} />
         <KeyLevelsInline symbol={symbol} />
         <TodayInline trades={trades} />
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-t border-hairline">
@@ -117,6 +137,7 @@ export function BottomStrip() {
     <div
       className="grid border-t border-hairline bg-tier-0 shrink-0 grid-cols-1 sm:grid-cols-2 md:grid-cols-5 md:h-[280px]"
     >
+      <BulkHotkeys openCount={openPositions.length} workingOrders={workingOrders} />
       <Column>
         <OpenPositionCol
           trade={activeTrade}
@@ -398,19 +419,18 @@ function OpenPositionCol({
   const queryClient = useQueryClient();
   const setActiveTradeId = useActivePosition((s) => s.setTradeId);
   // The position's true live unrealized P&L — independent of the theta
-  // scrubber. Closing books THIS, not the scrubber's what-if. `commission`
-  // is the $/side already folded into unrealized (entry side); on close we
-  // subtract the exit side too so realized reflects the round trip.
-  const liveUpl = liveAnalytics?.unrealized_pnl ?? 0;
+  // scrubber, shown BEST-EFFORT ('—' when the feed is stalled). The exit
+  // itself never depends on it: the backend recomputes realized P&L
+  // server-side from its own mark, so a close posts only status + exit_date.
+  // A trader must be able to bail out of a losing 0DTE during a feed stall.
+  const liveUpl = liveAnalytics?.unrealized_pnl ?? null;
   const commissionSide = liveAnalytics?.commission ?? 0;
   const close = useMutation({
     mutationFn: async () => {
-      if (!trade || !liveAnalytics) return null;
+      if (!trade) return null;
       return updateTrade(trade.id, {
         status: "closed",
         exit_date: new Date().toISOString(),
-        exit_underlying_price: liveAnalytics.spot,
-        realized_pnl: liveAnalytics.unrealized_pnl - commissionSide,
       });
     },
     onSuccess: () => {
@@ -423,21 +443,24 @@ function OpenPositionCol({
     onError: (e) => toast.error((e as Error)?.message || "Could not close position"),
   });
 
-  // Scale-out: close `closeQty` of `held` contracts (default = full). A partial
-  // close books the round-trip P&L (UPL − exit commission) split proportionally
-  // and leaves the remainder open, still tracking live.
+  // Scale-out: close `closeQty` of `held` contracts (default = full). The
+  // slice's realized is RECOMPUTED server-side (the payload's realized_pnl is
+  // deprecated + ignored) — the estimate below is display-only, so a stalled
+  // analytics feed never blocks the exit.
   const held = trade ? totalContracts(trade) : 1;
   const [rawCloseQty, setCloseQty] = useState<number | null>(null);
   const closeQty = Math.min(held, Math.max(1, rawCloseQty ?? held));
   const isPartial = closeQty < held;
-  const sliceRealized = held > 0 ? (liveUpl - commissionSide) * (closeQty / held) : 0;
+  const sliceRealized =
+    liveUpl != null && held > 0
+      ? (liveUpl - commissionSide) * (closeQty / held)
+      : null;
   const scaleOut = useMutation({
     mutationFn: async () => {
-      if (!trade || !liveAnalytics) return null;
+      if (!trade) return null;
       return scaleOutTrade(trade.id, {
         qty: closeQty,
-        realized_pnl: sliceRealized,
-        exit_underlying_price: liveAnalytics.spot,
+        realized_pnl: 0, // deprecated — server recomputes from its own mark
       });
     },
     onSuccess: () => {
@@ -464,7 +487,7 @@ function OpenPositionCol({
   useEffect(() => {
     if (hotkeyIntent !== "closeActive") return;
     consumeHotkey();
-    if (!trade || !liveAnalytics || close.isPending || scaleOut.isPending) return;
+    if (!trade || close.isPending || scaleOut.isPending) return;
     const now = Date.now();
     if (now - closeArmRef.current > 3000) {
       // First press → arm; require a confirming second press.
@@ -559,14 +582,14 @@ function OpenPositionCol({
             </span>
             <span
               className={`text-large font-medium ${
-                liveUpl > 0
+                liveUpl != null && liveUpl > 0
                   ? "text-bullish"
-                  : liveUpl < 0
+                  : liveUpl != null && liveUpl < 0
                     ? "text-bearish"
                     : "text-fg-secondary"
               }`}
             >
-              {formatSignedDollar(liveUpl)}
+              {liveUpl == null ? "—" : formatSignedDollar(liveUpl)}
             </span>
           </div>
           {analytics && (
@@ -581,7 +604,7 @@ function OpenPositionCol({
               <QtyStepper qty={closeQty} max={held} onChange={setCloseQty} />
             )}
             <CloseButton
-              disabled={!liveAnalytics || close.isPending || scaleOut.isPending}
+              disabled={close.isPending || scaleOut.isPending}
               upl={isPartial ? sliceRealized : liveUpl}
               partialQty={isPartial ? closeQty : null}
               totalQty={held}
@@ -596,10 +619,110 @@ function OpenPositionCol({
 }
 
 /**
+ * Invisible strip-level consumer for the panic hotkeys: F-F flattens every
+ * open position, X-X cancels every working order. Mounted whenever the
+ * terminal strip is on screen (selection or not) so the kill switches never
+ * depend on what's focused. Same double-press arming as the C-C close —
+ * a single keystroke must NOT liquidate a book.
+ */
+function BulkHotkeys({
+  openCount,
+  workingOrders,
+}: {
+  openCount: number;
+  workingOrders: Trade[];
+}) {
+  const queryClient = useQueryClient();
+  const setActiveTradeId = useActivePosition((s) => s.setTradeId);
+  useHotkeyConsumer(["flattenAll", "cancelAllOrders"]);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+    queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+  };
+
+  const flatten = useMutation({
+    mutationFn: flattenPositions,
+    onSuccess: (r) => {
+      invalidate();
+      setActiveTradeId(null);
+      toast.success(
+        `Flattened ${r.closed.length} position${r.closed.length === 1 ? "" : "s"} · ` +
+          `${formatSignedDollar(r.realized)} realized`,
+      );
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Could not flatten"),
+  });
+
+  const cancelAll = useMutation({
+    mutationFn: async (orders: Trade[]) => {
+      await Promise.all(orders.map((o) => cancelOrder(o.id)));
+      return orders.length;
+    },
+    onSuccess: (n) => {
+      invalidate();
+      toast.success(`Cancelled ${n} working order${n === 1 ? "" : "s"}`);
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Could not cancel orders"),
+  });
+
+  const intent = useHotkeyActions((s) => s.intent);
+  const nonce = useHotkeyActions((s) => s.nonce);
+  const ts = useHotkeyActions((s) => s.ts);
+  const consume = useHotkeyActions((s) => s.consume);
+  const flattenArmRef = useRef<number>(0);
+  const cancelArmRef = useRef<number>(0);
+  useEffect(() => {
+    if (intent !== "flattenAll" && intent !== "cancelAllOrders") return;
+    consume();
+    if (!isIntentFresh(ts)) return; // stale replay from an earlier mount
+    const now = Date.now();
+    if (intent === "flattenAll") {
+      if (openCount === 0) {
+        toast.info("No open positions to flatten");
+        return;
+      }
+      if (flatten.isPending) return;
+      if (now - flattenArmRef.current > 3000) {
+        flattenArmRef.current = now;
+        toast.warning(
+          `Press F again to FLATTEN ${openCount} position${openCount === 1 ? "" : "s"}`,
+          3000,
+        );
+        return;
+      }
+      flattenArmRef.current = 0;
+      flatten.mutate();
+      return;
+    }
+    if (workingOrders.length === 0) {
+      toast.info("No working orders to cancel");
+      return;
+    }
+    if (cancelAll.isPending) return;
+    if (now - cancelArmRef.current > 3000) {
+      cancelArmRef.current = now;
+      toast.warning(
+        `Press X again to cancel ${workingOrders.length} working order${workingOrders.length === 1 ? "" : "s"}`,
+        3000,
+      );
+      return;
+    }
+    cancelArmRef.current = 0;
+    cancelAll.mutate(workingOrders);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intent, nonce]);
+
+  return null;
+}
+
+/**
  * Flatten-all / Reverse-all — combine-wide bulk actions. FLATTEN closes every
  * open position on the active combine; REVERSE flattens then re-opens the
  * opposite side of each. Both invalidate the trade + account queries so the
- * strip, header and chart reflect the new state immediately.
+ * strip, header and chart reflect the new state immediately. Both ARM on the
+ * first click and fire on a confirming second click within 3s — same safety
+ * doctrine as the C-C hotkey close (the blast radius here is the whole book).
  */
 function BulkActions() {
   const queryClient = useQueryClient();
@@ -636,20 +759,38 @@ function BulkActions() {
     onError: (e) => toast.error((e as Error)?.message || "Could not reverse"),
   });
 
+  const [armed, setArmed] = useState<"flatten" | "reverse" | null>(null);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(null), 3000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  const fire = (which: "flatten" | "reverse") => {
+    if (armed !== which) {
+      setArmed(which);
+      return;
+    }
+    setArmed(null);
+    if (which === "flatten") flatten.mutate();
+    else reverse.mutate();
+  };
+
   const pending = flatten.isPending || reverse.isPending;
   return (
     <div className="grid grid-cols-2 gap-2">
       <BulkButton
-        label="FLATTEN ALL"
-        title="Close every open position on this combine at the live mark."
+        label={armed === "flatten" ? "CLICK AGAIN — FLATTEN" : "FLATTEN ALL"}
+        title="Close every open position on this combine at the live mark. Click twice to confirm."
         disabled={pending}
-        onClick={() => flatten.mutate()}
+        armed={armed === "flatten"}
+        onClick={() => fire("flatten")}
       />
       <BulkButton
-        label="REVERSE ALL"
-        title="Flatten every position, then re-open the opposite side of each."
+        label={armed === "reverse" ? "CLICK AGAIN — REVERSE" : "REVERSE ALL"}
+        title="Flatten every position, then re-open the opposite side of each. Click twice to confirm."
         disabled={pending}
-        onClick={() => reverse.mutate()}
+        armed={armed === "reverse"}
+        onClick={() => fire("reverse")}
       />
     </div>
   );
@@ -659,11 +800,14 @@ function BulkButton({
   label,
   title,
   disabled,
+  armed = false,
   onClick,
 }: {
   label: string;
   title: string;
   disabled: boolean;
+  /** Armed = one confirming click away from firing — escalated styling. */
+  armed?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -677,7 +821,9 @@ function BulkButton({
         "transition-colors duration-100 border",
         disabled
           ? "bg-tier-1 text-fg-disabled border-tier-2 cursor-not-allowed"
-          : "bg-tier-1 text-fg-secondary border-tier-3 hover:bg-tier-2 hover:text-fg-primary",
+          : armed
+            ? "bg-action-sell text-white border-action-sell hover:bg-action-sell-hover"
+            : "bg-tier-1 text-fg-secondary border-tier-3 hover:bg-tier-2 hover:text-fg-primary",
       ].join(" ")}
       style={{ fontSize: 11, letterSpacing: "0.04em" }}
     >
@@ -844,7 +990,9 @@ function CloseButton({
   onClick,
 }: {
   disabled: boolean;
-  upl: number;
+  /** Best-effort display estimate — null when the analytics feed is stalled.
+   *  The close itself never depends on it (the server books its own number). */
+  upl: number | null;
   /** When set, this is a PARTIAL close of `partialQty` of `totalQty` contracts. */
   partialQty?: number | null;
   totalQty?: number;
@@ -868,7 +1016,7 @@ function CloseButton({
       style={{ fontSize: 12, letterSpacing: "0.04em" }}
     >
       {partialQty != null ? `SCALE OUT ${partialQty}/${totalQty}` : "CLOSE"} · realize{" "}
-      <span className="ml-1">{formatSignedDollar(upl)}</span>
+      <span className="ml-1">{upl == null ? "—" : formatSignedDollar(upl)}</span>
     </button>
   );
 }

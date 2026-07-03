@@ -9,6 +9,7 @@ import { CalendarStrip } from "@/components/positions/CalendarStrip";
 import { ContractDetailPanel } from "@/components/positions/ContractDetailPanel";
 import { RightChain } from "@/components/positions/chain/RightChain";
 import { ChartToolbar } from "@/components/positions/ChartToolbar";
+import { PositionRiskStrip } from "@/components/positions/PositionRiskStrip";
 import { TradeDeskHeader } from "@/components/positions/TradeDeskHeader";
 import { TradeTicket } from "@/components/positions/TradeTicket";
 import { WorkingOrders } from "@/components/positions/WorkingOrders";
@@ -316,6 +317,15 @@ export function PositionsPage() {
             symbol={symbol}
             timeframe={timeframe}
             onTimeframeChange={setTimeframe}
+          />
+          {/* In-trade risk band — greeks/UPL/max-loss for the ACTIVE position
+              pinned above the chart, so P&L visibility doesn't require
+              looking down at the bottom strip. Renders nothing when flat. */}
+          <PositionRiskStrip
+            analytics={activeTrade ? (analyticsQuery.data ?? null) : null}
+            contextLabel={
+              activeTrade ? `${activeTrade.symbol} · ${activeTrade.strategy}` : undefined
+            }
           />
           {!hasHydrated ? (
             <div className="flex-1" />

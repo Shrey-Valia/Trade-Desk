@@ -34,6 +34,11 @@ export const ChartResponseSchema = z.object({
   bars: z.array(BarPointSchema),
   annotations: ChartAnnotationsSchema,
   oi_source: z.string(),
+  // Freshness metadata. nullable().optional() so the UI works both before
+  // and after the backend starts sending them; served_stale = the feed
+  // stalled and these are the last good candles.
+  as_of: z.string().nullable().optional(),
+  served_stale: z.boolean().nullable().optional(),
 });
 
 export type ChartResponse = z.infer<typeof ChartResponseSchema>;

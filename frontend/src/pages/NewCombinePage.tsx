@@ -12,6 +12,7 @@ import {
   type PricingPath,
   type SplitToken,
 } from "@/lib/pricing";
+import { profitTarget, TIER_SPECS } from "@/lib/tierSpecs";
 import type { TierSpec } from "@/types/account";
 import type { CombineOut } from "@/types/combine";
 
@@ -36,6 +37,10 @@ type TierChoice = "50K" | "100K" | "150K";
  */
 export function NewCombinePage() {
   const combines = useCombines();
+  const { data: account } = useAccountState();
+  // Live server tiers when fetched; the shared fallback mirror otherwise —
+  // the Configure step must show the numbers the engine will enforce.
+  const tiers: TierSpec[] = account?.tiers ?? FALLBACK_TIERS;
   const slotsUsed = combines.data?.slots_used ?? 0;
   const slotsTotal = combines.data?.slots_total ?? 5;
   const atCap = combines.data != null && slotsUsed >= slotsTotal;
@@ -60,6 +65,7 @@ export function NewCombinePage() {
             <Configure
               tier={tier}
               path={path}
+              tiers={tiers}
               onBack={() => setTier(null)}
               onPurchased={setPurchased}
             />
@@ -148,17 +154,9 @@ function ChooseAccount({
   );
 }
 
-const FALLBACK_TIERS: TierSpec[] = [
-  { key: "50K", label: "50K Combine", starting_balance: 50_000, trailing_distance: 2_000, initial_mll: 48_000, dll_amount: 1_500 },
-  { key: "100K", label: "100K Combine", starting_balance: 100_000, trailing_distance: 3_000, initial_mll: 97_000, dll_amount: 3_000 },
-  { key: "150K", label: "150K Combine", starting_balance: 150_000, trailing_distance: 4_500, initial_mll: 145_500, dll_amount: 4_500 },
-];
-
-const PROFIT_TARGETS: Record<string, number> = {
-  "50K": 3_000,
-  "100K": 6_000,
-  "150K": 9_000,
-};
+// Shared tier-spec mirror (lib/tierSpecs) — three hand-maintained copies of
+// this table once drifted apart on the 100K trail.
+const FALLBACK_TIERS: TierSpec[] = [...TIER_SPECS];
 
 function AccountCard({
   tier,
@@ -214,7 +212,7 @@ function AccountCard({
 
       <div className="px-4 py-3 flex flex-col gap-2 tabular-nums flex-1 border-t border-hairline">
         <SpecRow label="Account size" value={`$${tier.starting_balance.toLocaleString()}`} />
-        <SpecRow label="Profit target" value={`$${(PROFIT_TARGETS[tier.key] ?? 0).toLocaleString()}`} />
+        <SpecRow label="Profit target" value={`$${profitTarget(tier.key).toLocaleString()}`} />
         <SpecRow label="Max position" value={`up to ${MAX_CONTRACTS[tier.key] ?? 1} contracts`} />
         <SpecRow label="Max loss limit" value={`trails $${tier.trailing_distance.toLocaleString()}`} />
         <SpecRow label="Daily loss limit" value={`$${tier.dll_amount.toLocaleString()}`} />
@@ -250,16 +248,22 @@ function AccountCard({
 function Configure({
   tier,
   path,
+  tiers,
   onBack,
   onPurchased,
 }: {
   tier: TierChoice;
   path: PricingPath;
+  /** Live server tiers when fetched; the shared fallback mirror otherwise. */
+  tiers: TierSpec[];
   onBack: () => void;
   onPurchased: (c: CombineOut) => void;
 }) {
   const purchase = usePurchaseCombine();
-  const spec = useMemo(() => FALLBACK_TIERS.find((t) => t.key === tier)!, [tier]);
+  const spec = useMemo(
+    () => tiers.find((t) => t.key === tier) ?? FALLBACK_TIERS.find((t) => t.key === tier)!,
+    [tiers, tier],
+  );
   const [split, setSplit] = useState<SplitToken>("50_50");
 
   const monthly = monthlyPrice(tier, path, split);

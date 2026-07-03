@@ -143,7 +143,7 @@ describe("tradeTicket store", () => {
       expect(s.limitPrice).toBeNull();
       expect(s.stopPrice).toBeNull();
       expect(s.trailAmount).toBeNull();
-      expect(s.timeInForce).toBe("gtc");
+      expect(s.timeInForce).toBe("day"); // 0DTE product — DAY is the honest default
       // clear() intentionally does NOT reset the quantity — the user's
       // chosen size carries to the next ticket.
       expect(s.contracts).toBe(5);

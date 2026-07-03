@@ -76,6 +76,16 @@ class Combine(Base):
     funded_activated_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True
     )
+    # Funded-stage accounting EPOCH, stamped by /activate-account alongside
+    # funded_activated_at. From this instant the account re-baselines: only
+    # trades opened at/after it count, booked payouts DEBIT the balance, and
+    # the running/settled HWM re-seed to the tier start (fresh MLL). None =
+    # still on eval accounting (including funded-but-not-yet-activated).
+    # Kept separate from funded_activated_at so the additive migration can
+    # detect pre-epoch funded rows and re-seed their HWM basis exactly once.
+    funded_epoch_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True
+    )
     # Copy trading: when True, this combine mirrors trades opened on the
     # user's lead combine (user.copy_lead_combine_id). See services/copy_trade.
     copy_follow: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

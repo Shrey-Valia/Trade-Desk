@@ -1,6 +1,10 @@
 import { Link } from "react-router-dom";
 
-import { CombineCardsGrid } from "@/components/combines/CombineCards";
+import {
+  CombineCardsGrid,
+  cushionAlarmed,
+  mllCushion,
+} from "@/components/combines/CombineCards";
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { CopyTradingPanel } from "@/components/combines/CopyTradingPanel";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -12,7 +16,9 @@ import { useCombines } from "@/hooks/useCombines";
  * /accounts — the dedicated all-accounts view (Topstep's "Accounts" tab).
  * Lists every combine the user owns, active and archived, with the same
  * cards as the dashboard plus a roll-up strip across non-archived
- * accounts. Account switching / rename / archive happen on the cards.
+ * accounts — including the worst MLL cushion, because copy-trading
+ * followers take trades the user isn't watching. Account switching /
+ * rename / archive happen on the cards.
  */
 export function AccountsPage() {
   const { data, isPending, isError, refetch } = useCombines();
@@ -21,6 +27,14 @@ export function AccountsPage() {
   const archived = all.filter((c) => c.status === "archived");
   const totalBalance = active.reduce((s, c) => s + c.balance, 0);
   const totalClosed = active.reduce((s, c) => s + c.realized_pnl, 0);
+  // Worst room-above-the-floor across surviving accounts — the account a
+  // copy-trade follower can quietly blow up while the lead looks fine.
+  const alive = active.filter((c) => c.outcome !== "failed");
+  const worstCushioned = alive.reduce<(typeof alive)[number] | null>(
+    (worst, c) =>
+      worst == null || mllCushion(c) < mllCushion(worst) ? c : worst,
+    null,
+  );
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
@@ -44,6 +58,15 @@ export function AccountsPage() {
               value={formatSigned(totalClosed)}
               signed={totalClosed}
             />
+            {worstCushioned && (
+              <MetricPill
+                label="WORST MLL CUSHION"
+                value={formatDollar(mllCushion(worstCushioned))}
+                sub={worstCushioned.name}
+                tone={cushionAlarmed(worstCushioned) ? "bearish" : "default"}
+                title="The account closest to its MLL floor — watch it even when you're trading another (copy-trade followers fail on their own floors)."
+              />
+            )}
             <Link
               to="/combines/new"
               className="ml-auto h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 font-medium"

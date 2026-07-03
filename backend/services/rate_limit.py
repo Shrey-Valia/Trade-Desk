@@ -16,8 +16,34 @@ import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from fastapi import HTTPException, Request
+
+# Marks the current execution context as running on the BACKGROUND share of a
+# split upstream budget (scheduled jobs: prewarm / watchlist refresh / chain
+# collect). Request handlers never set it, so they draw from the reserved
+# interactive bucket — warming can never starve a live trader. A ContextVar
+# (not a plain global) so the flag follows a job across asyncio.to_thread's
+# context copy and never leaks between concurrent requests.
+_background_budget: ContextVar[bool] = ContextVar("background_budget", default=False)
+
+
+@contextmanager
+def background_budget():
+    """Route upstream token-bucket takes inside this block to the background
+    bucket (consulted by services.alpaca_client._spaced via
+    `in_background_budget`)."""
+    token = _background_budget.set(True)
+    try:
+        yield
+    finally:
+        _background_budget.reset(token)
+
+
+def in_background_budget() -> bool:
+    return _background_budget.get()
 
 
 class RateLimiter:

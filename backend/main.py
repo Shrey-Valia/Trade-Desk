@@ -173,6 +173,13 @@ async def lifespan(app: FastAPI):
     _SCHED_GRACE = 30
     _SCHED_TZ = ZoneInfo("America/New_York")
 
+    def _sweep_cache() -> None:
+        from services.cache import cache
+
+        removed = cache.sweep()
+        if removed:
+            log.info("cache sweep: dropped %d expired entries", removed)
+
     scheduler = BackgroundScheduler(timezone="America/New_York")
     scheduler.add_job(
         refresh_watchlist,
@@ -230,6 +237,16 @@ async def lifespan(app: FastAPI):
         monitor_orders,
         trigger=IntervalTrigger(seconds=20),
         id="monitor_orders",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    # Cache sweep — TTLCache expires only on same-key reads, so date-rotated
+    # keys (bars:{sym}:{tf}:{date}, …) leak until swept. Cheap; hourly is fine.
+    scheduler.add_job(
+        _sweep_cache,
+        trigger=IntervalTrigger(hours=1),
+        id="sweep_cache",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,

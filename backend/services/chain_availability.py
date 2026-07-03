@@ -16,17 +16,19 @@ fan-out parallelizes the per-result checks so a 10-result search
 worst-case is ~1 wall-second on a cold cache.
 
 Failure modes:
-  - Alpaca unreachable or returns non-200 → log WARN, return False
-    (no badge), cache the False for 5 minutes so we don't re-hit on
-    every keystroke.
-  - Symbol with no listed options → empty contract list → False.
+  - Alpaca unreachable / timeout → log WARN, return False (no badge),
+    but cache the False only briefly (_ERROR_TTL_S): an error is NOT
+    the fact "no 0DTE exists today". A 5-minute negative cache here
+    once hid the badge on SPY/QQQ — the product's core instruments —
+    for the whole window after one slow patch.
+  - Symbol with no listed options → empty contract list → False,
+    cached for the full TTL (a real negative result).
   - Symbol not found / delisted → empty list or 404 → False.
 """
 
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -40,7 +42,8 @@ from services.cache import cache
 log = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
-_CACHE_TTL_S = 300  # 5 minutes per symbol
+_CACHE_TTL_S = 300  # 5 minutes per symbol — real (non-error) results only
+_ERROR_TTL_S = 20  # transient failures re-probe quickly
 
 
 def _trading_client() -> TradingClient:
@@ -84,8 +87,11 @@ def has_zero_dte(symbol: str) -> bool:
         contracts = getattr(resp, "option_contracts", None) or []
         result = len(contracts) > 0
     except Exception as exc:  # noqa: BLE001
+        # An error is not a negative result — short TTL so the badge
+        # comes back as soon as the feed recovers.
         log.warning("has_zero_dte(%s) failed: %s", sym, exc)
-        result = False
+        cache.set(cache_key, False, ttl_seconds=_ERROR_TTL_S)
+        return False
 
     cache.set(cache_key, result, ttl_seconds=_CACHE_TTL_S)
     return result
@@ -126,21 +132,19 @@ def has_zero_dte_bulk(symbols: list[str]) -> dict[str, bool]:
 
     max_workers = min(8, len(cold))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        # Per-symbol deadline so a single hanging call doesn't block
-        # the whole search response. has_zero_dte itself doesn't
-        # implement a timeout; rely on Alpaca's client default.
+        # Per-symbol deadline (not one shared wall-clock: a shared budget
+        # starved the later futures — remaining≈0 — so SPY/QQQ could be
+        # negative-cached off a queue position, not a real answer).
         futures = {ex.submit(has_zero_dte, s): s for s in cold}
-        deadline = time.monotonic() + 2.0
         for fut, s in futures.items():
-            remaining = max(0.0, deadline - time.monotonic())
             try:
-                out[s] = fut.result(timeout=remaining)
+                out[s] = fut.result(timeout=2.0)
             except Exception as exc:  # noqa: BLE001
                 log.warning("has_zero_dte_bulk(%s) timed out / failed: %s", s, exc)
                 out[s] = False
-                # Cache the negative so re-tries on subsequent
-                # keystrokes don't hammer the same slow path.
+                # A timeout is an ERROR, not "no 0DTE today" — short TTL
+                # so the next keystroke after recovery re-probes.
                 cache.set(
-                    f"has_0dte:{s}:{today_iso}", False, ttl_seconds=_CACHE_TTL_S,
+                    f"has_0dte:{s}:{today_iso}", False, ttl_seconds=_ERROR_TTL_S,
                 )
     return out

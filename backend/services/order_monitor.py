@@ -358,6 +358,54 @@ def _latest_leg_expiry(trade: Trade) -> date | None:
     return max(expiries) if expiries else None
 
 
+def _working_contract_expired(trade: Trade, now: datetime) -> bool:
+    """True when every leg of a working order is past its expiry's session
+    close — the contract no longer exists, so the resting order can never
+    legitimately fill. In a 0DTE product a GTC order (the ticket default)
+    otherwise outlives its contract: it can 'fill' next session at the model's
+    60s-floor price of a dead contract and permanently eat the scaling cap
+    (working orders count against the open-contracts aggregate)."""
+    expiry = _latest_leg_expiry(trade)
+    if expiry is None:
+        return False
+    return now.astimezone(_ET) >= _session_close_for_date(expiry)
+
+
+def cancel_expired_working_orders(session_factory=None, *, now: datetime) -> int:
+    """Cancel every WORKING order whose contract has expired (see
+    `_working_contract_expired`), regardless of time-in-force. Runs in the
+    market-CLOSED branch of the monitor alongside expiry settlement; the
+    in-session pass applies the same test per order. Idempotent — a cancelled
+    order drops out of the working query. Returns the number cancelled."""
+    if session_factory is None:
+        from database import SessionLocal
+
+        session_factory = SessionLocal
+    session = session_factory()
+    cancelled = 0
+    try:
+        orders = (
+            session.execute(select(Trade).where(Trade.status == "working"))
+            .scalars()
+            .all()
+        )
+        for trade in orders:
+            try:
+                if not _working_contract_expired(trade, now):
+                    continue
+                trade.status = "cancelled"
+                trade.close_reason = None
+                trade.notes = (trade.notes or "") + " · expired contract"
+                session.commit()
+                cancelled += 1
+            except Exception:  # noqa: BLE001 — isolate one bad order from the rest
+                session.rollback()
+                log.exception("order_monitor: expired-contract cancel %s failed", trade.id)
+        return cancelled
+    finally:
+        session.close()
+
+
 def _settlement_unrealized_for(trade: Trade, settle_spot: float) -> float:
     """Folded unrealized P&L at EXPIRY INTRINSIC — same convention as
     `_default_unrealized_for` (entry-side commission folded in), so `_book_close`
@@ -472,12 +520,14 @@ def run_order_monitor(
 
     if not market_open():
         # The fill/bracket pass is dormant out of session, but expiration is a
-        # wall-clock event — settle anything that expired at/after the bell.
+        # wall-clock event — settle anything that expired at/after the bell and
+        # cancel working orders resting on now-dead contracts (GTC zombies).
         settled = settle_expired_positions(session_factory, now=now, spot_for=spot_for)
+        expired = cancel_expired_working_orders(session_factory, now=now)
         return {
             "filled": 0,
             "closed": 0,
-            "cancelled": 0,
+            "cancelled": expired,
             "settled": settled,
             "skipped": "market_closed",
         }
@@ -498,6 +548,16 @@ def run_order_monitor(
             # or another in-session mutation) — skip anything no longer working
             # or open so we never re-process it.
             if trade.status not in ("working", "open"):
+                continue
+            # A working order on a dead contract is a zombie — cancel it before
+            # any fill logic can price the corpse (no spot needed, so this runs
+            # ahead of the spot fetch and survives a cold feed).
+            if trade.status == "working" and _working_contract_expired(trade, now):
+                trade.status = "cancelled"
+                trade.close_reason = None
+                trade.notes = (trade.notes or "") + " · expired contract"
+                cancelled += 1
+                session.commit()
                 continue
             # Skip open positions with nothing to monitor (no SL/TP bracket
             # AND no trailing stop). Auto-liquidation still scans them below.
@@ -710,6 +770,47 @@ def _auto_liquidate(
             snap = combine_snapshot(session, combine)
             # DLL branch active unless the owner disabled it (Step 3 toggle).
             dll_active = _combine_dll_enabled(session, combine)
+
+            # DLL DAY-LOCK FLATTEN (Topstep semantics: DLL hit → flatten +
+            # lock). Once the REALIZED day-loss alone exhausts the budget the
+            # combine is day-locked and `_breaches_floor`'s DLL branch goes
+            # dead for the rest of the day (it only fires while realized is
+            # under budget) — leaving the open book to bleed down to the MLL.
+            # Flatten everything the moment the lock engages instead.
+            if dll_active and snap.day_locked:
+                from services.combine_state import record_event
+
+                realized_base = snap.balance
+                for t in positions:
+                    spot, _unreal = marks[t.id]
+                    prior_realized = t.realized_pnl or 0.0
+                    _book_close(t, spot, now, unrealized_for, "liquidation")
+                    t.notes = (
+                        (t.notes or "")
+                        + " · auto-liquidated (daily loss limit hit — day-locked)"
+                    )
+                    session.flush()
+                    mirror_close(session, t)
+                    liquidated += 1
+                    realized_base += (t.realized_pnl or 0.0) - prior_realized
+                if realized_base <= snap.mll and combine.outcome in ("active", "passed"):
+                    # The flatten locked in losses through the permanent floor.
+                    combine.outcome = "failed"
+                    record_event(
+                        session, combine, "failed", "Auto-liquidated — MLL floor breached."
+                    )
+                else:
+                    record_event(
+                        session,
+                        combine,
+                        "liquidated",
+                        f"Day-lock flatten — daily loss limit hit; closed "
+                        f"{len(positions)} open position"
+                        f"{'s' if len(positions) != 1 else ''}.",
+                    )
+                session.commit()
+                continue
+
             if not _breaches_floor(snap, snap.balance, urpl, dll_active):
                 continue
 
@@ -758,7 +859,9 @@ def _auto_liquidate(
             still_breached = _breaches_floor(
                 snap, realized_base, remaining_urpl, dll_active
             )
-            if still_breached and combine.outcome == "active":
+            # passed → failed is a legal terminal transition: a FUNDED account
+            # that liquidates through its floor is terminated, not immortal.
+            if still_breached and combine.outcome in ("active", "passed"):
                 survive_note = (
                     "MLL floor breached"
                     if (realized_base + remaining_urpl) <= snap.mll
@@ -842,6 +945,7 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     """Fill or cancel a working limit/stop order. Returns 'filled'|'cancelled'|None."""
     from models.combine import Combine
     from services.combine_state import combine_snapshot
+    from services.copy_trade import mirror_cancel
 
     # Don't fill into a non-tradeable combine — cancel the resting order.
     combine = session.get(Combine, trade.combine_id) if trade.combine_id else None
@@ -851,6 +955,8 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
             trade.status = "cancelled"
             trade.close_reason = None
             trade.notes = (trade.notes or "") + " · cancelled (combine not tradeable)"
+            # Cascade to follower copies — same as the manual /cancel endpoint.
+            mirror_cancel(session, trade)
             return "cancelled"
 
     legs = trade.legs
@@ -904,6 +1010,8 @@ def _cancel_oco_siblings(session, trade: Trade) -> int:
     or closed is left alone — only resting (unfilled) orders are pulled, which
     is the one-cancels-the-other guarantee for a bracket pair. Returns the
     number cancelled. Implicit no-op when oco_group is unset."""
+    from services.copy_trade import mirror_cancel
+
     group = trade.oco_group
     if not group:
         return 0
@@ -922,6 +1030,9 @@ def _cancel_oco_siblings(session, trade: Trade) -> int:
         s.status = "cancelled"
         s.close_reason = None
         s.notes = (s.notes or "") + " · OCO cancelled (sibling filled)"
+        # Cascade to follower copies — a lead OCO cancel must pull the
+        # mirrored siblings too (the manual /cancel endpoint already does).
+        mirror_cancel(session, s)
     return len(siblings)
 
 

@@ -49,6 +49,10 @@ interface TradeTicketState {
   /** Time-in-force for a working order: 'gtc' rests, 'day' expires next session. */
   timeInForce: "day" | "gtc";
   setSelection: (sel: TicketSelection | null) => void;
+  /** Live-price refresh from the chain refetch — updates the SELECTED
+   *  contract's indicative price in place. Keeps selection identity and does
+   *  NOT re-seed limit/stop (the user may have edited those). */
+  refreshSelectionPrice: (price: number) => void;
   setContracts: (n: number) => void;
   setOrderType: (t: TicketOrderType) => void;
   setLimitPrice: (p: number | null) => void;
@@ -65,7 +69,9 @@ export const useTradeTicket = create<TradeTicketState>((set) => ({
   limitPrice: null,
   stopPrice: null,
   trailAmount: null,
-  timeInForce: "gtc",
+  // DAY is the honest default on a strictly-0DTE product — a resting order
+  // that outlives the session is the exception, so GTC is opt-in.
+  timeInForce: "day",
   // Selecting a contract seeds limitPrice + stopPrice to its indicative price
   // so a limit/stop/stop_limit order starts at a sensible default to nudge.
   // The trailing stop stays off (null) unless the user opts in.
@@ -76,6 +82,12 @@ export const useTradeTicket = create<TradeTicketState>((set) => ({
       stopPrice: selection ? selection.price : null,
       trailAmount: null,
     }),
+  refreshSelectionPrice: (price) =>
+    set((s) =>
+      s.selection && s.selection.price !== price
+        ? { selection: { ...s.selection, price } }
+        : {},
+    ),
   setContracts: (n) =>
     set({ contracts: Math.max(1, Math.min(100, Math.floor(n))) }),
   setOrderType: (orderType) => set({ orderType }),
@@ -90,6 +102,6 @@ export const useTradeTicket = create<TradeTicketState>((set) => ({
       limitPrice: null,
       stopPrice: null,
       trailAmount: null,
-      timeInForce: "gtc",
+      timeInForce: "day",
     }),
 }));

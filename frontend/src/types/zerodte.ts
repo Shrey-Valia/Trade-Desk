@@ -44,6 +44,15 @@ export const ChainStrikeRowSchema = z.object({
   call_theta: z.number().default(0),
   put_delta: z.number().default(0),
   put_theta: z.number().default(0),
+  // Per-side NBBO + session volume. nullable().optional() so the UI works
+  // both before and after the backend starts sending them; null = no live
+  // quote on that side (the mid/model price above is the fallback).
+  call_bid: z.number().nullable().optional(),
+  call_ask: z.number().nullable().optional(),
+  put_bid: z.number().nullable().optional(),
+  put_ask: z.number().nullable().optional(),
+  call_volume: z.number().nullable().optional(),
+  put_volume: z.number().nullable().optional(),
 });
 export type ChainStrikeRow = z.infer<typeof ChainStrikeRowSchema>;
 
@@ -59,6 +68,8 @@ export const ChainTableSchema = z.object({
   session_close_iso: z.string(),
   indicative: z.boolean(),
   notice: z.string(),
+  /** Quote timestamp (ISO) — when the chain's prices were sourced. */
+  as_of: z.string().nullable().optional(),
 });
 export type ChainTable = z.infer<typeof ChainTableSchema>;
 

@@ -1,9 +1,10 @@
-"""Combine metadata: display-only objectives + account-code generation.
+"""Combine objectives: profit targets, payout math + account-code generation.
 
 Deliberately OUTSIDE services/account_tiers.py — that module's
-floor/settlement math is frozen. Profit targets here are presentation
-("Path to Funding" progress on the dashboard), not enforcement: nothing
-settles, passes, or fails a combine yet.
+floor/settlement math is frozen. Profit targets here drive both the
+"Path to Funding" progress display AND the settlement engine's PASS
+check (services/combine_settlement holds the time/threshold logic;
+services/combine_state persists the outcome).
 
 Targets mirror Topstep's ladder: 50K→$3K, 100K→$6K, 150K→$9K.
 """
@@ -32,8 +33,10 @@ def payout_eligible(
     realized_pnl: float, funded: bool, split: float = DEFAULT_SPLIT
 ) -> float:
     """Dollars a FUNDED account can request as a payout: the trader's split
-    of realized profit (the combine's chosen 80/20 or 50/50). Zero for
-    accounts still in evaluation, not yet activated, or in the red."""
+    of realized profit (the combine's chosen 80/20 or 50/50). Callers pass
+    the FUNDED-STAGE realized sum (since the activation epoch), so the
+    profit used to pass the eval never enters this. Zero for accounts still
+    in evaluation, not yet activated, or in the red."""
     if not funded:
         return 0.0
     return max(0.0, realized_pnl) * split

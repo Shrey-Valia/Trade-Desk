@@ -11,12 +11,18 @@ SETTLED HWM up, the MLL floor is computed from that settled HWM (so it
 is fixed intraday), the DLL window is the current 5pm-PT trading day,
 and the realized-based PASS/FAIL outcome is persisted on the combine.
 
-Lifecycle: passing the eval AUTO-FUNDS the account (funded_at stamped); a
-funded account accrues a payout (the trader's split of realized profit).
-A reset (after a fail) stamps `eval_reset_at` and the eval math here only
-counts trades opened at/after that point — the trade history is kept.
-Each meaningful transition (funded / failed / settled) is written to the
-combine_events ledger so the dashboard live-feed can show it.
+Lifecycle: passing the eval AUTO-FUNDS the account (funded_at stamped).
+ACTIVATION (routers/combines.py) stamps the funded-stage accounting epoch
+(`funded_epoch_at`) and re-seeds the HWM basis to the tier start: from
+that instant only trades opened at/after the epoch count, booked payouts
+DEBIT the balance every consumer sees, and payout eligibility accrues
+from funded-stage profit only — the profit used to PASS stays with the
+firm. A funded account keeps trading against the trailing MLL, so
+passed → failed is a legal terminal transition. A reset (after a fail)
+stamps `eval_reset_at` and the eval math here only counts trades opened
+at/after that point — the trade history is kept. Each meaningful
+transition (funded / failed / settled) is written to the combine_events
+ledger so the dashboard live-feed can show it.
 
 Used by both routers/account.py (active-combine snapshot) and
 routers/combines.py (per-card snapshots) so the numbers can't drift.
@@ -187,6 +193,33 @@ def realized_by_trading_day(
     return by_day
 
 
+def payouts_booked(session: Session, combine_id: int) -> float:
+    """Sum of payout amounts already booked on this combine. A booked
+    payout DEBITS the funded-stage balance (and with it the HWM basis and
+    the MLL fail test) — withdrawn money stops counting as equity."""
+    rows = session.execute(
+        select(CombineEvent.amount).where(
+            CombineEvent.combine_id == combine_id, CombineEvent.type == "payout"
+        )
+    ).all()
+    return float(sum((r[0] or 0.0) for r in rows))
+
+
+def has_open_book(session: Session, combine_id: int) -> bool:
+    """True when the combine has any OPEN position or WORKING order."""
+    return (
+        session.execute(
+            select(Trade.id)
+            .where(
+                Trade.combine_id == combine_id,
+                Trade.status.in_(("open", "working")),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
 def record_event(
     session: Session,
     combine: Combine,
@@ -215,10 +248,16 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     for display only."""
     tier = TIERS[combine.tier]
     now = datetime.now(timezone.utc)
-    since = combine.eval_reset_at
+    # Funded-stage epoch: once activated, accounting restarts — only trades
+    # opened at/after the epoch count, and booked payouts debit the balance.
+    # Pre-activation (eval, or funded-but-unactivated) the eval basis applies.
+    epoch = combine.funded_epoch_at
+    funded_stage = epoch is not None
+    since = epoch if funded_stage else combine.eval_reset_at
 
     realized = realized_sum_for_combine(session, combine.id, since)
-    balance = compute_balance(tier.starting_balance, realized, 0.0)
+    payouts = payouts_booked(session, combine.id) if funded_stage else 0.0
+    balance = compute_balance(tier.starting_balance, realized, 0.0) - payouts
     dirty = False
 
     # RUNNING HWM — monotonic, updated intraday from realized balance.
@@ -231,7 +270,8 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     # re-baselines UP to the running HWM (never down) and we stamp the time
     # so we settle once per trading day. The DLL day resets implicitly —
     # it derives from the 5pm-PT window below, not a persisted flag.
-    if needs_settlement(combine.last_settled_at, now):
+    # Archived combines are frozen: no settlement (or events) on read.
+    if combine.status != "archived" and needs_settlement(combine.last_settled_at, now):
         combine.settled_hwm = settle_hwm(combine.settled_hwm, new_hwm)
         combine.last_settled_at = now
         record_event(session, combine, "settled", "Daily settlement — MLL re-baselined.")
@@ -250,9 +290,12 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     # tested against the user's per-tier override (clamped) or the tier default.
     dll_used = dll_used_today_for_combine(session, combine.id, now, since)
     # Daily RPL (signed) + the balance carried into today, so the header can
-    # show BAL = eod_balance + RPL(today) + URPL transparently.
+    # show BAL = eod_balance + RPL(today) + URPL transparently. Both sides
+    # net the funded-stage payout debit, so the decomposition still holds.
     today_realized = realized_today_for_combine(session, combine.id, now, since)
-    eod_balance = compute_balance(tier.starting_balance, realized - today_realized, 0.0)
+    eod_balance = (
+        compute_balance(tier.starting_balance, realized - today_realized, 0.0) - payouts
+    )
     owner = session.get(User, combine.user_id)
     dll_override = owner.dll_overrides.get(combine.tier) if owner else None
     # DLL-off toggle: when the owner has disabled the DLL for this tier the
@@ -275,11 +318,15 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     min_days_met = days_traded >= MIN_TRADING_DAYS
 
     # Outcome precedence: FAILED is terminal (MLL breach) and wins; PASSED
-    # is permanent and AUTO-FUNDS. We only transition an ACTIVE, non-archived
-    # combine — an already-decided or archived one keeps its recorded outcome.
+    # auto-funds but is NOT safe — a funded account keeps trading against the
+    # trailing MLL, so passed → failed is a legal terminal transition. An
+    # archived combine keeps its recorded outcome. The lazy fail here tests a
+    # REALIZED-only balance, so it stamps only on a FLAT book: with open or
+    # working trades it understates live equity — the auto-liquidation
+    # monitor (order_monitor) owns the live-equity fail in that case.
     outcome = combine.outcome
     if outcome == "active" and combine.status != "archived":
-        if balance <= mll:
+        if balance <= mll and not has_open_book(session, combine.id):
             outcome = "failed"
             combine.outcome = outcome
             record_event(
@@ -301,10 +348,24 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
                 "Evaluation passed — account funded.",
             )
             dirty = True
+    elif outcome == "passed" and combine.status != "archived":
+        if balance <= mll and not has_open_book(session, combine.id):
+            outcome = "failed"
+            combine.outcome = outcome
+            record_event(
+                session,
+                combine,
+                "failed",
+                "Funded account closed — trailing max loss breached.",
+            )
+            dirty = True
 
     funded = combine.funded_at is not None
     funded_activated = combine.funded_activated_at is not None
-    # Payouts unlock only once the funded account is activated.
+    # Payouts unlock only once the funded account is activated. In the funded
+    # stage `realized` is the SINCE-EPOCH sum, so eligibility starts at 0 on
+    # activation — the eval profit is not withdrawable. Gross of prior
+    # requests; the payout endpoint nets those before booking.
     eligible = payout_eligible(realized, funded and funded_activated, combine.profit_split)
     activation_required = funded and not funded_activated
     # Fee owed to activate ($149 on the activation path, $0 on no-activation).

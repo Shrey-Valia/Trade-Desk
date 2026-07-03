@@ -13,6 +13,11 @@ export const TickerDetailSchema = z.object({
   avg_volume_20d: z.number(),
   next_earnings_date: z.string().nullable(),
   days_to_earnings: z.number().nullable(),
+  // Freshness metadata. nullable().optional() so the UI works both before
+  // and after the backend starts sending them; served_stale = the feed
+  // stalled and this is the last good snapshot.
+  as_of: z.string().nullable().optional(),
+  served_stale: z.boolean().nullable().optional(),
 });
 
 export type TickerDetail = z.infer<typeof TickerDetailSchema>;

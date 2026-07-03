@@ -56,7 +56,9 @@ export function useRearmAlert() {
 /**
  * Price-alert evaluator (WS6) — the minimal wiring that makes alerts fire.
  *
- * Mounted once in the authed shell. On the quote-poll cadence it asks the
+ * Mounted once in RailShell, so evaluation keeps running on EVERY authed
+ * route (dashboard, journal, settings) — not just where the alerts bell
+ * happens to render. On the quote-poll cadence it asks the
  * server to evaluate active price alerts against live quotes; any that just
  * tripped come back and we raise a sticky toast (one per alert, de-duped by
  * id so a slow re-poll can't double-announce). The alert list is invalidated

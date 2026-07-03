@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useHotkeyActions } from "@/stores/hotkeyActions";
+import {
+  isIntentFresh,
+  useHotkeyActions,
+  useHotkeyConsumer,
+} from "@/stores/hotkeyActions";
 import { useAccountState } from "@/hooks/useAccountState";
-import { useTrades } from "@/hooks/useTrades";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
+import { useOpenContractsCount } from "@/hooks/useOpenContractsCount";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
@@ -66,34 +70,10 @@ export function TradeTicket() {
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
 
-  // Scaling-plan cap — max contracts per position at the current built
-  // equity (server-enforced too). Default high until account state loads so
-  // the UI never wrongly blocks; clamp the selection down if it exceeds.
-  const { data: accountState } = useAccountState();
-  const { data: tradesData } = useTrades();
-  const maxContracts = accountState?.max_contracts ?? 99;
-  const activeTier = accountState?.active_tier ?? "50K";
-  // Contracts already open/working on this tier. The scaling cap limits TOTAL
-  // contracts across ALL legs (a 5-lot straddle is 10 contracts), matching the
-  // server. Remaining capacity is the scaling max minus what's already on.
-  const openContracts = useMemo(() => {
-    const ts = tradesData?.trades ?? [];
-    return ts
-      .filter(
-        (t) =>
-          (t.status === "open" || t.status === "working") &&
-          (t.tier ?? "50K") === activeTier,
-      )
-      .reduce(
-        (sum, t) =>
-          sum +
-          (t.legs.length
-            ? t.legs.reduce((a, l) => a + (l.contracts ?? 1), 0)
-            : 1),
-        0,
-      );
-  }, [tradesData, activeTier]);
-  const remaining = Math.max(0, maxContracts - openContracts);
+  // Scaling-plan cap — max TOTAL open contracts at the current built equity
+  // (server-enforced too). Shared sum-of-legs hook: the SAME math sizes the
+  // chain's QuickOrder, so the two can't diverge.
+  const { openContracts, maxContracts, remaining } = useOpenContractsCount();
   // A straddle quick-entry opens 2 legs, so it consumes 2× the per-leg size; a
   // single leg consumes 1×. Clamp the per-leg selection to what fits.
   const orderLegs = selection?.kind === "leg" ? 1 : 2;
@@ -158,15 +138,17 @@ export function TradeTicket() {
   const sellBtnRef = useRef<HTMLButtonElement>(null);
   const hotkeyIntent = useHotkeyActions((s) => s.intent);
   const hotkeyNonce = useHotkeyActions((s) => s.nonce);
+  const hotkeyTs = useHotkeyActions((s) => s.ts);
   const consumeHotkey = useHotkeyActions((s) => s.consume);
+  // Only an actionable ticket (a selection exists) counts as a consumer —
+  // otherwise the B/S keys toast "pick a strike" instead of vanishing.
+  useHotkeyConsumer(["armBuy", "armSell"], hasSelection);
   useEffect(() => {
-    if (hotkeyIntent === "armBuy") {
-      buyBtnRef.current?.focus();
-      consumeHotkey();
-    } else if (hotkeyIntent === "armSell") {
-      sellBtnRef.current?.focus();
-      consumeHotkey();
-    }
+    if (hotkeyIntent !== "armBuy" && hotkeyIntent !== "armSell") return;
+    consumeHotkey();
+    if (!isIntentFresh(hotkeyTs)) return; // stale replay from an old mount
+    if (hotkeyIntent === "armBuy") buyBtnRef.current?.focus();
+    else sellBtnRef.current?.focus();
     // closeActive is handled by the active-position panel, not the ticket.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hotkeyIntent, hotkeyNonce]);
@@ -200,7 +182,8 @@ export function TradeTicket() {
         entry_price: selection.price,
         contracts,
         order_type: effectiveOrderType,
-        time_in_force: needsLimit ? timeInForce : "gtc",
+        // TIF only matters for a working order; market fills ignore it.
+        time_in_force: timeInForce,
         limit_price: needsLimit ? limitPrice : null,
         stop_price: needsStop ? stopPrice : null,
         trail_amount: trailAmount && trailAmount > 0 ? trailAmount : null,
@@ -433,6 +416,23 @@ function Summary({
   selection: TicketSelection | null;
   contracts: number;
 }) {
+  // Subtle live-price affordance: the chain refetch re-syncs the selected
+  // contract's price (see RightChain), so flash the estimate briefly when it
+  // moves — the trader sees the displayed risk is tracking the market.
+  const price = selection?.price;
+  const [flash, setFlash] = useState(false);
+  const prevPrice = useRef<number | undefined>(price);
+  useEffect(() => {
+    const changed =
+      price !== undefined &&
+      prevPrice.current !== undefined &&
+      price !== prevPrice.current;
+    prevPrice.current = price;
+    if (!changed) return;
+    setFlash(true);
+    const id = window.setTimeout(() => setFlash(false), 650);
+    return () => window.clearTimeout(id);
+  }, [price]);
   if (!selection) {
     return (
       <div className="px-3 py-2 text-tiny text-fg-tertiary-2 tabular-nums">
@@ -453,7 +453,10 @@ function Summary({
         {selection.strike} {kindLabel}
       </span>
       <span className="text-tiny text-fg-tertiary-2 uppercase">est.</span>
-      <span className="text-tiny text-fg-secondary">
+      <span
+        className={`text-tiny text-fg-secondary${flash ? " td-quick-flash" : ""}`}
+        title="Tracks the live chain — refreshed with each chain update"
+      >
         ${totalCost.toFixed(2)} debit
       </span>
       {beRange && (

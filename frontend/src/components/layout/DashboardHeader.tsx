@@ -77,14 +77,22 @@ function IndexCell({ q }: { q: IndexQuote | null }) {
   const positive = q.change_pct >= 0;
   const changeColorClass = positive ? "text-bullish" : "text-bearish";
   const ariaDirection = positive ? "up" : "down";
+  // Prior-session values (VIX via FRED daily closes) must not read as a live
+  // print — label them and mute the delta, which compares two stale closes.
+  const prevCloseOnly = q.prev_close_only === true;
   return (
     <span
       className="flex items-baseline gap-1 tabular-nums"
-      aria-label={`${q.symbol} ${q.price.toFixed(2)}, ${ariaDirection} ${Math.abs(q.change_pct).toFixed(2)} percent`}
+      aria-label={`${q.symbol} ${q.price.toFixed(2)}, ${ariaDirection} ${Math.abs(q.change_pct).toFixed(2)} percent${prevCloseOnly ? ", previous close" : ""}`}
+      title={prevCloseOnly ? `Previous session close${q.as_of ? ` (${q.as_of})` : ""} — not a live quote.` : undefined}
     >
       <span className="text-tiny text-fg-secondary">{q.symbol}</span>
       <span className="text-xs2 text-fg-primary">{q.price.toFixed(2)}</span>
-      <span className={`text-tiny ${changeColorClass}`}>{formatPercent(q.change_pct)}</span>
+      {prevCloseOnly ? (
+        <span className="text-tiny text-fg-tertiary-2">prev close</span>
+      ) : (
+        <span className={`text-tiny ${changeColorClass}`}>{formatPercent(q.change_pct)}</span>
+      )}
     </span>
   );
 }

@@ -63,7 +63,6 @@ from services.alpaca_client import (
 from services.cache import cache
 from services.finnhub_client import next_earnings_for
 from services.resilience import breaker_retry_after
-from services.timeouts import CallTimeout, run_with_timeout
 
 router = APIRouter(prefix="/api/ticker", tags=["ticker"])
 log = logging.getLogger(__name__)
@@ -78,13 +77,11 @@ _ALPACA_BREAKER = "alpaca"
 # backoff meaningful; once the breaker opens, its ~30s cooldown dominates.
 _MIN_DEGRADED_RETRY_S = 5
 
-# Hard deadline for the REQUEST-PATH bars fetch. The Alpaca SDK exposes no
-# request timeout (see services/timeouts), so without this the handler HANGS
-# indefinitely when the feed stalls (slow network / creds hiccup) — the circuit
-# breaker only trips on ERRORS, never on a stall. We fail fast instead so the
-# frontend's retry/backoff + the cache can recover, rather than an infinite
-# spinner. Kept comfortably above a healthy fetch (~1–3s).
-_BARS_REQUEST_TIMEOUT_S = 6.0
+# The hard per-network-hop deadline lives in services.alpaca_client._spaced
+# (settings.alpaca_sdk_timeout_s) — a stalled SDK call surfaces here as
+# MarketDataUnavailable instead of hanging the handler, so every endpoint
+# (this router's AND zerodte's) inherits fail-fast from one place.
+#
 # Last-good bars are cached far longer than the 30s hot cache so a degraded
 # feed still renders the last-known candles — "stale but visible" beats a blank
 # chart. Written on every successful fetch; served on timeout/degradation.
@@ -138,7 +135,13 @@ _IV_HISTORY_WINDOW = 60  # days needed before iv_percentile populates
 def get_ticker_detail(symbol: str) -> TickerDetailOut:
     symbol = symbol.upper()
 
-    quote = get_quotes([symbol]).get(symbol)
+    try:
+        quote = get_quotes([symbol]).get(symbol)
+    except MarketDataUnavailable:
+        # Degraded feed ≠ unknown symbol: answer 503 + Retry-After (typed
+        # body) so the frontend retries instead of treating a real ticker
+        # as nonexistent. The 404 below stays for genuinely unknown symbols.
+        raise MarketDataDegraded() from None
     if quote is None:
         raise HTTPException(status_code=404, detail=f"no quote available for {symbol}")
 
@@ -179,6 +182,7 @@ def get_ticker_detail(symbol: str) -> TickerDetailOut:
         avg_volume_20d=avg_volume_20d,
         next_earnings_date=next_er,
         days_to_earnings=days_to_er,
+        as_of=quote.as_of.isoformat() if quote.as_of else None,
     )
 
 
@@ -195,32 +199,35 @@ class _LevelBar:
     close: float
 
 
-def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
+def _fetch_bars(symbol: str, timeframe: str) -> tuple[list[BarPoint], bool]:
     """Bars-only fetch. Separated so the bars path doesn't block on the
     options-chain fetch that drives annotations — see split below.
 
+    Returns (points, served_stale): served_stale is True when the feed was
+    degraded and the cached last-good candles were served instead, so the
+    response can carry the freshness flag to the frontend.
+
     Raises MarketDataDegraded (503) when the upstream feed is circuit-open
-    / rate-limited — distinct from a genuine "no bars" (404) so the
-    frontend can show a retrying state instead of treating it as terminal.
+    / rate-limited / stalled AND no stale candles exist — distinct from a
+    genuine "no bars" (404) so the frontend can show a retrying state
+    instead of treating it as terminal.
     """
     stale_key = f"bars_stale:{symbol}:{timeframe}"
     try:
-        # Hard deadline: a stalled Alpaca call (no SDK timeout) would otherwise
-        # hang the request forever. CallTimeout frees the handler after 6s.
-        bars = run_with_timeout(
-            get_bars, symbol, timeframe, timeout_s=_BARS_REQUEST_TIMEOUT_S
-        ) or []
-    except (MarketDataUnavailable, CallTimeout) as exc:
-        # Feed degraded (circuit open / rate-limited) OR the SDK call stalled
-        # past the deadline. Prefer the last-known candles over an empty chart;
-        # only 503 when we have nothing to show.
+        # The stall deadline lives inside alpaca_client._spaced — a hung SDK
+        # call surfaces as MarketDataUnavailable instead of hanging here.
+        bars = get_bars(symbol, timeframe) or []
+    except MarketDataUnavailable as exc:
+        # Feed degraded (circuit open / rate-limited / stalled). Prefer the
+        # last-known candles over an empty chart; only 503 when we have
+        # nothing to show.
         stale = cache.get(stale_key)
         if stale is not None:
             log.info(
                 "bars degraded for %s @ %s (%s) — serving stale candles",
                 symbol, timeframe, type(exc).__name__,
             )
-            return stale
+            return stale, True
         log.info(
             "bars degraded for %s @ %s (%s) — no cache, returning 503",
             symbol, timeframe, type(exc).__name__,
@@ -241,7 +248,7 @@ def _fetch_bars(symbol: str, timeframe: str) -> list[BarPoint]:
     ]
     # Refresh the last-good cache so a later degraded fetch can serve it.
     cache.set(stale_key, points, ttl_seconds=_BARS_STALE_TTL_S)
-    return points
+    return points, False
 
 
 @router.get("/{symbol}/bars", response_model=ChartResponse)
@@ -259,13 +266,15 @@ def get_ticker_bars(symbol: str, timeframe: str = "5m") -> ChartResponse:
     if cached is not None:
         return cached
 
-    bar_points = _fetch_bars(symbol, timeframe)
+    bar_points, served_stale = _fetch_bars(symbol, timeframe)
     response = ChartResponse(
         symbol=symbol,
         timeframe=timeframe,
         bars=bar_points,
         annotations=ChartAnnotations(),
         oi_source="bars_only",
+        as_of=bar_points[-1].t if bar_points else None,
+        served_stale=served_stale,
     )
     cache.set(cache_key, response, ttl_seconds=30)
     return response
@@ -504,22 +513,19 @@ def get_ticker_chart(symbol: str, timeframe: str = "5m") -> ChartResponse:
     if cached is not None:
         return cached
 
-    bar_points = _fetch_bars(symbol, timeframe)
+    bar_points, served_stale = _fetch_bars(symbol, timeframe)
 
     # Annotations depend on the quote + options chain — a SECONDARY feed that
-    # can stall independently of bars. Guard + time-box it so /chart still
+    # can stall independently of bars. The per-hop deadline inside
+    # alpaca_client turns a stall into MarketDataUnavailable, so /chart still
     # returns the candles (with empty annotations) rather than hanging.
     try:
-        quote = run_with_timeout(
-            get_quotes, [symbol], timeout_s=_BARS_REQUEST_TIMEOUT_S
-        ).get(symbol)
+        quote = get_quotes([symbol]).get(symbol)
         spot = quote.price if quote else float(bar_points[-1].c)
-        chain, oi_source = run_with_timeout(
-            _chain_with_oi_proxy, symbol, timeout_s=_BARS_REQUEST_TIMEOUT_S
-        )
+        chain, oi_source = _chain_with_oi_proxy(symbol)
         annotations = _compute_annotations(chain, spot)
         annotations.earnings_date = next_earnings_for(symbol)
-    except (MarketDataUnavailable, CallTimeout):
+    except MarketDataUnavailable:
         log.info("chart annotations degraded for %s — returning candles only", symbol)
         annotations = ChartAnnotations()
         oi_source = "bars_only"
@@ -539,6 +545,8 @@ def get_ticker_chart(symbol: str, timeframe: str = "5m") -> ChartResponse:
         bars=bar_points,
         annotations=annotations,
         oi_source=oi_source,
+        as_of=bar_points[-1].t if bar_points else None,
+        served_stale=served_stale,
     )
     cache.set(cache_key, response, ttl_seconds=30)
     return response
@@ -552,11 +560,17 @@ def get_ticker_metrics(symbol: str) -> MetricsResponse:
     if cached is not None:
         return cached
 
-    chain, _ = _chain_with_oi_proxy(symbol)
+    try:
+        chain, _ = _chain_with_oi_proxy(symbol)
+        quote = get_quotes([symbol]).get(symbol)
+    except MarketDataUnavailable:
+        # Same degraded-feed handling as /detail: a circuit-open /
+        # rate-limited / stalled feed is a retryable 503, never a 404/500.
+        log.info("metrics degraded for %s (circuit open / rate-limited / stalled)", symbol)
+        raise MarketDataDegraded() from None
     near = _pick_near_term_expiry(chain) if chain else None
 
     # IV30 — average IV across the near-term expiry's ATM-adjacent contracts.
-    quote = get_quotes([symbol]).get(symbol)
     spot = quote.price if quote else None
     iv30 = _atm_iv(chain, near, spot) if (chain and near and spot is not None) else None
 
@@ -589,6 +603,7 @@ def get_ticker_metrics(symbol: str) -> MetricsResponse:
         skew_25d=sk,
         pc_ratio=pc,
         max_pain=mp,
+        as_of=quote.as_of.isoformat() if quote and quote.as_of else None,
     )
     cache.set(cache_key, response, ttl_seconds=30)
     return response

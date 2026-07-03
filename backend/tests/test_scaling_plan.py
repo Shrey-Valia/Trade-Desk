@@ -61,11 +61,19 @@ def test_cap_is_flat_regardless_of_equity(auth_client, session_factory):
 # --- open enforcement -------------------------------------------------------
 
 
-def _stub_market(monkeypatch):
+def _stub_market(monkeypatch, strikes=(95.0, 100.0, 105.0)):
+    rows = [
+        types.SimpleNamespace(
+            strike=float(k), type=side, expiry=_TODAY,
+            bid=1.0, ask=1.2, last=None, open_interest=None, iv=None,
+        )
+        for k in strikes
+        for side in ("call", "put")
+    ]
     monkeypatch.setattr("routers.zerodte.is_market_open", lambda: True)
     monkeypatch.setattr(
         "routers.zerodte.get_chain_snapshot",
-        lambda sym, with_volume=False: [types.SimpleNamespace(expiry=_TODAY)],
+        lambda sym, with_volume=False: rows,
     )
     monkeypatch.setattr(
         "routers.zerodte.get_quotes",

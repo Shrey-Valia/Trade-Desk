@@ -395,7 +395,7 @@ def test_day_locked_at_dll_without_failing(auth_client):
 # ---------------------------------------------------------------------------
 
 
-def test_pass_auto_funds_and_accrues_payout(auth_client):
+def test_pass_auto_funds_and_activation_rebaselines(auth_client):
     c = make_combine(auth_client, "50K")
     # Two distinct days, target met (3_200 ≥ 3_000), consistency ok → passes.
     _seed_closed_trade(
@@ -410,11 +410,22 @@ def test_pass_auto_funds_and_accrues_payout(auth_client):
     # Default activation path → payouts locked until the $149 fee is paid.
     assert r["activation_required"] is True
     assert r["payout_eligible"] == 0
-    # Activate, then the 80/20 split of 3_200 realized profit accrues.
+    # Activation restarts funded-stage accounting at the tier start: the
+    # eval profit stays with the firm (NOT instantly withdrawable) and the
+    # HWM/MLL re-seed.
     assert auth_client.post(f"/api/combines/{c['id']}/activate-account").status_code == 200
     r2 = auth_client.get("/api/account/state").json()
     assert r2["activation_required"] is False
-    assert r2["payout_eligible"] == pytest.approx(2_560)  # 0.80 × 3_200
+    assert r2["payout_eligible"] == 0
+    assert r2["realized_pnl"] == 0
+    assert r2["balance"] == 50_000
+    assert r2["settled_hwm"] == 50_000
+    assert r2["mll"] == 48_000
+    # Funded-stage profit accrues payout at the 80/20 split from here.
+    _seed_closed_trade(auth_client, combine_id=c["id"], realized=1_000)
+    r3 = auth_client.get("/api/account/state").json()
+    assert r3["balance"] == 51_000
+    assert r3["payout_eligible"] == pytest.approx(800)  # 0.80 × 1_000
 
 
 def test_reset_failed_combine_restarts_eval_and_keeps_history(auth_client):
@@ -457,8 +468,20 @@ def test_payout_request_nets_and_blocks_when_empty(auth_client):
     # Activate the funded account (activation path) to unlock payouts.
     assert auth_client.post(f"/api/combines/{c['id']}/activate-account").status_code == 200
 
+    # FUNDED-STAGE profit across five winning days (each ≥ the $150 bar) so
+    # the payout policy gates clear: 5 × 640 = 3_200 since activation.
+    from datetime import timedelta
+
+    for offset in range(5):
+        _seed_closed_trade(
+            auth_client,
+            combine_id=c["id"],
+            realized=640,
+            exit_at=_now() - timedelta(days=offset),
+        )
+
     p = auth_client.post(f"/api/combines/{c['id']}/payout")
-    assert p.status_code == 200
+    assert p.status_code == 200, p.text
     assert p.json()["amount"] == pytest.approx(2_560)  # 0.80 × 3_200
 
     # Available is now zero → a second request is blocked.
@@ -471,6 +494,8 @@ def test_payout_request_nets_and_blocks_when_empty(auth_client):
     )
     assert card["payout_requested"] == pytest.approx(2_560)
     assert card["payout_eligible"] == 0
+    # The booked payout DEBITS the balance: 50_000 + 3_200 − 2_560.
+    assert card["balance"] == pytest.approx(50_640)
 
 
 def test_payout_rejected_when_not_funded(auth_client):

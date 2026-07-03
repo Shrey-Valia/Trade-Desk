@@ -42,6 +42,9 @@ export interface PreLiquidationUrgency {
   mllNearFloor: boolean;
   /** DLL usage in the warn band (but not yet day-locked). */
   dllNearLimit: boolean;
+  /** DLL exhausted — DAY LOCK in force. Distinct from the warn band: the
+   *  trader is locked out NOW, not approaching it. */
+  dllDayLocked: boolean;
 }
 
 export function usePreLiquidationWarnings(): PreLiquidationUrgency {
@@ -67,10 +70,16 @@ export function usePreLiquidationWarnings(): PreLiquidationUrgency {
     combine.dllBudget > 0 &&
     dllFraction > DLL_WARN_FRACTION &&
     dllFraction < 1;
+  // At/over the budget the warn band goes quiet by design — but silence is
+  // wrong exactly when the trader is day-locked. Emit a DISTINCT day-locked
+  // state (own toast + flag) so the lockout is unmistakable.
+  const dllDayLocked =
+    !combine.loading && !combine.dllDisabled && combine.dayLocked;
 
   // Per-threshold edge-trigger guards. True = armed (will fire on next entry).
   const mllArmed = useRef(true);
   const dllArmed = useRef(true);
+  const dayLockArmed = useRef(true);
 
   useEffect(() => {
     if (combine.loading) return;
@@ -114,5 +123,22 @@ export function usePreLiquidationWarnings(): PreLiquidationUrgency {
     combine.dllUsedLive,
   ]);
 
-  return { mllFraction, dllFraction, mllNearFloor, dllNearLimit };
+  // Day-lock transition — fires ONCE when the DLL is hit, re-arms after the
+  // 5pm-PT settlement lifts the lock.
+  useEffect(() => {
+    if (combine.loading) return;
+    if (dllDayLocked) {
+      if (dayLockArmed.current) {
+        dayLockArmed.current = false;
+        toast.error(
+          "DAY LOCK — daily loss limit hit. No new trades until the 5pm-PT settlement; the account survives.",
+          0, // sticky
+        );
+      }
+    } else {
+      dayLockArmed.current = true;
+    }
+  }, [combine.loading, dllDayLocked]);
+
+  return { mllFraction, dllFraction, mllNearFloor, dllNearLimit, dllDayLocked };
 }

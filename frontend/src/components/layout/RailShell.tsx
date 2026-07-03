@@ -1,9 +1,14 @@
+import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { CommandPalette } from "@/components/command/CommandPalette";
 import { HelpOverlay } from "@/components/help/HelpOverlay";
 import { OnboardingTour } from "@/components/help/OnboardingTour";
+import { useAlertEvaluator } from "@/hooks/useAlerts";
+import { ME_KEY } from "@/hooks/useAuth";
 import { useGlobalHotkeys } from "@/hooks/useGlobalHotkeys";
+import { registerUnauthorizedHandler } from "@/lib/api";
 
 import { LeftRail } from "./LeftRail";
 import { MobileBottomNav } from "./MobileBottomNav";
@@ -18,11 +23,25 @@ import { MobileBottomNav } from "./MobileBottomNav";
  *
  * WS6 mounts the onboarding + power-UX chrome here (inside the authed shell,
  * never on the signin/landing pages): the global hotkeys, the command palette,
- * the help/glossary overlay, and the first-run tour. A skip-to-content link is
- * the first focusable element for keyboard and screen-reader users.
+ * the help/glossary overlay, and the first-run tour. The price-alert evaluator
+ * also lives here — not inside the alerts bell — so alerts keep firing on
+ * routes without a terminal header. A skip-to-content link is the first
+ * focusable element for keyboard and screen-reader users.
  */
 export function RailShell() {
   useGlobalHotkeys();
+  useAlertEvaluator(true);
+
+  // Mid-session 401s (expired cookie) invalidate the session probe so
+  // RequireAuth bounces to /signin instead of leaving the shell erroring.
+  const qc = useQueryClient();
+  useEffect(() => {
+    registerUnauthorizedHandler(() => {
+      qc.invalidateQueries({ queryKey: ME_KEY });
+    });
+    return () => registerUnauthorizedHandler(null);
+  }, [qc]);
+
   return (
     <div className="flex flex-col md:flex-row h-full min-h-0">
       <a

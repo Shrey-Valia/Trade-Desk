@@ -19,9 +19,9 @@ export interface RailItem {
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
 }
 
-// Visual rework: WATCH dropped from the rail. The /watchlist route is
-// still reachable directly; we just don't surface it as a destination
-// in the primary nav until the watchlist concept comes back online.
+// Visual rework: WATCH dropped from the rail, and the /watchlist route
+// itself was retired (unknown URLs funnel to "/" in App.tsx) — the rail
+// is the complete route map until the watchlist concept comes back.
 // Exported so the mobile bottom nav renders the same destinations.
 export const TOP_ITEMS: RailItem[] = [
   { to: "/dashboard", label: "Home", icon: DashboardIcon },

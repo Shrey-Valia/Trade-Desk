@@ -7,14 +7,30 @@ import {
   useRenameCombine,
   useResetCombine,
 } from "@/hooks/useCombines";
+import { tierSpec } from "@/lib/tierSpecs";
 import type { CombineOut } from "@/types/combine";
 
+/** Room left above the MLL floor — the number a prop trader actually asks. */
+export function mllCushion(c: CombineOut): number {
+  return c.balance - c.mll;
+}
+
+/** Cushion alarm threshold: under a quarter of the tier's trailing distance
+ *  the account is one bad trade from failing — flag it red. */
+const CUSHION_ALARM_FRAC = 0.25;
+
+export function cushionAlarmed(c: CombineOut): boolean {
+  const trail = tierSpec(c.tier)?.trailing_distance ?? c.dll_budget;
+  return mllCushion(c) < CUSHION_ALARM_FRAC * trail;
+}
+
 /**
- * Responsive grid of combine ("account") cards — balance, closed P&L, MLL,
- * profit-target progress, plus rename / archive and the funded-activation
- * prompt. Switching the active combine happens via the header CombineSwitcher
- * pill, so the cards carry no "switch" button — the ACTIVE badge marks the
- * current one and L/F badges mark the copy-trade lead / followers.
+ * Responsive grid of combine ("account") cards — balance, closed P&L, the
+ * MLL cushion + DLL remaining, profit-target progress with pass chips, plus
+ * rename / archive and the funded-activation prompt. Switching the active
+ * combine happens via the header CombineSwitcher pill, so the cards carry
+ * no "switch" button — the ACTIVE badge marks the current one and L/F
+ * badges mark the copy-trade lead / followers.
  */
 export function CombineCardsGrid({
   combines,
@@ -60,6 +76,9 @@ function CombineCard({
   const [confirmArchive, setConfirmArchive] = useState(false);
   const archived = combine.status === "archived";
   const failed = combine.outcome === "failed";
+  const cushion = mllCushion(combine);
+  const cushionLow = !archived && cushionAlarmed(combine);
+  const dllRemaining = Math.max(0, combine.dll_budget - combine.dll_used);
 
   const commitRename = () => {
     const trimmed = name.trim();
@@ -131,6 +150,15 @@ function CombineCard({
             </span>
           )}
           {!archived && <StageBadge funded={combine.funded} failed={failed} />}
+          {!archived && combine.day_locked && (
+            <span
+              title="Daily loss limit hit — no new opens until the 5pm-PT settlement"
+              className="border border-bearish text-bearish px-1 uppercase tracking-label-up shrink-0"
+              style={{ fontSize: 11, borderRadius: 2 }}
+            >
+              day locked
+            </span>
+          )}
           <CopyRoleBadge isLead={isLead} isFollower={combine.copy_follow} />
         </div>
         <div
@@ -154,6 +182,18 @@ function CombineCard({
           }
         />
         <CardRow label="MLL" value={formatDollar(combine.mll)} />
+        <CardRow
+          label="MLL cushion"
+          value={formatDollar(cushion)}
+          tone={cushionLow ? "bearish" : undefined}
+          hint={cushionLow ? "LOW" : undefined}
+        />
+        <CardRow
+          label="DLL remaining"
+          value={formatDollar(dllRemaining)}
+          tone={combine.day_locked ? "bearish" : undefined}
+          hint={combine.day_locked ? "LOCKED" : undefined}
+        />
         {combine.funded && combine.activation_required && (
           <div className="flex items-center justify-between gap-2">
             <span
@@ -199,6 +239,9 @@ function CombineCard({
             {combine.profit_target.toLocaleString()} target
           </span>
         </div>
+        {!archived && !combine.funded && (
+          <PassProgressChips combine={combine} />
+        )}
       </div>
       {!archived && (
         <div className="px-3 pb-2.5 flex items-center gap-2">
@@ -256,10 +299,13 @@ function CardRow({
   label,
   value,
   tone,
+  hint,
 }: {
   label: string;
   value: string;
   tone?: "bullish" | "bearish";
+  /** Inline alarm tag after the value (e.g. "LOW", "LOCKED"). */
+  hint?: string;
 }) {
   const cls =
     tone === "bullish"
@@ -275,8 +321,75 @@ function CardRow({
       >
         {label}
       </span>
-      <span className={`text-tiny ${cls}`}>{value}</span>
+      <span className={`text-tiny ${cls}`}>
+        {value}
+        {hint && (
+          <span className="ml-1.5 uppercase tracking-label-up" style={{ fontSize: 11 }}>
+            {hint}
+          </span>
+        )}
+      </span>
     </div>
+  );
+}
+
+/**
+ * The three pass conditions the engine settles on, as compact chips:
+ * profit-target %, trading days n/N, and the 50% consistency rule.
+ * Days/consistency only render when the payload carries them (older
+ * backends omit the per-combine fields).
+ */
+function PassProgressChips({ combine }: { combine: CombineOut }) {
+  const targetMet = combine.objective_progress >= 1;
+  const days = combine.days_traded;
+  const minDays = combine.min_trading_days;
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap mt-1">
+      <PassChip
+        ok={targetMet}
+        label={`target ${Math.round(combine.objective_progress * 100)}%`}
+        title="Realized profit vs. the pass target"
+      />
+      {days != null && minDays != null && (
+        <PassChip
+          ok={days >= minDays}
+          label={`days ${days}/${minDays}`}
+          title="Distinct trading days vs. the minimum required to pass"
+        />
+      )}
+      {combine.consistency_ok != null && (
+        <PassChip
+          ok={combine.consistency_ok}
+          label={combine.consistency_ok ? "consistency ok" : "consistency >50%"}
+          title="No single day may exceed 50% of total realized profit"
+        />
+      )}
+    </div>
+  );
+}
+
+function PassChip({
+  ok,
+  label,
+  title,
+}: {
+  ok: boolean;
+  label: string;
+  title: string;
+}) {
+  return (
+    <span
+      title={title}
+      className={[
+        "px-1 uppercase tracking-label-up tabular-nums border",
+        ok
+          ? "border-bullish text-bullish"
+          : "border-hairline-strong text-fg-tertiary-2",
+      ].join(" ")}
+      style={{ fontSize: 11, borderRadius: 2 }}
+    >
+      {label}
+    </span>
   );
 }
 

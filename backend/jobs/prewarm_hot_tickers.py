@@ -27,7 +27,7 @@ from config import settings
 from database import SessionLocal
 from models.watchlist_item import WatchlistItem
 from routers.ticker import get_ticker_chart, get_ticker_metrics
-from services.alpaca_client import get_chain_snapshot
+from services.alpaca_client import _DEFAULT_TIMEFRAME, _TIMEFRAME_CONFIG, get_chain_snapshot
 from services.market_calendar import is_market_open
 
 log = logging.getLogger(__name__)
@@ -39,7 +39,12 @@ _MAX_CONCURRENCY = 4
 # of the hot subset). Hot tickers warm FIRST inside the budget, so even
 # if we time out we never lose coverage on the most-clicked names.
 _TIME_BUDGET_SECONDS = 50.0
-_CHART_TIMEFRAME = "5D"  # frontend default — matches AnnotatedChart.tsx
+# The frontend's default chart timeframe — warming any other key is write-only
+# cache garbage. Asserted against the real grid so the next timeframe rework
+# fails at import instead of silently warming a retired token ("5D" did this
+# for a while: ~50 log warnings/min and a cache entry no user ever read).
+_CHART_TIMEFRAME = _DEFAULT_TIMEFRAME
+assert _CHART_TIMEFRAME in _TIMEFRAME_CONFIG, f"unknown prewarm timeframe {_CHART_TIMEFRAME!r}"
 
 
 def prewarm_hot_tickers(force: bool = False) -> None:

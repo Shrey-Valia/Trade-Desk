@@ -336,6 +336,8 @@ def test_metrics_success_shape(api_client, monkeypatch):
         "skew_25d",
         "pc_ratio",
         "max_pain",
+        "as_of",
+        "served_stale",
     }
     # P/C ratio is computable from the chain volumes (equal call/put → 1.0).
     assert body["pc_ratio"] == pytest.approx(1.0)

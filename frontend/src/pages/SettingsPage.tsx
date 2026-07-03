@@ -13,6 +13,7 @@ import {
 import { useActivateCombine } from "@/hooks/useCombines";
 import { useMe, useSignout } from "@/hooks/useAuth";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
+import { TIER_SPECS } from "@/lib/tierSpecs";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { APPEARANCE_DEFAULTS, useUserSettings } from "@/stores/userSettings";
 import type { TierKey, TierSpec } from "@/types/account";
@@ -373,21 +374,19 @@ function RiskManagementSection() {
   return <DailyLossLimitRow tiers={tiers} />;
 }
 
-const FALLBACK_RISK_TIERS: TierSpec[] = [
-  { key: "50K", label: "50K", starting_balance: 50_000, trailing_distance: 2_000, initial_mll: 48_000, dll_amount: 1_500 },
-  { key: "100K", label: "100K", starting_balance: 100_000, trailing_distance: 4_000, initial_mll: 96_000, dll_amount: 3_000 },
-  { key: "150K", label: "150K", starting_balance: 150_000, trailing_distance: 4_500, initial_mll: 145_500, dll_amount: 4_500 },
-];
+// Shared tier-spec mirror — a hand-typed copy here once drifted to a $4,000
+// 100K trail against the engine's $3,000.
+const FALLBACK_RISK_TIERS: TierSpec[] = [...TIER_SPECS];
 
 /**
  * Per-tier Daily Loss Limit override.
  *
  * Defaults come from the backend's TierSpec (Topstep-aligned 3% of
  * starting balance). User can override per tier within a 1-10% band of
- * the tier's starting balance. The backend ENFORCES its tier-default DLL
- * on the open path (a realized day-loss breach blocks new opens); a tighter
- * override here only adjusts the header warning pill — it isn't yet enforced
- * server-side.
+ * the tier's starting balance. Overrides ARE enforced server-side
+ * (combine_state.resolve_dll_budget feeds the open gate, the monitor's
+ * day-lock flatten, and settlement) — this panel is the control surface,
+ * not just a display preference.
  */
 function DailyLossLimitRow({ tiers }: { tiers: TierSpec[] }) {
   const { data: config } = useDllOverrides();

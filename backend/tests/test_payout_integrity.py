@@ -59,19 +59,28 @@ def _seed_closed(session, combine_id: int, realized: float, exit_at: datetime) -
 
 
 def _fund_and_activate(client, combine_id: int, total_profit: float) -> None:
-    """Push a combine to FUNDED + ACTIVATED with a known realized profit.
+    """Push a combine to FUNDED + ACTIVATED with a known FUNDED-STAGE realized
+    profit.
 
-    Seeds the profit across two distinct trading days (min-days + consistency),
-    then stamps funded_at / funded_activated_at directly so the snapshot reports
-    the account as payable without waiting on a real 5pm-PT settlement."""
+    Stamps funded_at / funded_activated_at / funded_epoch_at directly (skipping
+    the eval + activation endpoints), with the accounting EPOCH before the
+    seeded trades so they count as funded-stage profit. The profit is spread
+    across five winning days (each ≥ the $150 winning-day bar) so the payout
+    policy gates are satisfied and these tests stay focused on booking
+    integrity."""
     session = next(client.app.dependency_overrides[get_session]())
-    half = round(total_profit / 2, 2)
-    _seed_closed(session, combine_id, half, _et_noon_on(2))
-    _seed_closed(session, combine_id, round(total_profit - half, 2), _et_noon_on(1))
+    per_day = round(total_profit / 5, 2)
+    for offset in range(5, 1, -1):
+        _seed_closed(session, combine_id, per_day, _et_noon_on(offset))
+    _seed_closed(
+        session, combine_id, round(total_profit - 4 * per_day, 2), _et_noon_on(1)
+    )
     combine = session.get(Combine, combine_id)
-    now = datetime.now(timezone.utc)
-    combine.funded_at = now
-    combine.funded_activated_at = now
+    epoch = _et_noon_on(6)
+    combine.outcome = "passed"
+    combine.funded_at = epoch
+    combine.funded_activated_at = epoch
+    combine.funded_epoch_at = epoch
     session.add(combine)
     session.commit()
     session.close()
@@ -115,12 +124,13 @@ def test_concurrent_requests_cannot_double_book(auth_client, monkeypatch):
     """Two payout requests that BOTH read `available` before either books must
     still never book more than the eligible balance in total.
 
-    We disable the idempotency window so the only thing standing between the two
-    requests is the FOR-UPDATE serialization + the under-lock re-read of
-    `_payouts_requested`. After the first books $2,400 the eligible balance is
-    fully consumed, so the second must find $0 available and 409 — never a
-    second $2,400 event."""
+    We disable the idempotency window AND the 24h pacing gate so the only thing
+    standing between the two requests is the FOR-UPDATE serialization + the
+    under-lock re-read of `_payouts_requested`. After the first books $2,400 the
+    eligible balance is fully consumed, so the second must find $0 available and
+    409 — never a second $2,400 event."""
     monkeypatch.setattr(combines_router, "PAYOUT_IDEMPOTENCY_WINDOW_S", 0)
+    monkeypatch.setattr(combines_router, "PAYOUT_MIN_INTERVAL_H", 0)
     c = make_combine(auth_client, "50K")
     _fund_and_activate(auth_client, c["id"], 3_000.0)
 
@@ -139,6 +149,7 @@ def test_second_payout_after_more_profit_only_books_the_delta(auth_client, monke
     """Once a payout is booked, a later request nets out prior requests: more
     realized profit only pays the incremental split, never re-paying the base."""
     monkeypatch.setattr(combines_router, "PAYOUT_IDEMPOTENCY_WINDOW_S", 0)
+    monkeypatch.setattr(combines_router, "PAYOUT_MIN_INTERVAL_H", 0)
     c = make_combine(auth_client, "50K")
     _fund_and_activate(auth_client, c["id"], 3_000.0)
 

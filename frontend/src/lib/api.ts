@@ -88,6 +88,23 @@ import {
 
 const API_BASE = "";
 
+// ── session expiry (mid-session 401) ─────────────────────────────────────────
+// RailShell registers a handler that invalidates the me-query, so a 401 on
+// any API call re-runs the session probe and RequireAuth bounces to /signin
+// instead of stranding a signed-in-looking app in per-panel error states.
+// /api/auth/* is excluded: its 401s are normal signed-out answers (a failed
+// signin, the /me probe itself), and reacting to them would loop the probe.
+let onUnauthorized: (() => void) | null = null;
+
+export function registerUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
+function notifyUnauthorized(path: string, status: number): void {
+  if (status === 401 && !path.startsWith("/api/auth/")) onUnauthorized?.();
+}
+// ── end session expiry ───────────────────────────────────────────────────────
+
 // ── WS3: market-data graceful-degrade ───────────────────────────────────────
 // Typed error for the backend's 503 "market data unavailable" degraded
 // response (circuit breaker open / Alpaca rate-limited). The chart UI keys
@@ -112,6 +129,7 @@ async function request<S extends z.ZodTypeAny>(
   // proxy in dev; "include" also covers direct-to-:8000 use.
   const res = await fetch(`${API_BASE}${path}`, { credentials: "include" });
   if (!res.ok) {
+    notifyUnauthorized(path, res.status);
     // Surface the backend's `detail` when present (FastAPI HTTPException
     // bodies look like `{"detail": "..."}`). UI components branch on
     // this text — e.g. ChainTable looks for "No 0DTE for" to render the
@@ -242,6 +260,7 @@ async function mutate<S extends z.ZodTypeAny>(
     ...init,
   });
   if (!res.ok) {
+    notifyUnauthorized(path, res.status);
     // Surface FastAPI's `detail` like request() does — the purchase
     // 5-cap 409 and auth errors carry their message there.
     let detail = `Request failed: ${res.status} ${res.statusText}`;
@@ -265,6 +284,11 @@ export interface TradeListFilters {
   status?: TradeStatus;
   isPaper?: boolean;
   symbol?: string;
+  /** Scope to one owned combine (null/undefined = all accounts). */
+  combineId?: number | null;
+  /** ISO date bounds on exit_date — same semantics as /api/analytics. */
+  since?: string | null;
+  until?: string | null;
 }
 
 export const fetchTrades = (filters: TradeListFilters = {}): Promise<TradesResponse> => {
@@ -272,6 +296,9 @@ export const fetchTrades = (filters: TradeListFilters = {}): Promise<TradesRespo
   if (filters.status) params.set("status", filters.status);
   if (filters.isPaper !== undefined) params.set("is_paper", String(filters.isPaper));
   if (filters.symbol) params.set("symbol", filters.symbol);
+  if (filters.combineId != null) params.set("combine_id", String(filters.combineId));
+  if (filters.since) params.set("since", filters.since);
+  if (filters.until) params.set("until", filters.until);
   const q = params.toString();
   return request(`/api/journal/trades${q ? `?${q}` : ""}`, TradesResponseSchema);
 };
@@ -300,6 +327,7 @@ export const uploadTradeScreenshot = async (
     body: form,
   });
   if (!res.ok) {
+    notifyUnauthorized(`/api/journal/trades/${id}/screenshot`, res.status);
     let detail = `Upload failed: ${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
@@ -381,9 +409,14 @@ export const activateCombine = (id: number): Promise<AccountState> =>
 export const resetCombine = (id: number): Promise<CombineOut> =>
   mutate(`/api/combines/${id}/reset`, CombineOutSchema, { method: "POST" });
 
-/** Request a payout on a funded, activated account (simulated). */
-export const requestPayout = (id: number): Promise<PayoutOut> =>
-  mutate(`/api/combines/${id}/payout`, PayoutOutSchema, { method: "POST" });
+/** Request a payout on a funded, activated account (simulated). `amount`
+ *  omitted books the max eligible; the backend 409s (minimum, winning-day
+ *  count, 24h spacing, MLL buffer) with a human-readable `detail`. */
+export const requestPayout = (id: number, amount?: number): Promise<PayoutOut> =>
+  mutate(`/api/combines/${id}/payout`, PayoutOutSchema, {
+    method: "POST",
+    body: JSON.stringify(amount != null ? { amount } : {}),
+  });
 
 /** Activate a funded combine (one unified flow — charges $149 on the
  *  activation path, $0 on no-activation); unlocks payouts. */
@@ -493,6 +526,7 @@ export const deleteTrade = async (id: number): Promise<void> => {
     credentials: "include",
   });
   if (!res.ok) {
+    notifyUnauthorized(`/api/journal/trades/${id}`, res.status);
     throw new Error(`Delete failed: ${res.status} ${res.statusText}`);
   }
 };
@@ -593,12 +627,14 @@ export const runMonteCarlo = (input: MonteCarloInput): Promise<MonteCarloResult>
 export const fetchJournalCalendar = (
   month: string,
   isPaper?: boolean | null,
+  combineId?: number | null,
 ): Promise<CalendarMonth> => {
   const p = new URLSearchParams();
   p.set("month", month);
   if (isPaper !== undefined && isPaper !== null) {
     p.set("is_paper", String(isPaper));
   }
+  if (combineId != null) p.set("combine_id", String(combineId));
   return request(`/api/journal/calendar?${p.toString()}`, CalendarMonthSchema);
 };
 
@@ -634,7 +670,10 @@ export const deleteAlert = async (id: number): Promise<void> => {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) throw new Error(`Delete failed: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    notifyUnauthorized(`/api/alerts/${id}`, res.status);
+    throw new Error(`Delete failed: ${res.status} ${res.statusText}`);
+  }
 };
 
 export const rearmAlert = (id: number): Promise<Alert> =>

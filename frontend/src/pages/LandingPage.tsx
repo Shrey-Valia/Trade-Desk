@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 
 import { TradeDeskLogo } from "@/components/branding/TradeDeskLogo";
 import { monthlyPrice } from "@/lib/pricing";
+import { profitTarget, TIER_SPECS } from "@/lib/tierSpecs";
 
 /**
  * "/" for guests — the marketing landing page.
@@ -143,32 +144,18 @@ function RulesBand() {
 }
 
 function TierPricing() {
-  const tiers = [
-    {
-      key: "50K",
-      start: "$50,000",
-      target: "$3,000",
-      trail: "$2,000",
-      dll: "$1,500",
-      highlight: false,
-    },
-    {
-      key: "100K",
-      start: "$100,000",
-      target: "$6,000",
-      trail: "$4,000",
-      dll: "$3,000",
-      highlight: true,
-    },
-    {
-      key: "150K",
-      start: "$150,000",
-      target: "$9,000",
-      trail: "$4,500",
-      dll: "$4,500",
-      highlight: false,
-    },
-  ];
+  // Risk numbers come from the shared tier-spec mirror — the marketing page
+  // must never advertise a rule the engine doesn't enforce (a hand-typed
+  // table here once promised a $4,000 100K trail against a $3,000 engine).
+  const usd = (n: number) => `$${n.toLocaleString("en-US")}`;
+  const tiers = TIER_SPECS.map((t) => ({
+    key: t.key,
+    start: usd(t.starting_balance),
+    target: usd(profitTarget(t.key)),
+    trail: usd(t.trailing_distance),
+    dll: usd(t.dll_amount),
+    highlight: t.key === "100K",
+  }));
   return (
     <section className="border-b border-hairline" id="pricing">
       <div className="mx-auto px-6 py-12" style={{ maxWidth: 1080 }}>

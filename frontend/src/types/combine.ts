@@ -24,6 +24,14 @@ export const CombineOutSchema = z.object({
   profit_target: z.number(),
   /** realized/target clamped to [0,1]. */
   objective_progress: z.number(),
+  /** Distinct 5pm-PT trading days with ≥1 closed trade. Nullable-defaulted:
+   *  a payload that predates the field hides the days chip instead of
+   *  rendering a fake 0/0. */
+  days_traded: z.number().nullable().default(null),
+  /** Minimum distinct trading days required to pass. */
+  min_trading_days: z.number().nullable().default(null),
+  /** No single day's realized profit > 50% of total (or no profit yet). */
+  consistency_ok: z.boolean().nullable().default(null),
   /** Scaling-plan cap: max contracts per position at the current built equity. */
   max_contracts: z.number().int().default(1),
   /** True once the eval passed (auto-funded). */
