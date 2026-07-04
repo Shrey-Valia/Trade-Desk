@@ -10,6 +10,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from time import monotonic
 from typing import Callable, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,7 @@ from alpaca.data.requests import (
     NewsRequest,
     OptionBarsRequest,
     OptionChainRequest,
+    OptionLatestQuoteRequest,
     StockBarsRequest,
     StockSnapshotRequest,
 )
@@ -80,14 +82,23 @@ _background_bucket = TokenBucket(_BACKGROUND_RATE, 4.0)
 _SDK_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="td-alpaca-sdk")
 
 
-def _spaced(fn: Callable[[], T], *, timeout_s: float | None = None) -> T:
+def _spaced(fn: Callable[[], T], *, timeout_s: float | None = None, interactive: bool = False) -> T:
     """Block on the Alpaca token bucket for this context (background for
     scheduled jobs, the reserved interactive bucket otherwise), then run
     `fn` under the SDK deadline. Wraps the SDK call so the spacing happens
     right before the network hop (and inside resilient_call's breaker
     check, so a short-circuited call costs no tokens). Raises CallTimeout
-    on a stall — treated as degraded by `_is_degraded`, NOT as "no data"."""
-    bucket = _background_bucket if in_background_budget() else _interactive_bucket
+    on a stall — treated as degraded by `_is_degraded`, NOT as "no data".
+
+    `interactive=True` pins the reserved interactive bucket even inside a
+    background-budget context — used by the live option-quote plane, whose
+    tiny per-~10s batch prices real fills/stops (the order monitor runs on
+    the scheduler) and must never queue behind a warming fan-out."""
+    bucket = (
+        _background_bucket
+        if in_background_budget() and not interactive
+        else _interactive_bucket
+    )
     bucket.take()
     deadline = float(timeout_s if timeout_s is not None else settings.alpaca_sdk_timeout_s)
     return run_with_timeout(fn, timeout_s=deadline, executor=_SDK_EXECUTOR)
@@ -795,6 +806,201 @@ def _safe_int(v) -> int | None:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Live option-quote plane (audit D1)
+#
+# get_chain_snapshot above is a 300s STRUCTURE cache: strikes/expiries/greeks
+# refresh at most every 5 minutes because the whole chain is the heaviest
+# Alpaca hop we make. That cadence is fine for structure but NOT for the
+# prices the product trades on — fills, stop/TP checks, and liquidation
+# marks would all move in 5-minute steps. get_live_option_quotes is a
+# short-TTL path for the SMALL live set only: OCC symbols are resolved from
+# the cached snapshot (no new chain hop), then ONE batched latest-quote
+# request refreshes just those contracts.
+#
+# Rate budget: a handful of contracts refresh in a single batched request
+# per symbol per TTL window (~0.1 req/s at the 10s default) — negligible
+# against the 1/s interactive reserve, and paced by the bucket regardless.
+# ---------------------------------------------------------------------------
+
+
+def _occ_symbol(root: str, expiry: date, side: str, strike: float) -> str:
+    """Inverse of `_parse_occ`: ROOT + YYMMDD + C/P + STRIKE×1000 (8 digits)."""
+    return (
+        f"{root}{expiry.strftime('%y%m%d')}"
+        f"{'C' if side == 'call' else 'P'}"
+        f"{int(round(strike * 1000)):08d}"
+    )
+
+
+def _live_quote_key(sym: str, strike: float, side: str) -> str:
+    return f"alpaca:live_opt:{sym}:{strike:.2f}:{side}"
+
+
+def _cached_chain_rows(sym: str) -> list[ContractRow] | None:
+    """Chain snapshot rows for OCC resolution + fallback, preferring
+    whichever 300s variant is ALREADY cached (with/without volume) so the
+    live path never forces a fresh whole-chain fetch while one is warm.
+    Never raises — a degraded chain (typed 503 from `get_chain_snapshot`)
+    means the live path simply has nothing to fall back on."""
+    for with_volume in (0, 1):
+        cached = cache.get(f"alpaca:chain_snap:{sym}:{with_volume}")
+        if cached is not None and cached is not _NEGATIVE:
+            return cached
+    try:
+        return get_chain_snapshot(sym, with_volume=False)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("live option quotes: chain snapshot unavailable for %s: %s", sym, exc)
+        return None
+
+
+def get_live_option_quotes(
+    symbol: str,
+    contracts: list[tuple[float, str]],
+    max_age_s: float = 10.0,
+) -> dict[tuple[float, str], ContractRow]:
+    """Fresh bid/ask for a SMALL set of TODAY-expiry contracts.
+
+    `contracts` is (strike, side) tuples with side "call"/"put"; the result
+    maps those same tuples to ContractRow objects (the chain snapshot's
+    duck-type: .bid/.ask/.last/.as_of). `.as_of` is the QUOTE's own
+    timestamp — callers gate staleness on it, never on the fetch time.
+
+    Freshness: a per-(symbol, strike, side) cache line younger than the
+    serve window is returned without a network hop; the window is the
+    tighter of `max_age_s` and settings.live_option_quote_ttl_s (either
+    side can demand fresher, neither can stretch staleness). Misses refresh
+    in ONE batched latest-quote request on the INTERACTIVE bucket.
+
+    Degradation: any failure (breaker open, 429, stall, missing/empty
+    quote) falls back to the corresponding 300s chain-snapshot row — with
+    its older as_of. NEVER raises; keys it cannot serve at all (not in
+    today's chain, chain unavailable) are simply absent from the result.
+    """
+    sym = symbol.upper().strip()
+    today = datetime.now(_ET).date()
+    window = min(float(max_age_s), float(settings.live_option_quote_ttl_s))
+
+    # (original tuple, normalized key) pairs — output keys are the tuples the
+    # caller passed; normalization matches zerodte's by_key convention.
+    requested: list[tuple[tuple[float, str], tuple[float, str]]] = []
+    for key in contracts:
+        try:
+            raw_strike, raw_side = key
+            norm = (round(float(raw_strike), 2), str(raw_side).lower())
+        except (TypeError, ValueError):
+            continue
+        if norm[1] not in ("call", "put"):
+            continue
+        requested.append((key, norm))
+
+    served: dict[tuple[float, str], ContractRow] = {}
+    if window > 0:
+        now = monotonic()
+        for _, norm in requested:
+            if norm in served:
+                continue
+            entry = cache.get(_live_quote_key(sym, *norm))
+            if entry is None:
+                continue
+            fetched_at, row = entry
+            if now - fetched_at <= window:
+                served[norm] = row
+
+    misses: list[tuple[float, str]] = []
+    for _, norm in requested:
+        if norm not in served and norm not in misses:
+            misses.append(norm)
+
+    by_key: dict[tuple[float, str], ContractRow] = {}
+    if misses:
+        rows = _cached_chain_rows(sym) or []
+        by_key = {
+            (round(float(c.strike), 2), c.type): c for c in rows if c.expiry == today
+        }
+        occ_by_norm = {
+            norm: _occ_symbol(sym, today, norm[1], norm[0])
+            for norm in misses
+            if norm in by_key
+        }
+        if occ_by_norm:
+            for norm, row in _fetch_live_quotes(sym, occ_by_norm, by_key, today).items():
+                cache.set(
+                    _live_quote_key(sym, *norm),
+                    (monotonic(), row),
+                    ttl_seconds=float(settings.live_option_quote_ttl_s),
+                )
+                served[norm] = row
+
+    out: dict[tuple[float, str], ContractRow] = {}
+    for orig, norm in requested:
+        row = served.get(norm) or by_key.get(norm)
+        if row is not None:
+            out[orig] = row
+    return out
+
+
+def _fetch_live_quotes(
+    sym: str,
+    occ_by_norm: dict[tuple[float, str], str],
+    by_key: dict[tuple[float, str], ContractRow],
+    today: date,
+) -> dict[tuple[float, str], ContractRow]:
+    """ONE batched latest-quote request for the live-set cache misses.
+
+    Returns only the keys the feed actually quoted; everything else (error,
+    breaker open, missing symbol, empty quote) is left to the caller's
+    chain-row fallback. Never raises."""
+    client = _option_client()
+    req = OptionLatestQuoteRequest(
+        symbol_or_symbols=sorted(set(occ_by_norm.values())),
+        feed=settings.alpaca_options_feed,
+    )
+    try:
+        # interactive=True: live quotes price real fills/stops — draw the
+        # reserved interactive bucket even from the order monitor's
+        # scheduler context so they never queue behind a chain warm.
+        raw = resilient_call(
+            _ALPACA,
+            lambda: _spaced(lambda: client.get_option_latest_quote(req), interactive=True),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("live option quote fetch failed for %s: %s", sym, exc)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[tuple[float, str], ContractRow] = {}
+    for norm, occ in occ_by_norm.items():
+        q = raw.get(occ)
+        if q is None:
+            continue
+        bid = _safe_float(getattr(q, "bid_price", None))
+        ask = _safe_float(getattr(q, "ask_price", None))
+        if bid is None and ask is None:
+            continue  # an empty quote is strictly worse than the chain row
+        base = by_key[norm]
+        out[norm] = ContractRow(
+            strike=norm[0],
+            expiry=today,
+            type=norm[1],
+            # Structure fields ride along from the snapshot row so greeks-
+            # aware consumers lose nothing by switching to the live path.
+            iv=base.iv,
+            delta=base.delta,
+            gamma=base.gamma,
+            volume=base.volume,
+            open_interest=base.open_interest,
+            bid=bid,
+            ask=ask,
+            # The latest-quote endpoint carries no trade; keep the
+            # snapshot's last print for consumers that prefer `last`.
+            last=base.last,
+            # The quote's OWN timestamp — the caller's staleness gate.
+            as_of=getattr(q, "timestamp", None),
+        )
+    return out
 
 
 # Timeframe configuration. Each entry: (TimeFrame, lookback_days,

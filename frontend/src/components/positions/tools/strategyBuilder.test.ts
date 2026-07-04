@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { netPremiumPerShare, presetLegs, strikeStep } from "./StrategyBuilder";
+import {
+  multiLegOrderPayload,
+  netPremiumPerShare,
+  presetLegs,
+  strikeStep,
+} from "./StrategyBuilder";
+import type { MultiLegSpec } from "@/types/zerodte";
 
 describe("strikeStep", () => {
   it("returns the median gap of a strike grid", () => {
@@ -86,5 +92,53 @@ describe("netPremiumPerShare (premium-exit direction)", () => {
       ]),
     ).toBeNull();
     expect(netPremiumPerShare(rows, [])).toBeNull();
+  });
+});
+
+describe("multiLegOrderPayload (net-debit limit wire shape)", () => {
+  const legs: MultiLegSpec[] = [
+    { side: "call", action: "buy", strike: 100, ratio: 1 },
+    { side: "call", action: "sell", strike: 105, ratio: 1 },
+  ];
+  const base = {
+    symbol: "SPY",
+    contracts: 2,
+    strategy: "vertical",
+    legs,
+    tp: 2,
+    sl: 0.5,
+  };
+
+  it("market opens OMIT order_type/limit_price entirely (older-backend compatible)", () => {
+    const p = multiLegOrderPayload({ ...base, orderType: "market", limitPrice: 1.4 });
+    expect(p).toMatchObject({
+      symbol: "SPY",
+      contracts: 2,
+      strategy: "vertical",
+      legs,
+      tp_premium_mult: 2,
+      sl_premium_mult: 0.5,
+    });
+    expect(p).not.toHaveProperty("order_type");
+    expect(p).not.toHaveProperty("limit_price");
+  });
+
+  it("NET LIMIT sends order_type:'limit' + limit_price", () => {
+    const p = multiLegOrderPayload({ ...base, orderType: "limit", limitPrice: 1.4 });
+    expect(p).toMatchObject({ order_type: "limit", limit_price: 1.4 });
+  });
+
+  it("keeps a negative (credit) net limit as-is — sign carries direction", () => {
+    const p = multiLegOrderPayload({ ...base, orderType: "limit", limitPrice: -2.7 });
+    expect(p?.limit_price).toBe(-2.7);
+  });
+
+  it("returns null when a limit is requested without a usable price", () => {
+    expect(
+      multiLegOrderPayload({ ...base, orderType: "limit", limitPrice: null }),
+    ).toBeNull();
+    expect(
+      multiLegOrderPayload({ ...base, orderType: "limit", limitPrice: NaN }),
+    ).toBeNull();
   });
 });

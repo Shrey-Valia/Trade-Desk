@@ -4,10 +4,13 @@ funded-account lifecycle folded in.
 
 Same computation pattern as before, keyed by combine_id: realized P&L
 from closed trades, balance via the frozen compute_balance, a RUNNING
-HWM advanced monotonically intraday, and DLL from realized losses. On
-top of that this module drives the combine engine
+HWM advanced monotonically intraday (display only — it re-seeds to the
+balance at each settlement), and DLL from realized losses. On top of
+that this module drives the combine engine
 (services/combine_settlement): a lazy 5pm-PT settlement re-baselines the
-SETTLED HWM up, the MLL floor is computed from that settled HWM (so it
+SETTLED HWM up to the highest END-OF-DAY balance (the advertised
+trailing convention — an intraday peak given back by the close moves
+the floor $0), the MLL floor is computed from that settled HWM (so it
 is fixed intraday), the DLL window is the current 5pm-PT trading day,
 and the realized-based PASS/FAIL outcome is persisted on the combine.
 
@@ -58,6 +61,7 @@ from services.combine_settlement import (
     MIN_TRADING_DAYS,
     consistency_ok,
     needs_settlement,
+    peak_eod_balance,
     settle_hwm,
     trading_day_start,
 )
@@ -279,8 +283,9 @@ def event_recorded_today(
 
 def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     """Full computed state for one combine. Advances the persisted RUNNING
-    HWM monotonically (realized-only), runs the lazy 5pm-PT settlement,
-    computes the fixed-intraday MLL floor, persists a realized-based
+    HWM monotonically intraday (realized-only, display-only), runs the lazy
+    5pm-PT settlement against the end-of-day balance basis, computes the
+    fixed-intraday MLL floor from the settled HWM, persists a realized-based
     PASS/FAIL outcome, AUTO-FUNDS on a pass, and logs each transition. All
     persisted decisions are realized-based; the frontend folds live URPL in
     for display only."""
@@ -298,21 +303,35 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     balance = compute_balance(tier.starting_balance, realized, 0.0) - payouts
     dirty = False
 
-    # RUNNING HWM — monotonic, updated intraday from realized balance.
+    # Per-trading-day realized buckets — the settlement basis below, plus the
+    # min-trading-days / consistency progress further down.
+    by_day = realized_by_trading_day(session, combine.id, since)
+
+    # Lazy 5pm-PT settlement: once a boundary has passed, the settled HWM
+    # re-baselines UP to the highest END-OF-DAY balance among completed
+    # trading days (advertised convention — an intraday peak given back by
+    # the close moves the floor $0; only profit KEPT at 5pm PT advances it),
+    # and the running (display) HWM re-seeds to the current balance for the
+    # new day. Stamped so we settle once per trading day. The DLL day resets
+    # implicitly — it derives from the 5pm-PT window below, not a persisted
+    # flag. Archived combines are frozen: no settlement (or events) on read.
+    if combine.status != "archived" and needs_settlement(combine.last_settled_at, now):
+        eod_peak = (
+            peak_eod_balance(tier.starting_balance, by_day, trading_day_start(now))
+            - payouts
+        )
+        combine.settled_hwm = settle_hwm(combine.settled_hwm, eod_peak)
+        combine.hwm = balance  # intraday display resets at the boundary
+        combine.last_settled_at = now
+        record_event(session, combine, "settled", "Daily settlement — MLL re-baselined.")
+        dirty = True
+
+    # RUNNING HWM — monotonic INTRADAY from realized balance, display only;
+    # it never drives the MLL (the settled HWM does) and re-seeds at each
+    # settlement above.
     new_hwm = update_hwm(combine.hwm, balance)
     if new_hwm != combine.hwm:
         combine.hwm = new_hwm
-        dirty = True
-
-    # Lazy 5pm-PT settlement: once a boundary has passed, the settled HWM
-    # re-baselines UP to the running HWM (never down) and we stamp the time
-    # so we settle once per trading day. The DLL day resets implicitly —
-    # it derives from the 5pm-PT window below, not a persisted flag.
-    # Archived combines are frozen: no settlement (or events) on read.
-    if combine.status != "archived" and needs_settlement(combine.last_settled_at, now):
-        combine.settled_hwm = settle_hwm(combine.settled_hwm, new_hwm)
-        combine.last_settled_at = now
-        record_event(session, combine, "settled", "Daily settlement — MLL re-baselined.")
         dirty = True
 
     # MLL floor — FIXED intraday, from the SETTLED HWM. Only settlement
@@ -393,8 +412,7 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
 
     day_locked = ((not dll_disabled) and dll_used >= dll_budget) or profit_locked
 
-    # PASS progress (realized-based), bucketed per 5pm-PT trading day.
-    by_day = realized_by_trading_day(session, combine.id, since)
+    # PASS progress (realized-based), from the per-trading-day buckets above.
     days_traded = len(by_day)
     total_realized = sum(by_day.values()) if by_day else 0.0
     largest_day_profit = max(by_day.values()) if by_day else 0.0

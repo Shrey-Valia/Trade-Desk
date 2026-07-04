@@ -4,6 +4,8 @@ import {
   MarketDataUnavailableError,
   fetchMarketStatus,
   fetchTrades,
+  openZeroDteMultiLeg,
+  updateWorkingOrder,
 } from "@/lib/api";
 
 // `request()` is module-private; we exercise it through fetchMarketStatus /
@@ -215,6 +217,103 @@ describe("api request()", () => {
       const url = (fetch as unknown as ReturnType<typeof vi.fn>).mock
         .calls[0][0] as string;
       expect(url).toContain("is_paper=false");
+    });
+  });
+
+  describe("updateWorkingOrder (PATCH .../order)", () => {
+    // Minimal-but-valid TradeOut body — defaults fill tier/order_type/tif/tags.
+    const workingTrade = {
+      id: 7,
+      symbol: "SPY",
+      strategy: "long_call",
+      legs: [
+        {
+          side: "call",
+          action: "buy",
+          strike: 500,
+          expiry: "2026-07-03",
+          contracts: 1,
+          entry_price: 1.2,
+        },
+      ],
+      entry_date: "2026-07-03",
+      entry_underlying_price: 500,
+      net_debit_credit: 120,
+      status: "working",
+      is_paper: true,
+      created_at: "2026-07-03T14:00:00Z",
+      updated_at: "2026-07-03T14:00:00Z",
+    };
+
+    it("PATCHes the order endpoint with exactly the given patch body", async () => {
+      mockFetch({ ok: true, status: 200, json: async () => workingTrade });
+      await updateWorkingOrder(7, {
+        limit_price: 1.35,
+        time_in_force: "day",
+      });
+      const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/journal/trades/7/order");
+      expect(init.method).toBe("PATCH");
+      expect(JSON.parse(init.body as string)).toEqual({
+        limit_price: 1.35,
+        time_in_force: "day",
+      });
+    });
+
+    it("tolerates trades WITHOUT premium-mult fields and parses ones WITH them", async () => {
+      mockFetch({ ok: true, status: 200, json: async () => workingTrade });
+      const bare = await updateWorkingOrder(7, { limit_price: 1.5 });
+      expect(bare.tp_premium_mult).toBeUndefined();
+      mockFetch({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ...workingTrade,
+          tp_premium_mult: 2,
+          sl_premium_mult: 0.5,
+        }),
+      });
+      const withMults = await updateWorkingOrder(7, { limit_price: 1.5 });
+      expect(withMults.tp_premium_mult).toBe(2);
+      expect(withMults.sl_premium_mult).toBe(0.5);
+    });
+
+    it("surfaces the 409 detail verbatim when the order is no longer working", async () => {
+      mockFetch({
+        ok: false,
+        status: 409,
+        statusText: "Conflict",
+        json: async () => ({ detail: "Order is no longer working" }),
+      });
+      await expect(updateWorkingOrder(7, { limit_price: 1.5 })).rejects.toThrow(
+        "Order is no longer working",
+      );
+    });
+  });
+
+  describe("openZeroDteMultiLeg net-limit passthrough", () => {
+    it("serializes order_type + limit_price when present, untouched", async () => {
+      mockFetch({
+        ok: false,
+        status: 400,
+        statusText: "Bad Request",
+        json: async () => ({ detail: "x" }),
+      });
+      await openZeroDteMultiLeg({
+        symbol: "SPY",
+        contracts: 1,
+        legs: [{ side: "call", action: "buy", strike: 500, ratio: 1 }],
+        strategy: "custom",
+        order_type: "limit",
+        limit_price: -0.55,
+      }).catch(() => undefined);
+      const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/zerodte/open-multi");
+      const body = JSON.parse(init.body as string);
+      expect(body.order_type).toBe("limit");
+      expect(body.limit_price).toBe(-0.55);
     });
   });
 });

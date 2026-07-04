@@ -37,15 +37,16 @@ class Combine(Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     # Topstep-style: "{tier}TC-{user_id}-{8 digits}", unique app-wide.
     account_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
-    # Per-combine RUNNING high-water mark — seeded to the tier's starting
-    # balance at purchase; advanced monotonically intraday by the same
-    # frozen update_hwm() the single-account model used. Tracks the day
-    # high; drives the SETTLED HWM at settlement, not the MLL floor directly.
+    # Per-combine RUNNING high-water mark — INTRADAY DISPLAY ONLY. Advances
+    # monotonically within a trading day and re-seeds to the balance at each
+    # 5pm-PT settlement; nothing enforcement-side reads it.
     # Dollar account value — Money type (NUMERIC(12,2) on disk, float in Python).
     hwm: Mapped[float] = mapped_column(Money, nullable=False)
     # Per-combine SETTLED high-water mark — the basis of the MLL floor.
-    # Advances ONLY at the 5pm-PT settlement (settled = max(settled,
-    # running)), so the floor is FIXED intraday and re-baselines UP only.
+    # Advances ONLY at the 5pm-PT settlement, to the peak END-OF-DAY balance
+    # across completed trading days (Topstep convention — an intraday spike
+    # given back by the close moves nothing), so the floor is FIXED intraday
+    # and re-baselines UP only.
     settled_hwm: Mapped[float] = mapped_column(Money, nullable=False)
     # Last 5pm-PT settlement. None = never settled (settle on first read).
     last_settled_at: Mapped[datetime | None] = mapped_column(

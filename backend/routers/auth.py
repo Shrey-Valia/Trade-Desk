@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from config import settings
 from database import get_session
 from models.user import User
 from services.auth import (
@@ -24,7 +23,7 @@ from services.auth import (
     get_current_user,
     hash_password,
     revoke_session,
-    session_ttl,
+    set_session_cookie,
     verify_password,
 )
 from services.rate_limit import auth_limiter, enforce
@@ -58,18 +57,6 @@ def _normalize_email(raw: str) -> str:
     return email
 
 
-def _set_session_cookie(response: Response, raw_token: str) -> None:
-    response.set_cookie(
-        SESSION_COOKIE,
-        raw_token,
-        httponly=True,
-        samesite="lax",
-        secure=settings.cookie_secure,
-        max_age=int(session_ttl().total_seconds()),
-        path="/",
-    )
-
-
 @router.post("/signup", response_model=UserOut, status_code=201)
 def signup(
     payload: SignupIn,
@@ -92,7 +79,7 @@ def signup(
     session.add(user)
     session.commit()
     session.refresh(user)
-    _set_session_cookie(response, create_session(session, user.id))
+    set_session_cookie(response, create_session(session, user.id))
     return UserOut(id=user.id, email=user.email, display_name=user.display_name)
 
 
@@ -111,7 +98,7 @@ def signin(
     # Identical message for unknown email and bad password.
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(401, "invalid email or password")
-    _set_session_cookie(response, create_session(session, user.id))
+    set_session_cookie(response, create_session(session, user.id))
     return UserOut(id=user.id, email=user.email, display_name=user.display_name)
 
 

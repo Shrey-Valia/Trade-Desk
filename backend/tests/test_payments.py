@@ -12,9 +12,11 @@ from sqlalchemy import select
 
 from config import settings
 from models.combine import Combine
+from models.combine_event import CombineEvent
 from models.payment import Payment
 from models.user import User
 from services import payments
+from tests.conftest import make_combine
 
 
 @pytest.fixture
@@ -194,3 +196,171 @@ def test_webhook_ignores_unrelated_event(auth_client, monkeypatch):
     )
     assert res.status_code == 200
     assert res.json()["handled"] is False
+
+
+# --- webhook lifecycle: concurrency, expiry, refunds ------------------------
+#
+# Fulfilment used to be check-then-act (read status, then provision), so two
+# concurrent deliveries could both see 'pending' and both provision. It now
+# takes a row lock (SELECT … FOR UPDATE) and re-checks status UNDER the lock.
+# Like the payout tests, the in-memory SQLite + StaticPool suite serializes
+# writers, so we prove the INVARIANT the lock guarantees: across any sequence
+# of deliveries of the same event, the side effect happens exactly once.
+
+
+def _typed_event(etype: str, payment_id: int, user_id: int, *, tier="50K", name=""):
+    """A minimal Stripe event of `etype` carrying our provisioning metadata
+    (checkout.session.* events carry it directly; charge.* events carry it
+    because /checkout copies it onto the PaymentIntent → Charge)."""
+    return {
+        "type": etype,
+        "data": {
+            "object": {
+                "metadata": {
+                    "payment_id": str(payment_id),
+                    "user_id": str(user_id),
+                    "tier": tier,
+                    "combine_name": name,
+                },
+            }
+        },
+    }
+
+
+def _post_event(client, monkeypatch, event):
+    monkeypatch.setattr(payments, "verify_webhook_event", lambda payload, sig: event)
+    return client.post(
+        "/api/payments/webhook", content=b"{}", headers={"stripe-signature": "x"}
+    )
+
+
+def test_webhook_double_delivery_provisions_exactly_once(
+    auth_client, session_factory, monkeypatch
+):
+    uid = _user_id(session_factory)
+    pid = _seed_pending_payment(session_factory, uid)
+    event = _completed_event(pid, uid)
+
+    first = _post_event(auth_client, monkeypatch, event)
+    second = _post_event(auth_client, monkeypatch, event)
+    assert first.json() == {"received": True, "handled": True}
+    # The loser of the race reads status='paid' under the lock and no-ops —
+    # but still acks as handled so Stripe stops retrying.
+    assert second.json() == {"received": True, "handled": True}
+
+    with session_factory() as s:
+        combines = s.execute(select(Combine)).scalars().all()
+        assert len(combines) == 1
+        payment = s.get(Payment, pid)
+        assert payment.status == "paid"
+        assert payment.combine_id == combines[0].id
+
+
+def test_webhook_expired_fails_pending_payment(
+    auth_client, session_factory, monkeypatch
+):
+    uid = _user_id(session_factory)
+    pid = _seed_pending_payment(session_factory, uid)
+    event = _typed_event("checkout.session.expired", pid, uid)
+
+    res = _post_event(auth_client, monkeypatch, event)
+    assert res.json() == {"received": True, "handled": True}
+    with session_factory() as s:
+        assert s.get(Payment, pid).status == "failed"
+        assert s.execute(select(Combine)).scalars().first() is None
+
+    # Stripe retries: a second delivery is an idempotent no-op.
+    retry = _post_event(auth_client, monkeypatch, event)
+    assert retry.json() == {"received": True, "handled": True}
+
+
+def test_webhook_expired_never_clobbers_a_paid_payment(
+    auth_client, session_factory, monkeypatch
+):
+    uid = _user_id(session_factory)
+    pid = _seed_pending_payment(session_factory, uid)
+    _post_event(auth_client, monkeypatch, _completed_event(pid, uid))
+
+    res = _post_event(
+        auth_client, monkeypatch, _typed_event("checkout.session.expired", pid, uid)
+    )
+    assert res.json()["handled"] is False
+    with session_factory() as s:
+        assert s.get(Payment, pid).status == "paid"
+        combine = s.execute(select(Combine)).scalars().one()
+        assert combine.status == "active"  # the purchase survives
+
+
+def test_webhook_completed_after_expired_does_not_provision(
+    auth_client, session_factory, monkeypatch
+):
+    uid = _user_id(session_factory)
+    pid = _seed_pending_payment(session_factory, uid)
+    _post_event(auth_client, monkeypatch, _typed_event("checkout.session.expired", pid, uid))
+
+    res = _post_event(auth_client, monkeypatch, _completed_event(pid, uid))
+    assert res.json()["handled"] is False  # anomaly — left for manual resolution
+    with session_factory() as s:
+        assert s.get(Payment, pid).status == "failed"
+        assert s.execute(select(Combine)).scalars().first() is None
+
+
+def test_webhook_refund_archives_combine_and_records_event(
+    auth_client, session_factory, monkeypatch
+):
+    uid = _user_id(session_factory)
+    pid = _seed_pending_payment(session_factory, uid)
+    _post_event(auth_client, monkeypatch, _completed_event(pid, uid))
+
+    res = _post_event(auth_client, monkeypatch, _typed_event("charge.refunded", pid, uid))
+    assert res.json() == {"received": True, "handled": True}
+
+    with session_factory() as s:
+        payment = s.get(Payment, pid)
+        assert payment.status == "refunded"
+        combine = s.get(Combine, payment.combine_id)
+        assert combine.status == "archived"
+        # It was the (auto-activated) only combine → the selection clears.
+        assert s.get(User, uid).active_combine_id is None
+        event = s.execute(select(CombineEvent)).scalars().one()
+        assert event.type == "refunded"
+        assert event.combine_id == combine.id
+        assert event.user_id == uid
+        assert event.amount == pytest.approx(149.0)
+
+    # Retried delivery: still exactly one audit event.
+    _post_event(auth_client, monkeypatch, _typed_event("charge.refunded", pid, uid))
+    with session_factory() as s:
+        assert len(s.execute(select(CombineEvent)).scalars().all()) == 1
+
+
+def test_webhook_dispute_treated_as_refund(auth_client, session_factory, monkeypatch):
+    uid = _user_id(session_factory)
+    pid = _seed_pending_payment(session_factory, uid)
+    _post_event(auth_client, monkeypatch, _completed_event(pid, uid))
+
+    res = _post_event(
+        auth_client, monkeypatch, _typed_event("charge.dispute.created", pid, uid)
+    )
+    assert res.json() == {"received": True, "handled": True}
+    with session_factory() as s:
+        payment = s.get(Payment, pid)
+        assert payment.status == "refunded"
+        assert s.get(Combine, payment.combine_id).status == "archived"
+        event = s.execute(select(CombineEvent)).scalars().one()
+        assert "disputed" in event.message
+
+
+def test_webhook_refund_repoints_active_combine_to_survivor(
+    auth_client, session_factory, monkeypatch
+):
+    uid = _user_id(session_factory)
+    pid = _seed_pending_payment(session_factory, uid)
+    _post_event(auth_client, monkeypatch, _completed_event(pid, uid))  # auto-activates
+    survivor = make_combine(auth_client, name="Survivor")
+
+    _post_event(auth_client, monkeypatch, _typed_event("charge.refunded", pid, uid))
+    with session_factory() as s:
+        # The refunded combine was active → selection repoints to the
+        # newest remaining non-archived combine, freeing its slot.
+        assert s.get(User, uid).active_combine_id == survivor["id"]

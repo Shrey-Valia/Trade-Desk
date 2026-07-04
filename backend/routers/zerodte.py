@@ -43,6 +43,12 @@ from services.alpaca_client import get_chain_snapshot, get_quotes
 from services.auth import get_active_combine
 from services.combine_state import combine_snapshot
 from services.copy_trade import mirror_close, mirror_open
+from services.fills import (
+    fill_slippage as _fill_slippage,
+    leg_quote as _live_leg_quote,
+    live_leg_quotes as _live_leg_quotes,
+    pick_fill_price as _pick_fill_price,
+)
 from services.fred_client import DEFAULT_RATE_FALLBACK, latest_dgs3mo_rate
 from services.market_calendar import is_market_open
 
@@ -534,69 +540,11 @@ class OpenLegRequest(BaseModel):
     )
 
 
-# Per-contract size-impact slippage: each contract above the first nudges the
-# fill a further 0.5% of mid against the trader, capped so a big clip can't run
-# away. Deterministic (no RNG) so tests and replays are stable.
-_SIZE_SLIP_PER_CONTRACT = 0.005   # 0.5% of mid per extra contract
-_SIZE_SLIP_CAP = 0.05             # never worse than 5% of mid from size alone
-
-
-def _fill_slippage(mid: float, spread: float, action: str, contracts: int) -> float:
-    """Deterministic adverse slippage added to (buy) / subtracted from (sell)
-    the mid for a MARKET fill.
-
-    Two components, both pushing AGAINST the trader:
-      1. cross HALF the bid/ask spread (you don't get filled at mid — you give
-         up half the spread to cross), and
-      2. a size-impact term scaling with the clip size (each contract beyond
-         the first adds 0.5% of mid, capped at 5%).
-
-    Returns the signed price adjustment to apply (always ≥ 0 in magnitude;
-    sign handled by the caller via `action`)."""
-    half_spread = max(0.0, spread) / 2.0
-    extra = max(0, int(contracts) - 1)
-    size_frac = min(_SIZE_SLIP_CAP, extra * _SIZE_SLIP_PER_CONTRACT)
-    return half_spread + mid * size_frac
-
-
-def _pick_fill_price(q: _LegQuote, action: str = "buy", contracts: int = 1) -> float:
-    """Indicative MARKET fill price with DETERMINISTIC slippage.
-
-    Reference mid comes from bid/ask (or last when one-sided). The trader never
-    fills at the perfect mid: buyers pay mid + slippage, sellers receive
-    mid − slippage, where slippage = half the spread + a size-impact term
-    (see _fill_slippage). No RNG, so a given quote+size always yields the same
-    fill. Returns 0 if no usable quote at all — caller turns that into a 503.
-    The result is floored at 0.01 so a wide-spread short can't fill at ≤ 0."""
-    bid = float(q.bid) if q.bid and q.bid > 0 else None
-    ask = float(q.ask) if q.ask and q.ask > 0 else None
-
-    if bid is not None and ask is not None:
-        mid = (bid + ask) / 2.0
-        spread = max(0.0, ask - bid)
-    elif q.last and q.last > 0:
-        # One-sided/last-only: synthesize a nominal spread off last so size
-        # impact still bites; assume a 2%-of-last touch spread.
-        mid = float(q.last)
-        spread = mid * 0.02
-    elif ask is not None:
-        # Ask-only: synthesize a 2% touch BELOW the offer, so a market BUY pays
-        # ~the ask (not below it) and a SELL is penalized — not a free fill at
-        # the lone quote. (Previously spread=0 let a 1-lot buy fill at the ask
-        # with zero slippage, and a sell receive the ask — impossibly good.)
-        spread = ask * 0.02
-        mid = ask - spread / 2.0
-    elif bid is not None:
-        # Bid-only: synthesize a 2% touch ABOVE the bid, so a market SELL hits
-        # ~the bid and a BUY pays up — not a free fill at the lone quote.
-        spread = bid * 0.02
-        mid = bid + spread / 2.0
-    else:
-        return 0.0
-
-    slip = _fill_slippage(mid, spread, action, contracts)
-    px = mid + slip if action == "buy" else mid - slip
-    return max(0.01, round(px, 4))
+# The deterministic spread-crossing fill machinery (`_fill_slippage` /
+# `_pick_fill_price`) moved VERBATIM to services.fills so the order monitor
+# and journal close paths charge the same friction the user-facing market
+# opens do (audit C4). Imported above under the historical names — this
+# module's call sites and its tests are unchanged.
 
 
 def _require_market_open() -> None:
@@ -1115,6 +1063,21 @@ class OpenMultiLegRequest(BaseModel):
     contracts: int = Field(gt=0, le=100, default=1)
     legs: list[MultiLegSpec] = Field(min_length=2, max_length=6)
     strategy: str | None = Field(default=None, max_length=32)
+    # "market" (default) fills every leg immediately at the indicative crossed
+    # quote. "limit" places a WORKING net-premium order: the monitor prices the
+    # structure's live net each pass and fills when it satisfies limit_price.
+    order_type: Literal["market", "limit"] = "market"
+    limit_price: float | None = Field(
+        default=None,
+        description=(
+            "NET premium limit per 1x structure (legs at their stated ratios),"
+            " $/share — required for order_type='limit', ignored for market."
+            " SIGN CONVENTION: debit positive / credit negative. A positive"
+            " limit fills when the structure's live net DEBIT ≤ limit (pay at"
+            " most this much); a negative limit fills when the live net CREDIT"
+            " ≥ |limit| (collect at least this much). Must be non-zero."
+        ),
+    )
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
     # Premium-denominated TP/SL. Direction is derived from the PRICED net
@@ -1174,12 +1137,25 @@ def open_zerodte_multi_leg(
 ) -> TradeOut:
     """Open a multi-leg 0DTE structure (vertical / condor / butterfly / custom).
 
-    Each leg is priced at the indicative MARKET fill against today's chain;
-    the whole structure becomes one Trade with N legs. Gated by the combine
-    rules and the scaling cap (the base `contracts` is what's checked against
-    the cap; per-leg ratios scale within the structure). Strict 0DTE +
+    order_type="market" (default): each leg is priced at the indicative MARKET
+    fill against today's chain; the whole structure becomes one Trade with N
+    legs. order_type="limit": a WORKING net-premium order (status='working',
+    no fill) — the monitor prices the structure's live net each pass and fills
+    when the net debit ≤ limit_price (debit structures, limit > 0) or the net
+    credit ≥ |limit_price| (credit structures, limit < 0). Working orders
+    follow single-leg semantics: cancel via /cancel, expired contracts are
+    purged, and their contracts count against the scaling cap. Gated by the
+    combine rules and the scaling cap (the base `contracts` is what's checked
+    against the cap; per-leg ratios scale within the structure). Strict 0DTE +
     session-open, like the straddle/leg paths."""
     _require_market_open()
+    is_working = payload.order_type == "limit"
+    if is_working and (payload.limit_price is None or payload.limit_price == 0):
+        raise HTTPException(
+            400,
+            "limit_price (net premium per 1x structure; debit positive, credit"
+            " negative, non-zero) is required for a limit order",
+        )
     # The aggregate scaling cap counts TOTAL contracts across all legs, so a
     # structure consumes base × Σ ratios (e.g. a 4-leg iron condor at base 1 is
     # 4 contracts; a butterfly 1-2-1 is 4). Gate AND clamp on that effective
@@ -1210,11 +1186,18 @@ def open_zerodte_multi_leg(
             ask=getattr(contract_row, "ask", None),
             last=getattr(contract_row, "last", None),
         )
-        price = _pick_fill_price(q, spec.action, leg_qty)
-        if price == 0:
-            raise HTTPException(
-                503, f"{sym} indicative quote unavailable at {spec.side} {spec.strike:g}"
-            )
+        if is_working:
+            # A resting order doesn't fill NOW — the leg's entry_price is a
+            # display placeholder at the current mid (0 when unquoted); the
+            # monitor overwrites it with the real crossed fill.
+            mid, _src = _quote_price(contract_row)
+            price = float(mid) if mid is not None and mid > 0 else 0.0
+        else:
+            price = _pick_fill_price(q, spec.action, leg_qty)
+            if price == 0:
+                raise HTTPException(
+                    503, f"{sym} indicative quote unavailable at {spec.side} {spec.strike:g}"
+                )
         legs_json.append(
             {
                 "side": spec.side,
@@ -1229,22 +1212,35 @@ def open_zerodte_multi_leg(
     typed_legs = [TradeLeg(**leg) for leg in legs_json]
     net = compute_net_debit_credit(typed_legs)
 
-    # Premium TP/SL direction comes from the PRICED net entry premium:
-    # net > 0 → debit (long premium), net < 0 → credit (short premium). A
-    # zero-net structure has no premium scale to multiply — reject the mults.
+    # Premium TP/SL direction comes from the PRICED net entry premium (or the
+    # SIGNED limit for a working order — the placeholder net may be 0 when the
+    # chain has gaps): net/limit > 0 → debit (long premium), < 0 → credit
+    # (short premium). A zero-net market structure has no premium scale to
+    # multiply — reject the mults.
     if payload.tp_premium_mult is not None or payload.sl_premium_mult is not None:
-        if net == 0:
-            raise HTTPException(
-                400,
-                "Premium TP/SL requires a non-zero net entry premium — this"
-                " structure priced at exactly zero net.",
+        if is_working:
+            _validate_premium_mults(
+                payload.limit_price < 0, payload.tp_premium_mult, payload.sl_premium_mult
             )
-        _validate_premium_mults(
-            net < 0, payload.tp_premium_mult, payload.sl_premium_mult
-        )
+        else:
+            if net == 0:
+                raise HTTPException(
+                    400,
+                    "Premium TP/SL requires a non-zero net entry premium — this"
+                    " structure priced at exactly zero net.",
+                )
+            _validate_premium_mults(
+                net < 0, payload.tp_premium_mult, payload.sl_premium_mult
+            )
 
     strategy = (payload.strategy or "custom").strip().lower() or "custom"
-    notes = f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · indicative fill"
+    if is_working:
+        notes = (
+            f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · "
+            f"working @ net {payload.limit_price:g}"
+        )
+    else:
+        notes = f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · indicative fill"
 
     trade = Trade(
         symbol=sym,
@@ -1252,7 +1248,9 @@ def open_zerodte_multi_leg(
         entry_date=datetime.now(UTC),
         entry_underlying_price=spot,
         net_debit_credit=net,
-        status="open",
+        status="working" if is_working else "open",
+        order_type=payload.order_type,
+        limit_price=float(payload.limit_price) if is_working else None,
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
         tp_premium_mult=payload.tp_premium_mult,
@@ -1470,28 +1468,28 @@ def _spot_for_symbol(symbol: str) -> float | None:
         return None
 
 
-def _close_one(session: Session, trade: Trade, spot: float, now: datetime, reason: str) -> float:
+def _close_one(
+    session: Session, trade: Trade, spot: float, now: datetime, reason: str
+) -> float | None:
     """Book a single close exactly like the manual CLOSE button + monitor
-    (unrealized − exit-side commission), then cascade to follower copies.
-    Returns the realized $ booked. Caller owns the commit."""
-    # Reuse the monitor's canonical booking helpers so flatten/manual/auto all
-    # agree on the realized number.
-    from services.order_monitor import _commission_side, _default_unrealized_for
+    (unrealized − exit-side commission − spread-crossing exit friction), then
+    cascade to follower copies. Routes through the monitor's `_book_close` so
+    flatten/manual/auto all agree on the realized number AND share its
+    conditional status claim — returns None when the close lost the race (a
+    bracket/liquidation already booked it; never double-book). Otherwise
+    returns the realized $ booked for THIS close. Caller owns the commit."""
+    from services.order_monitor import _book_close, _default_unrealized_for
 
-    unrealized = _default_unrealized_for(trade, spot, now)
-    realized = round(unrealized - _commission_side(trade), 2)
-    trade.status = "closed"
-    trade.close_reason = reason
-    trade.exit_date = now
-    trade.exit_underlying_price = spot
-    # ACCUMULATE onto any realized already booked by prior scale-outs — the
-    # recompute above covers only the REMAINING contracts, exactly like the
-    # monitor's _book_close. A bare assignment here wiped every booked
-    # scale-out slice on a flatten/reverse.
-    trade.realized_pnl = round((trade.realized_pnl or 0.0) + realized, 2)
+    prior = trade.realized_pnl or 0.0
+    booked = _book_close(
+        session, trade, spot, now,
+        lambda t, s: _default_unrealized_for(t, s, now), reason,
+    )
+    if not booked:
+        return None
     session.flush()
     mirror_close(session, trade)
-    return realized
+    return round((trade.realized_pnl or 0.0) - prior, 2)
 
 
 @router.post("/flatten", response_model=FlattenOut)
@@ -1516,7 +1514,10 @@ def flatten_positions(
         spot = spot_cache[t.symbol]
         if spot is None:
             continue
-        total += _close_one(session, t, spot, now, "manual")
+        realized = _close_one(session, t, spot, now, "manual")
+        if realized is None:
+            continue  # already closed concurrently (bracket/liquidation)
+        total += realized
         closed.append(t.id)
     session.commit()
     return FlattenOut(closed=closed, opened=[], realized=round(total, 2))
@@ -1556,14 +1557,21 @@ def reverse_positions(
 
         # Snapshot the legs BEFORE closing so we can mint the opposite side.
         src_legs = t.legs or []
-        total += _close_one(session, t, spot, now, "manual")
+        realized = _close_one(session, t, spot, now, "manual")
+        if realized is None:
+            continue  # already closed concurrently — nothing to reverse
+        total += realized
         closed.append(t.id)
 
         if not src_legs:
             continue
-        # Flip each leg's action; price the opposite side off the current mark
-        # via the same intraday engine the analytics path uses.
+        # Flip each leg's action; price the opposite side by CROSSING THE
+        # SPREAD on the live quote where one exists (a reverse re-open is a
+        # market fill like any other open), falling back to the model mid via
+        # the same intraday engine the analytics path uses.
         from services.order_monitor import _default_option_mark  # per-leg pricer reuse
+
+        live_qs = _live_leg_quotes(t.symbol, src_legs)
 
         # Clamp the reversed structure to the remaining scaling-cap capacity
         # (the close above frees this position's own size). Scale every leg by
@@ -1576,11 +1584,14 @@ def reverse_positions(
         for leg in src_legs:
             flipped = "sell" if leg.get("action", "buy") == "buy" else "buy"
             rev_contracts = max(1, int(int(leg.get("contracts", 1) or 1) * scale))
-            # Price the flipped leg at the current mark (live chain → model).
+            # Price the flipped leg at the crossed live quote → current mark.
             one = dict(leg)
             one["action"] = flipped
             one["contracts"] = rev_contracts
-            px = abs(_default_option_mark(_FakeTrade(t.symbol, [one]), spot, now))
+            q = _live_leg_quote(live_qs, leg)
+            px = _pick_fill_price(q, flipped, rev_contracts) if q is not None else 0.0
+            if px <= 0:
+                px = abs(_default_option_mark(_FakeTrade(t.symbol, [one]), spot, now))
             rev_legs.append(
                 {
                     "side": leg["side"],

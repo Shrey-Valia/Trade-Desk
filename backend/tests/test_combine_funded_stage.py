@@ -191,6 +191,33 @@ def test_activation_rebaselines_balance_hwm_and_payout(auth_client):
     assert r["mll"] == 48_000
 
 
+def test_funded_epoch_settlement_trails_funded_eod_only(auth_client):
+    """The EOD-trailing settlement composes with the funded accounting epoch:
+    after activation re-seeds the HWM basis, the floor trails FUNDED-STAGE
+    end-of-day balances only — the pre-epoch eval closes (same past days)
+    stay out of the basis."""
+    c = make_combine(auth_client, "50K")
+    _pass_eval(auth_client, c["id"])   # +3_200 closed across the last 2 days
+    _activate(auth_client, c["id"])    # epoch stamped; HWM/MLL re-seed to start
+
+    # +500 funded-stage profit KEPT at yesterday's close (opened post-epoch).
+    _seed_trade(auth_client, c["id"], 500, exit_at=_now() - timedelta(days=1))
+
+    # Force a settlement (activation stamped last_settled_at at the epoch).
+    session = next(auth_client.app.dependency_overrides[get_session]())
+    combine = session.get(Combine, c["id"])
+    combine.last_settled_at = None
+    session.commit()
+    session.close()
+
+    r = auth_client.get("/api/account/state").json()
+    assert r["balance"] == 50_500
+    # 50_000 + 500 kept at the close — NOT 53_200+ (eval profit excluded).
+    assert r["settled_hwm"] == 50_500
+    assert r["mll"] == 48_500
+    assert r["high_water_mark"] == 50_500
+
+
 def test_payout_debits_balance_everywhere(auth_client):
     c = make_combine(auth_client, "50K")
     _pass_eval(auth_client, c["id"])

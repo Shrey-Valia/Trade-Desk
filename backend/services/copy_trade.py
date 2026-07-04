@@ -17,12 +17,13 @@ the open path (market + working orders).
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from models.combine import Combine
@@ -349,6 +350,90 @@ def _cascade_partial_close(
             # Still open with fewer contracts; keep status, record the level.
             _set_leg_contracts(f, remaining)
             f.exit_underlying_price = lead_trade.exit_underlying_price
+
+
+def order_modification_values(
+    trade: Trade,
+    *,
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    time_in_force: str | None = None,
+) -> dict:
+    """Column values for a cancel/replace on a WORKING order — shared by the
+    journal modify endpoint and `mirror_modify` so lead and follower semantics
+    can't drift. Callers apply them via ONE conditional UPDATE (a
+    status='working' guard), so a concurrent monitor fill can't be
+    half-overwritten by the modification.
+
+    * limit_price also refreshes the single-leg display placeholder
+      (entry_price) + net_debit_credit, exactly like placement. Multi-leg
+      net-limit orders keep their per-leg mid placeholders.
+    * stop_price only applies while the order still RESTS as a stop_limit;
+      silently dropped otherwise (an armed copy is already a plain limit).
+    """
+    values: dict = {}
+    if limit_price is not None:
+        values["limit_price"] = float(limit_price)
+        legs = trade.legs
+        if len(legs) == 1:
+            legs[0]["entry_price"] = round(float(limit_price), 4)
+            values["legs_json"] = json.dumps(legs)
+            values["net_debit_credit"] = compute_net_debit_credit(
+                [TradeLeg(**leg) for leg in legs]
+            )
+    if stop_price is not None and trade.order_type == "stop_limit":
+        values["stop_price"] = float(stop_price)
+    if time_in_force is not None:
+        values["time_in_force"] = str(time_in_force)
+    return values
+
+
+def mirror_modify(
+    session: Session,
+    lead_trade: Trade,
+    *,
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    time_in_force: str | None = None,
+) -> int:
+    """Cascade a lead order MODIFICATION (cancel/replace) to its still-WORKING
+    follower copies — resolved via copied_from_trade_id exactly like
+    mirror_cancel. Each follower is written through the same conditional
+    status='working' guard the lead used, so a copy the monitor filled
+    mid-cascade is left alone. Returns how many copies were modified."""
+    followers = session.execute(
+        select(Trade).where(
+            Trade.copied_from_trade_id == lead_trade.id,
+            Trade.status == "working",
+        )
+    ).scalars().all()
+    if not followers:
+        return 0
+    modified = 0
+    for f in followers:
+        values = order_modification_values(
+            f,
+            limit_price=limit_price,
+            stop_price=stop_price,
+            time_in_force=time_in_force,
+        )
+        if not values:
+            continue
+        modified += session.execute(
+            update(Trade)
+            .where(Trade.id == f.id, Trade.status == "working")
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        session.expire(f)
+    session.commit()
+    if modified:
+        log.info(
+            "copy-trade: lead trade %s modified %d follower copies",
+            lead_trade.id,
+            modified,
+        )
+    return modified
 
 
 def mirror_cancel(session: Session, lead_trade: Trade) -> int:

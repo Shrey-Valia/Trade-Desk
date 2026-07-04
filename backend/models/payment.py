@@ -39,7 +39,11 @@ class Payment(Base):
     # activations; NULL only for migration_grant backfill rows. Money type:
     # NUMERIC(12,2) on disk, float in Python (services/money.py).
     amount: Mapped[float | None] = mapped_column(Money, nullable=True)
-    # paid | activation_paid | pending | failed | migration_grant
+    # paid | activation_paid | reset_paid | pending | failed | refunded
+    # | migration_grant. 'failed' covers both a checkout we couldn't start
+    # and one Stripe expired (abandoned); 'refunded' covers refunds AND
+    # chargebacks (charge.dispute.created) — either way the combine the
+    # payment bought is archived by the webhook.
     status: Mapped[str] = mapped_column(
         String(24), nullable=False, default="paid"
     )

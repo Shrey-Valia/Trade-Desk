@@ -23,6 +23,7 @@ from services.account_tiers import (
 from services.combine_settlement import (
     consistency_ok,
     needs_settlement,
+    peak_eod_balance,
     settle_hwm,
     trading_day_start,
 )
@@ -150,7 +151,7 @@ def test_balance_includes_realized_pnl_for_active_combine_only(auth_client):
     assert r["balance"] == 50_150
     assert r["high_water_mark"] == 50_150    # running HWM walks up intraday
     # MLL is FIXED intraday from the settled HWM (settled at purchase =
-    # 50_000); it does NOT trail the +150 until the next 5pm-PT settlement.
+    # 50_000); the +150 only moves it if still KEPT at the next 5pm-PT close.
     assert r["settled_hwm"] == 50_000
     assert r["mll"] == 48_000
 
@@ -166,7 +167,11 @@ def test_mll_is_fixed_intraday_then_caps_at_starting_balance_after_settlement(
     auth_client,
 ):
     c = make_combine(auth_client, "50K")
-    _seed_closed_trade(auth_client, combine_id=c["id"], realized=10_000)
+    # +10_000 KEPT at yesterday's close — an end-of-day gain, so the next
+    # settlement trails it.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=10_000, exit_at=_yesterday_et_noon()
+    )
     r = auth_client.get("/api/account/state").json()
     assert r["balance"] == 60_000
     assert r["high_water_mark"] == 60_000        # running HWM
@@ -175,8 +180,9 @@ def test_mll_is_fixed_intraday_then_caps_at_starting_balance_after_settlement(
     assert r["settled_hwm"] == 50_000
     assert r["mll"] == 48_000
 
-    # Cross a 5pm-PT settlement: settled HWM re-baselines up to 60_000, and
-    # the MLL trail caps at the starting balance (would be 58_000 uncapped).
+    # Cross a 5pm-PT settlement: settled HWM re-baselines up to yesterday's
+    # 60_000 close, and the MLL trail caps at the starting balance (would be
+    # 58_000 uncapped).
     _force_resettlement(auth_client, c["id"])
     r2 = auth_client.get("/api/account/state").json()
     assert r2["settled_hwm"] == 60_000
@@ -287,9 +293,28 @@ def test_dll_used_is_combine_isolated(auth_client):
 
 
 def test_settle_hwm_advances_up_only():
-    assert settle_hwm(50_000, 50_150) == 50_150   # re-baselines up
+    assert settle_hwm(50_000, 50_150) == 50_150   # re-baselines up to the EOD basis
     assert settle_hwm(50_150, 50_000) == 50_150   # never down
     assert settle_hwm(50_000, 50_000) == 50_000
+
+
+def test_peak_eod_balance_trails_completed_closes_only():
+    from datetime import timedelta
+
+    d0 = trading_day_start(_now())     # current (incomplete) trading day
+    d1 = d0 - timedelta(days=1)
+    d2 = d0 - timedelta(days=2)
+
+    # No completed days → the peak is the starting balance.
+    assert peak_eod_balance(50_000, {}, d0) == 50_000
+    # Today's bucket is in flight — ignored no matter how large.
+    assert peak_eod_balance(50_000, {d0: 9_999.0}, d0) == 50_000
+    # A give-back day: the intraday peak is invisible, only the close counts.
+    assert peak_eod_balance(50_000, {d1: 0.0}, d0) == 50_000
+    # The HIGHEST completed close wins, not the latest one.
+    assert peak_eod_balance(50_000, {d2: 3_000.0, d1: -3_000.0}, d0) == 53_000
+    # Losing closes never pull the basis below the start.
+    assert peak_eod_balance(50_000, {d2: -1_000.0, d1: -500.0}, d0) == 50_000
 
 
 def test_needs_settlement_when_never_settled_or_boundary_passed():
@@ -308,6 +333,87 @@ def test_consistency_rule():
     assert consistency_ok(2_900, 3_100) is False   # one day dominates
     assert consistency_ok(0, 0) is True            # no profit yet → vacuous
     assert consistency_ok(-100, -500) is True      # net loss → vacuous
+
+
+# ---------------------------------------------------------------------------
+# EOD trailing convention — settlement trails the close, not the intraday peak
+# ---------------------------------------------------------------------------
+
+
+def test_settlement_ignores_intraday_peak_given_back(auth_client):
+    """A +3_000 morning given back by the close moves the floor $0 — the
+    advertised convention. The old engine trailed the intraday realized
+    peak (settled 53_000 → MLL 50_000); the EOD rule leaves 48_000."""
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=3_000, exit_at=_yesterday_et_noon()
+    )
+    r = auth_client.get("/api/account/state").json()
+    assert r["high_water_mark"] == 53_000    # intraday running peak observed
+    # ... given back before the close.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=-3_000, exit_at=_yesterday_et_noon()
+    )
+
+    _force_resettlement(auth_client, c["id"])
+    r2 = auth_client.get("/api/account/state").json()
+    assert r2["balance"] == 50_000
+    assert r2["settled_hwm"] == 50_000       # floor unmoved
+    assert r2["mll"] == 48_000
+    # The running HWM re-seeds to the balance at the boundary — it is
+    # intraday display only and never drives the MLL.
+    assert r2["high_water_mark"] == 50_000
+
+
+def test_settlement_trails_gains_kept_at_the_close(auth_client):
+    c = make_combine(auth_client, "50K")
+    # +1_500 KEPT at yesterday's close → the floor rises by the kept amount.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_500, exit_at=_yesterday_et_noon()
+    )
+    _force_resettlement(auth_client, c["id"])
+    r = auth_client.get("/api/account/state").json()
+    assert r["settled_hwm"] == 51_500
+    assert r["mll"] == 49_500                # 51_500 − 2_000, below the cap
+
+
+def test_settlement_floor_never_moves_down_across_days(auth_client):
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_000, exit_at=_days_ago_et_noon(2)
+    )
+    _force_resettlement(auth_client, c["id"])
+    r = auth_client.get("/api/account/state").json()
+    assert r["settled_hwm"] == 51_000
+    assert r["mll"] == 49_000
+
+    # A losing day closes lower — the floor holds, it never trails down.
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=-800, exit_at=_yesterday_et_noon()
+    )
+    _force_resettlement(auth_client, c["id"])
+    r2 = auth_client.get("/api/account/state").json()
+    assert r2["balance"] == 50_200
+    assert r2["settled_hwm"] == 51_000       # monotone
+    assert r2["mll"] == 49_000
+
+
+def test_lazy_settlement_across_multiple_days_trails_the_peak_close(auth_client):
+    """Two boundaries pass without a read: the single lazy settlement still
+    trails the HIGHEST completed close (51_000), not just the latest
+    boundary's balance (50_200) — the floor is read-timing independent."""
+    c = make_combine(auth_client, "50K")
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=1_000, exit_at=_days_ago_et_noon(2)
+    )
+    _seed_closed_trade(
+        auth_client, combine_id=c["id"], realized=-800, exit_at=_yesterday_et_noon()
+    )
+    _force_resettlement(auth_client, c["id"])
+    r = auth_client.get("/api/account/state").json()
+    assert r["balance"] == 50_200
+    assert r["settled_hwm"] == 51_000
+    assert r["mll"] == 49_000
 
 
 # ---------------------------------------------------------------------------
@@ -558,9 +664,10 @@ def _seed_closed_trade(client, combine_id: int, realized: float, exit_at=None) -
 
 def _force_resettlement(client, combine_id: int) -> None:
     """Clear a combine's last_settled_at so the next state read crosses a
-    5pm-PT boundary and re-baselines the settled HWM up to the running
-    HWM. Lets a test exercise post-settlement behavior (e.g. the MLL cap)
-    without waiting for a real 5pm-PT rollover."""
+    5pm-PT boundary and re-baselines the settled HWM up to the peak
+    END-OF-DAY balance among completed trading days. Lets a test exercise
+    post-settlement behavior (e.g. the MLL cap) without waiting for a real
+    5pm-PT rollover."""
     session = next(client.app.dependency_overrides[get_session]())
     combine = session.get(Combine, combine_id)
     combine.last_settled_at = None
@@ -589,10 +696,16 @@ def _today_et_noon():
 
 
 def _yesterday_et_noon():
+    return _days_ago_et_noon(1)
+
+
+def _days_ago_et_noon(days: int):
+    """N days ago at 12:00 ET — inside a COMPLETED 5pm-PT trading day, so a
+    forced resettlement counts it in the end-of-day balance basis."""
     from datetime import datetime, time, timedelta
     from zoneinfo import ZoneInfo
 
     et = ZoneInfo("America/New_York")
-    yday = datetime.now(et).date() - timedelta(days=1)
-    noon_et = datetime.combine(yday, time(12, 0), tzinfo=et)
+    day = datetime.now(et).date() - timedelta(days=days)
+    noon_et = datetime.combine(day, time(12, 0), tzinfo=et)
     return noon_et.astimezone(ZoneInfo("UTC"))

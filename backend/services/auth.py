@@ -7,6 +7,9 @@ Design choices:
     no signing-key secret to manage. The cookie carries the raw token;
     the DB stores only its sha256, so a DB leak yields nothing live.
   * Expired session rows are deleted lazily on lookup.
+  * Sessions SLIDE: past the halfway point of the TTL, any authenticated
+    request renews the row AND the cookie Max-Age to a full TTL, so an
+    active user never gets hard-logged-out mid-session.
 
 Cookie: td_session, HttpOnly, SameSite=Lax, lifetime from settings
 (session_ttl_days, default 14). localhost:5173 → localhost:8000 is
@@ -23,7 +26,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -41,6 +44,22 @@ def session_ttl() -> timedelta:
     test or a per-deployment SESSION_TTL_DAYS) takes effect without a reimport.
     Drives both the auth_sessions row TTL and the cookie Max-Age."""
     return settings.session_ttl
+
+
+def set_session_cookie(response: Response, raw_token: str) -> None:
+    """Issue (or refresh) the session cookie. Lives here — not in the auth
+    router — so the sliding-renewal path in get_current_user can reuse it
+    without a routers→services→routers import cycle, and the cookie
+    attributes can never drift between issue and refresh."""
+    response.set_cookie(
+        SESSION_COOKIE,
+        raw_token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        max_age=int(session_ttl().total_seconds()),
+        path="/",
+    )
 
 
 # -- passwords ---------------------------------------------------------------
@@ -89,6 +108,7 @@ def revoke_session(db: Session, raw_token: str) -> None:
 # -- FastAPI dependencies ----------------------------------------------------
 
 def get_current_user(
+    response: Response,
     td_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
     db: Session = Depends(get_session),
 ) -> User:
@@ -97,10 +117,24 @@ def get_current_user(
     row = db.get(AuthSession, _hash_token(td_session))
     if row is None:
         raise HTTPException(401, "not authenticated")
-    if row.expires_at <= datetime.now(timezone.utc):
+    now = datetime.now(timezone.utc)
+    if row.expires_at <= now:
         db.delete(row)
         db.commit()
         raise HTTPException(401, "session expired")
+    # Sliding renewal: once a session is past the HALFWAY point of its TTL,
+    # any authenticated request extends it to a full TTL again — an active
+    # daily trader is never hard-logged-out mid-session on day 14. The
+    # halfway gate keeps this write-free for fresh sessions (no per-request
+    # UPDATE churn). Revocation is untouched: signout still deletes the row,
+    # and a truly idle session still expires after one full TTL. FastAPI
+    # injects `response` into dependencies, so the cookie Max-Age is
+    # refreshed on the same response (same raw token, no re-issue).
+    ttl = session_ttl()
+    if row.expires_at - now < ttl / 2:
+        row.expires_at = now + ttl
+        db.commit()
+        set_session_cookie(response, td_session)
     user = db.get(User, row.user_id)
     if user is None:
         raise HTTPException(401, "not authenticated")

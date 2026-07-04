@@ -136,6 +136,12 @@ export interface OpenMultiLegInput {
   legs: MultiLegSpec[];
   /** Label: "vertical" | "iron_condor" | "butterfly" | "custom". */
   strategy?: string;
+  /** market (default) fills now at server pricing; "limit" rests as a
+   *  working order until the structure's NET mark crosses `limit_price`.
+   *  Omitted entirely for market opens (wire-compatible with older backends). */
+  order_type?: "market" | "limit";
+  /** NET premium per 1× structure ($/share): debit positive, credit negative. */
+  limit_price?: number | null;
   stop_loss?: number | null;
   take_profit?: number | null;
   /** Optional premium-exit multiples of the entry premium — TP/SL on the

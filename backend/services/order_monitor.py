@@ -13,12 +13,18 @@ unit-testable without any network or scheduler:
 
 Three responsibilities each tick:
 
-  1. WORKING limit/stop orders → fill when the option mark crosses the
-     trigger (limit fills AT the limit; stop fills at the current mark).
-     Stop-limit rests as a limit once the stop arms. Trailing stops track a
-     favorable-mark high-water and recompute the trigger every tick.
-     If the owning combine isn't tradeable (failed / day-locked), the order
-     is cancelled instead of filled.
+  1. WORKING limit/stop orders → fill when the trigger is reached. With a
+     live two-sided quote the trigger fires off the TOUCH (a buy limit when
+     the ASK ≤ limit; stops on the adverse side) and the fill CROSSES THE
+     SPREAD via services.fills (capped at the limit for limit orders); the
+     mid-mark rule (limit fills AT the limit; stop at the current mark) is
+     the fallback. Multi-leg NET-premium limits fill when the structure's
+     per-1x net satisfies the signed limit. Stop-limit rests as a limit once
+     the stop arms. Trailing stops track a favorable-mark high-water and
+     recompute the trigger every tick. If the owning combine isn't tradeable
+     (failed / day-locked), the order is cancelled instead of filled. Fills
+     and closes commit via CONDITIONAL UPDATEs (status guards) so a user
+     cancel/close landing in the pricing window is never overwritten.
   2. OPEN positions with brackets → close when the UNDERLYING crosses a set
      level. Trigger direction is derived from entry_underlying_price (a level
      above entry triggers on the way up, below triggers on the way down).
@@ -38,13 +44,15 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, time, timezone
+from math import gcd
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from config import settings
 from models.trade import Trade
 from schemas.journal import compute_net_debit_credit
+from services import fills
 
 log = logging.getLogger(__name__)
 
@@ -191,34 +199,40 @@ def _leg_t_to_expiry(leg: dict, now: datetime) -> float:
     return secs / SECONDS_PER_YEAR
 
 
+def _leg_model_price(rows, leg: dict, spot: float, now: datetime, rate: float) -> float:
+    """Per-share MID price for ONE leg: the live option-chain quote mid for its
+    exact strike/expiry/side when available (faithful — no model), else a
+    Black-Scholes price at THE LEG'S OWN expiry (half-day aware) using the
+    contract's live chain IV when present, else the DEFAULT_IV."""
+    from calculations.intraday_analytics import bs_intraday
+    from calculations.position_analytics import DEFAULT_IV
+
+    strike = float(leg["strike"])
+    side = leg["side"]
+    row = _chain_row_for(rows, strike, side, _leg_expiry(leg))
+    px = _chain_quote_mid(row)
+    if px is None:
+        iv = float(row.iv) if (row is not None and row.iv and row.iv > 0) else DEFAULT_IV
+        px = bs_intraday(spot, strike, _leg_t_to_expiry(leg, now), rate, iv, side)
+    return px
+
+
 def _default_option_mark(trade: Trade, spot: float, now: datetime) -> float:
     """Signed, contracts-scaled per-share position mark (Σ sign·contracts·px)
     for working-order triggers and trailing stops.
 
-    Prices each leg from the LIVE option-chain quote MID for its exact
-    strike/expiry/side when available (faithful — no model). Only when the
-    contract isn't quoted does it fall back to a Black-Scholes price at THE
-    LEG'S OWN expiry (half-day aware), using the contract's live chain IV when
-    present, else the DEFAULT_IV. This replaces the old behaviour — a flat 30%
-    IV at *today's* close for every leg — which fabricated stop fills and
-    mispriced any future-expiry position as if it expired today."""
-    from calculations.intraday_analytics import bs_intraday
-    from calculations.position_analytics import DEFAULT_IV
-
+    Prices each leg via `_leg_model_price` — the live chain mid when available,
+    else a Black-Scholes fallback at the leg's own expiry. This replaces the
+    old behaviour — a flat 30% IV at *today's* close for every leg — which
+    fabricated stop fills and mispriced any future-expiry position as if it
+    expired today."""
     rate = _rate()
     rows = _option_chain_rows(trade.symbol)
     total = 0.0
     for leg in trade.legs:
         sign = 1.0 if leg.get("action") == "buy" else -1.0
         contracts = int(leg.get("contracts", 1) or 1)
-        strike = float(leg["strike"])
-        side = leg["side"]
-        row = _chain_row_for(rows, strike, side, _leg_expiry(leg))
-        px = _chain_quote_mid(row)
-        if px is None:
-            iv = float(row.iv) if (row is not None and row.iv and row.iv > 0) else DEFAULT_IV
-            px = bs_intraday(spot, strike, _leg_t_to_expiry(leg, now), rate, iv, side)
-        total += sign * contracts * px
+        total += sign * contracts * _leg_model_price(rows, leg, spot, now, rate)
     return total
 
 
@@ -301,7 +315,9 @@ def _trail_offset(hwm: float, trade: Trade) -> float:
     return float(trade.trail_pct or 0.0) * abs(hwm)
 
 
-def _process_trailing_stop(trade: Trade, mark: float, spot: float, now: datetime, unrealized_for) -> bool:
+def _process_trailing_stop(
+    session, trade: Trade, mark: float, spot: float, now: datetime, unrealized_for
+) -> bool:
     """Advance a trailing stop's favorable high-water and close the position if
     the favorable value has retraced past the trail. Returns True if it closed.
 
@@ -330,7 +346,8 @@ def _process_trailing_stop(trade: Trade, mark: float, spot: float, now: datetime
     if fav > hwm - offset:
         return False  # still within the trail of the favorable peak
 
-    _book_close(trade, spot, now, unrealized_for, "stop_loss")
+    if not _book_close(session, trade, spot, now, unrealized_for, "stop_loss"):
+        return False  # closed concurrently — never double-book
     trade.notes = (trade.notes or "") + " · trailing stop hit"
     return True
 
@@ -533,7 +550,10 @@ def settle_expired_positions(
                         trade.symbol, trade.id,
                     )
                     continue
-                _book_close(trade, spot, now, _settlement_unrealized_for, "expiry")
+                if not _book_close(
+                    session, trade, spot, now, _settlement_unrealized_for, "expiry"
+                ):
+                    continue  # closed concurrently — never settle twice
                 trade.notes = (trade.notes or "") + " · settled at expiry"
                 session.commit()
                 mirror_close(session, trade)  # cascade to follower copies
@@ -757,7 +777,8 @@ def _flatten_book(
     for t in positions:
         spot, _unreal = marks[t.id]
         prior_realized = t.realized_pnl or 0.0
-        _book_close(t, spot, now, unrealized_for, "liquidation")
+        if not _book_close(session, t, spot, now, unrealized_for, "liquidation"):
+            continue  # closed concurrently — never double-book
         t.notes = (t.notes or "") + note
         session.flush()
         mirror_close(session, t)
@@ -930,7 +951,11 @@ def _auto_liquidate(
             remaining_urpl = urpl
             for t in ordered:
                 spot, unreal = marks[t.id]
-                _book_close(t, spot, now, unrealized_for, "liquidation")
+                if not _book_close(session, t, spot, now, unrealized_for, "liquidation"):
+                    # Closed concurrently — its URPL already left the open book;
+                    # the concurrent booking isn't ours to count.
+                    remaining_urpl -= unreal
+                    continue
                 t.notes = (
                     (t.notes or "")
                     + f" · auto-liquidated worst-first ({reason_note})"
@@ -1154,6 +1179,12 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     legs = trade.legs
     if not legs:
         return None
+
+    # Multi-leg NET-premium limit order (/open-multi order_type="limit") —
+    # triggered on the structure's signed per-1x net, not a per-share premium.
+    if len(legs) > 1:
+        return _process_working_multi(session, trade, spot, now, option_mark)
+
     action = legs[0].get("action", "buy")
     # option_mark returns the SIGNED, contracts-scaled position value
     # (Σ sign·contracts·px). Working-order triggers and the user's limit/stop
@@ -1163,6 +1194,14 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     total_contracts = max((int(leg.get("contracts", 1) or 1) for leg in legs), default=1)
     prem = abs(option_mark(trade, spot)) / max(1, total_contracts)
 
+    # Live two-sided quote for the leg (best-effort — {} on any failure).
+    # Triggers fire off the TOUCH when it exists: a resting order is executable
+    # when the EXECUTABLE side reaches it, not when the mid does (the mid can
+    # cross a buy limit while the offer never trades down to it). The mid rule
+    # stays as the fallback so a cold feed never strands a working order.
+    quotes = fills.live_leg_quotes(trade.symbol, legs)
+    leg_q = fills.leg_quote(quotes, legs[0])
+
     # STOP-LIMIT — two phases. Phase 1: the order rests until the mark crosses
     # stop_price (stop semantics). Arming converts it into a plain LIMIT at
     # limit_price (persisted), so phase 2 (and every later tick) is a normal
@@ -1171,19 +1210,131 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     # immediately below; otherwise it waits as a limit.
     if trade.order_type == "stop_limit":
         stop_trigger = float(trade.stop_price) if trade.stop_price is not None else 0.0
-        if not _entry_fill_triggered("stop", action, prem, stop_trigger):
+        touched = fills.entry_touch_triggered("stop", action, stop_trigger, leg_q)
+        armed = (
+            touched
+            if touched is not None
+            else _entry_fill_triggered("stop", action, prem, stop_trigger)
+        )
+        if not armed:
             return None  # not yet armed
+        # Arming mutates a WORKING order — claim it conditionally so a user
+        # cancel landing in the pricing window above isn't overwritten.
+        claimed = session.execute(
+            update(Trade)
+            .where(Trade.id == trade.id, Trade.status == "working")
+            .values(order_type="limit")
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if claimed == 0:
+            session.expire(trade)
+            return None  # cancelled during the pricing window
         trade.order_type = "limit"  # armed → now a resting limit at limit_price
         trade.notes = (trade.notes or "") + " · stop armed → limit"
 
     trigger = float(trade.limit_price) if trade.limit_price is not None else 0.0
-    if not _entry_fill_triggered(trade.order_type, action, prem, trigger):
+    touched = fills.entry_touch_triggered(trade.order_type, action, trigger, leg_q)
+    hit = (
+        touched
+        if touched is not None
+        else _entry_fill_triggered(trade.order_type, action, prem, trigger)
+    )
+    if not hit:
         return None
 
-    # limit → fill AT the limit price; stop → fill at the current per-share mark.
-    fill_px = trigger if trade.order_type == "limit" else max(0.01, prem)
+    fill_px = _entry_fill_price(
+        trade.order_type, action, trigger, prem, leg_q, total_contracts
+    )
+    return _commit_fill(session, trade, [fill_px], spot, now)
+
+
+def _entry_fill_price(
+    order_type: str, action: str, trigger: float, prem: float, leg_q, contracts: int
+) -> float:
+    """Fill price for a triggered working entry. With a live quote the fill
+    CROSSES THE SPREAD (same machinery as the user-facing market opens) —
+    capped at the limit for a limit order (a limit never fills worse than its
+    price). Mid fallback keeps the legacy behavior: limit fills AT the limit,
+    stop fills at the current per-share mark."""
+    crossed = fills.pick_fill_price(leg_q, action, contracts) if leg_q is not None else 0.0
+    if crossed > 0:
+        if order_type == "limit":
+            crossed = min(crossed, trigger) if action == "buy" else max(crossed, trigger)
+        return max(0.01, round(crossed, 4))
+    return trigger if order_type == "limit" else max(0.01, prem)
+
+
+def _process_working_multi(
+    session, trade: Trade, spot: float, now: datetime, option_mark
+) -> str | None:
+    """Fill a WORKING multi-leg NET-premium limit order.
+
+    Trigger: the structure's live signed net per 1x (option_mark — the same
+    leg-mark machinery the premium exits use — divided by the base size, i.e.
+    the common factor of the leg quantities) must satisfy the SIGNED
+    limit_price: net debit ≤ limit for a debit structure (limit > 0), net
+    credit ≥ |limit| for a credit structure (limit < 0). Both reduce to
+    `net_1x ≤ limit` with the debit-positive/credit-negative convention.
+
+    Fill: each leg through the spread-crossing helper against its live quote;
+    a leg without a quote fills at its mid mark (never strand the order on a
+    partial feed)."""
+    if trade.order_type != "limit" or trade.limit_price is None:
+        return None
+    legs = trade.legs
+    # base size = the common factor of the leg quantities (contracts = ratio ×
+    # base at placement), so mark/base is the per-1x-structure net premium.
+    base = 0
     for leg in legs:
-        leg["entry_price"] = round(float(fill_px), 4)
+        base = gcd(base, max(1, int(leg.get("contracts", 1) or 1)))
+    base = max(1, base)
+    net_1x = option_mark(trade, spot) / base
+    if net_1x > float(trade.limit_price):
+        return None  # debit still too rich / credit still too thin
+
+    quotes = fills.live_leg_quotes(trade.symbol, legs)
+    # Chain rows + rate resolved lazily — only when a leg has no live quote.
+    rows = None
+    rate = 0.0
+    rows_resolved = False
+    prices: list[float] = []
+    for leg in legs:
+        contracts = int(leg.get("contracts", 1) or 1)
+        leg_q = fills.leg_quote(quotes, leg)
+        px = (
+            fills.pick_fill_price(leg_q, leg.get("action", "buy"), contracts)
+            if leg_q is not None
+            else 0.0
+        )
+        if px <= 0:
+            if not rows_resolved:
+                rows = _option_chain_rows(trade.symbol)
+                rate = _rate()
+                rows_resolved = True
+            px = _leg_model_price(rows, leg, spot, now, rate)
+        prices.append(max(0.01, round(float(px), 4)))
+    return _commit_fill(session, trade, prices, spot, now)
+
+
+def _commit_fill(
+    session, trade: Trade, leg_prices: list[float], spot: float, now: datetime
+) -> str | None:
+    """Commit a working→open fill. The transition is a CONDITIONAL UPDATE
+    (WHERE status='working') — the pricing above straddles a network window,
+    and a user cancel that landed in it must WIN, not be silently overwritten
+    by the fill. rowcount 0 → the order is no longer working; skip."""
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id == trade.id, Trade.status == "working")
+        .values(status="open")
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        session.expire(trade)
+        return None  # cancelled (or otherwise decided) during the window
+    legs = trade.legs
+    for leg, px in zip(legs, leg_prices):
+        leg["entry_price"] = round(float(px), 4)
     trade.legs = legs
     from schemas.journal import TradeLeg
 
@@ -1228,12 +1379,40 @@ def _cancel_oco_siblings(session, trade: Trade) -> int:
     return len(siblings)
 
 
-def _book_close(trade: Trade, spot: float, now: datetime, unrealized_for, reason: str) -> None:
+def _book_close(
+    session, trade: Trade, spot: float, now: datetime, unrealized_for, reason: str
+) -> bool:
     """Book a close on `trade` exactly the way the manual CLOSE button does:
-    realized = analytics unrealized − exit-side commission. Mutates the trade
-    in place; the caller owns the commit and any copy-trade cascade."""
+    realized = analytics unrealized − exit-side commission − spread-crossing
+    exit friction (see fills.close_friction; liquidations stress the size
+    term — a forced flatten is the most slippage-heavy fill there is; expiry
+    settlement is cash-settled at intrinsic, so it pays no spread).
+
+    The open→closed transition is a CONDITIONAL UPDATE (WHERE status='open'):
+    the unrealized/friction resolution above straddles a network window, and a
+    concurrent manual close / bracket / liquidation must not be double-booked
+    (+= applied twice) or overwritten. Returns False when the claim is lost —
+    the caller must skip its notes/cascade; True when this call booked the
+    close. Mutates the trade in place on success; the caller owns the commit
+    and any copy-trade cascade."""
     unrealized = unrealized_for(trade, spot)
-    realized = unrealized - _commission_side(trade)
+    friction = (
+        0.0
+        if reason == "expiry"
+        else fills.close_friction(
+            trade.symbol, trade.legs, stressed=(reason == "liquidation")
+        )
+    )
+    realized = unrealized - _commission_side(trade) - friction
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id == trade.id, Trade.status == "open")
+        .values(status="closed")
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        session.expire(trade)
+        return False
     trade.status = "closed"
     trade.close_reason = reason
     trade.exit_date = now
@@ -1243,6 +1422,7 @@ def _book_close(trade: Trade, spot: float, now: datetime, unrealized_for, reason
     # above covers only the REMAINING contracts, so a bare assignment would
     # discard every booked scale-out slice. None/0 for a never-scaled position.
     trade.realized_pnl = round((trade.realized_pnl or 0.0) + realized, 2)
+    return True
 
 
 def _process_open(
@@ -1254,7 +1434,7 @@ def _process_open(
     tick even on a tick where the fixed brackets don't fire."""
     if _has_trailing_stop(trade) and option_mark is not None:
         mark = option_mark(trade, spot)
-        if _process_trailing_stop(trade, mark, spot, now, unrealized_for):
+        if _process_trailing_stop(session, trade, mark, spot, now, unrealized_for):
             _cancel_oco_siblings(session, trade)
             return True
 
@@ -1265,7 +1445,8 @@ def _process_open(
     if _has_premium_exit(trade) and option_mark is not None:
         reason, note = _premium_exit_reason(trade, option_mark(trade, spot))
         if reason is not None:
-            _book_close(trade, spot, now, unrealized_for, reason)
+            if not _book_close(session, trade, spot, now, unrealized_for, reason):
+                return False  # closed concurrently — never double-book
             trade.notes = (trade.notes or "") + f" · {note}"
             _cancel_oco_siblings(session, trade)
             return True
@@ -1287,7 +1468,8 @@ def _process_open(
     if reason is None:
         return False
 
-    _book_close(trade, spot, now, unrealized_for, reason)
+    if not _book_close(session, trade, spot, now, unrealized_for, reason):
+        return False  # closed concurrently — never double-book
     # OCO: a bracket close cancels any resting siblings in the group.
     _cancel_oco_siblings(session, trade)
     return True

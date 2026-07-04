@@ -48,6 +48,11 @@ export const TradeOutSchema = z.object({
   oco_group: z.string().nullable().optional(),
   stop_loss: z.number().nullable().optional(),
   take_profit: z.number().nullable().optional(),
+  // Premium-exit multiples attached at open — TP/SL trigger when the option
+  // mark reaches mult × entry premium. nullable().optional(): tolerant of
+  // payloads from before the backend started echoing them.
+  tp_premium_mult: z.number().nullable().optional(),
+  sl_premium_mult: z.number().nullable().optional(),
   close_reason: z
     .enum(["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"])
     .nullable()
@@ -229,6 +234,15 @@ export interface TradeInput {
   planned_exit?: string | null;
   risk_amount?: number | null;
   screenshot_url?: string | null;
+}
+
+/** PATCH /api/journal/trades/{id}/order — modify a WORKING order in place.
+ *  Only the provided fields change; the backend 409s when the order is no
+ *  longer working (filled/cancelled while the form was open). */
+export interface WorkingOrderPatch {
+  limit_price?: number;
+  stop_price?: number;
+  time_in_force?: "day" | "gtc";
 }
 
 export interface TradeUpdateInput {

@@ -20,7 +20,8 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from calculations.journal_calendar import build_month, parse_month
@@ -62,7 +63,13 @@ from schemas.journal import (
 from services.alpaca_client import get_quotes
 from services.auth import get_active_combine, get_current_user
 from services.cache import cache
-from services.copy_trade import mirror_cancel, mirror_close
+from services.copy_trade import (
+    mirror_cancel,
+    mirror_close,
+    mirror_modify,
+    order_modification_values,
+)
+from services.fills import close_friction
 from services.fred_client import DEFAULT_RATE_FALLBACK, latest_dgs3mo_rate
 
 router = APIRouter(prefix="/api/journal", tags=["journal"])
@@ -294,28 +301,53 @@ def update_trade(
             "this endpoint only closes an open position",
         )
 
-    if payload.status is not None:
-        trade.status = payload.status
-    # Exit fields are part of the CLOSE transition only — a decided trade's
-    # settlement record can't be rewritten after the fact.
-    if closing_now and payload.exit_date is not None:
-        trade.exit_date = _as_utc(payload.exit_date)
-    if closing_now and payload.exit_underlying_price is not None:
-        trade.exit_underlying_price = payload.exit_underlying_price
     # INTEGRITY: `payload.realized_pnl` is DEPRECATED + IGNORED. On a close we
     # RECOMPUTE realized server-side from the live mark (recompute unrealized,
-    # then subtract the exit-side commission) — the exact `_book_close` /
-    # `_default_unrealized_for` path the order monitor uses. The client can no
-    # longer book an arbitrary number.
+    # subtract the exit-side commission AND the spread-crossing exit friction)
+    # — the exact `_book_close` / `_default_unrealized_for` path the order
+    # monitor uses. The client can no longer book an arbitrary number.
     if closing_now:
+        # Resolve the numbers BEFORE the claim — this is the network window a
+        # concurrent bracket/liquidation close can land in.
         unrealized = _recompute_unrealized(trade)
-        realized = unrealized - _position_commission_side(trade)
+        realized = (
+            unrealized
+            - _position_commission_side(trade)
+            - close_friction(trade.symbol, trade.legs)
+        )
+        # RACE GUARD: claim the open→closed transition with a conditional
+        # UPDATE. rowcount 0 → the monitor (bracket/liquidation) already booked
+        # this close during the recompute window — a second booking would
+        # double-count the realized (+= applied twice). 409 instead.
+        claimed = session.execute(
+            update(Trade)
+            .where(Trade.id == trade.id, Trade.status == "open")
+            .values(status="closed")
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if claimed == 0:
+            session.rollback()
+            raise HTTPException(
+                409,
+                "trade is no longer open — it was closed concurrently"
+                " (bracket / liquidation); refresh to see the booked close",
+            )
+        trade.status = "closed"
+        # Exit fields are part of the CLOSE transition only — a decided trade's
+        # settlement record can't be rewritten after the fact.
+        if payload.exit_date is not None:
+            trade.exit_date = _as_utc(payload.exit_date)
+        if payload.exit_underlying_price is not None:
+            trade.exit_underlying_price = payload.exit_underlying_price
         # ACCUMULATE onto any realized already booked by prior scale-outs. After
         # a scale-out the legs hold only the REMAINING contracts, so this
         # recompute covers just that final slice — a bare assignment would wipe
         # every booked scale-out slice (e.g. +$800 on 2/3 then +$100 on the last
         # would show $100, not $900). None/0 for a never-scaled close → no-op.
         trade.realized_pnl = round((trade.realized_pnl or 0.0) + realized, 2)
+    elif payload.status is not None:
+        # Whitelisted above: only a same-status no-op reaches here.
+        trade.status = payload.status
     if payload.notes is not None:
         trade.notes = payload.notes
     if payload.tags is not None:
@@ -377,7 +409,12 @@ def scale_out_trade(
     # qty × number-of-legs × rate (per contract per leg) — not a single leg's.
     num_legs = len(legs) or 1
     exit_commission = payload.qty * num_legs * settings.per_contract_fee
-    slice_realized = round(slice_unrealized - exit_commission, 2)
+    # Spread-crossing exit friction on the CLOSED slice (qty of each leg) —
+    # same machinery as a full close; 0 where no two-sided quote exists.
+    friction = close_friction(
+        trade.symbol, [{**leg, "contracts": payload.qty} for leg in legs]
+    )
+    slice_realized = round(slice_unrealized - exit_commission - friction, 2)
 
     # Reduce every leg by qty (all legs scale together — a straddle closes qty
     # of each side) and ACCUMULATE the slice's realized onto the running total.
@@ -456,11 +493,100 @@ def cancel_order(
     trade = _owned_trade(session, user, trade_id)
     if trade.status != "working":
         raise HTTPException(409, "only a working (unfilled) order can be cancelled")
+    # RACE GUARD: the working→cancelled transition is a conditional UPDATE so
+    # a monitor fill that lands between the read above and this write wins the
+    # row (rowcount 0) instead of being silently overwritten by the cancel.
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id == trade.id, Trade.status == "working")
+        .values(status="cancelled")
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        session.rollback()
+        raise HTTPException(
+            409, "order is no longer working — it was filled or cancelled concurrently"
+        )
     trade.status = "cancelled"
     session.commit()
     session.refresh(trade)
     # Copy trading: cancelling the lead's working order pulls its copies too.
     mirror_cancel(session, trade)
+    return _to_out(trade)
+
+
+class OrderModify(BaseModel):
+    """PATCH body for modifying a WORKING order (cancel/replace). Every field
+    optional, but at least one must be provided. Validated like placement:
+    prices must be positive; stop_price only applies while the order rests as
+    a stop_limit (so both trigger fields stay coherent)."""
+
+    limit_price: float | None = Field(default=None, gt=0)
+    stop_price: float | None = Field(default=None, gt=0)
+    time_in_force: Literal["day", "gtc"] | None = None
+
+
+@router.patch("/trades/{trade_id}/order", response_model=TradeOut)
+def modify_order(
+    trade_id: int,
+    payload: OrderModify,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Modify a WORKING (unfilled) order in place — the cancel/replace path.
+
+    Allowed ONLY while status='working' (409 otherwise: a filled/closed/
+    cancelled order has nothing to replace). All modified columns are written
+    in ONE conditional UPDATE guarded on status='working', so a monitor fill
+    landing concurrently wins the row (409) instead of having its fill prices
+    overwritten. Cascades to still-working copy-trade follower copies via
+    mirror_modify."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "working":
+        raise HTTPException(409, "only a working (unfilled) order can be modified")
+    if (
+        payload.limit_price is None
+        and payload.stop_price is None
+        and payload.time_in_force is None
+    ):
+        raise HTTPException(
+            400, "nothing to modify — provide limit_price, stop_price, or time_in_force"
+        )
+    if payload.stop_price is not None and trade.order_type != "stop_limit":
+        raise HTTPException(
+            400,
+            "stop_price only applies to a stop_limit order — this order is"
+            f" a {trade.order_type}",
+        )
+
+    values = order_modification_values(
+        trade,
+        limit_price=payload.limit_price,
+        stop_price=payload.stop_price,
+        time_in_force=payload.time_in_force,
+    )
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id == trade.id, Trade.status == "working")
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        session.rollback()
+        raise HTTPException(
+            409, "order is no longer working — it was filled or cancelled concurrently"
+        )
+    session.commit()
+    session.expire(trade)
+    # Copy trading: cascade the replace to still-working follower copies.
+    mirror_modify(
+        session,
+        trade,
+        limit_price=payload.limit_price,
+        stop_price=payload.stop_price,
+        time_in_force=payload.time_in_force,
+    )
+    session.refresh(trade)
     return _to_out(trade)
 
 

@@ -53,8 +53,32 @@ vi.mock("@/hooks/useOpenZeroDteStraddle", () => ({
     error: null,
   }),
 }));
+// The empty-state TOOLS section can mount the multi-leg builder, which pulls
+// the chain + the multi-leg open mutation — mock both so no provider/network
+// is needed and the builder binds to whatever symbol the ticket threads in.
+vi.mock("@/hooks/useChainTable", () => ({
+  useChainTable: () => ({
+    data: {
+      atm_strike: 500,
+      rows: [
+        { strike: 495, call_price: 6.0, put_price: 0.5 },
+        { strike: 500, call_price: 2.0, put_price: 1.8 },
+        { strike: 505, call_price: 0.6, put_price: 4.9 },
+      ],
+    },
+  }),
+}));
+vi.mock("@/hooks/useOpenZeroDteMultiLeg", () => ({
+  useOpenZeroDteMultiLeg: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
+}));
 
 import { TradeTicket } from "@/components/positions/TradeTicket";
+import { useSelectedTicker } from "@/stores/selectedTicker";
 import { useTradeTicket } from "@/stores/tradeTicket";
 
 const legSel: TicketSelection = {
@@ -91,6 +115,7 @@ const sellBtn = () => screen.getByRole("button", { name: /SELL -/ });
 describe("TradeTicket validation / canFire", () => {
   beforeEach(() => {
     resetTicketStore();
+    useSelectedTicker.setState({ symbol: "SPY" });
     accountStateRef.current = { max_contracts: 5, active_tier: "50K" };
     tradesRef.current = { trades: [] };
     marketStatusRef.current = { status: "open" };
@@ -212,6 +237,41 @@ describe("TradeTicket validation / canFire", () => {
         limit_price: 1.0,
         stop_price: 1.0,
       });
+    });
+  });
+
+  describe("empty-state TOOLS (builder reachable without a chain selection)", () => {
+    it("renders the tools tab bar collapsed by default when nothing is selected", () => {
+      render(<TradeTicket />);
+      expect(screen.getByRole("button", { name: "build" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "size" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "sim" })).toBeInTheDocument();
+      // Collapsed: no tool panel mounted until a tab is clicked.
+      expect(screen.queryByText("Strategy builder")).not.toBeInTheDocument();
+    });
+
+    it("opens the multi-leg builder bound to the CHARTED symbol", async () => {
+      useSelectedTicker.setState({ symbol: "QQQ" });
+      render(<TradeTicket />);
+      await userEvent.click(screen.getByRole("button", { name: "build" }));
+      expect(screen.getByText("Strategy builder")).toBeInTheDocument();
+      expect(screen.getByText(/QQQ · ATM 500/)).toBeInTheDocument();
+    });
+
+    it("prefers the selection's symbol over the charted one when a leg IS selected", async () => {
+      useSelectedTicker.setState({ symbol: "QQQ" });
+      seedSelection(legSel); // SPY
+      render(<TradeTicket />);
+      await userEvent.click(screen.getByRole("button", { name: "build" }));
+      expect(screen.getByText(/SPY · ATM 500/)).toBeInTheDocument();
+    });
+
+    it("hides the tools when no symbol is charted at all", () => {
+      useSelectedTicker.setState({ symbol: null });
+      render(<TradeTicket />);
+      expect(
+        screen.queryByRole("button", { name: "build" }),
+      ).not.toBeInTheDocument();
     });
   });
 

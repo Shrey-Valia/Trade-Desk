@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     # circuit breaker only trips on ERRORS, never on a stall. Kept
     # comfortably above a healthy fetch (~1-3s).
     alpaca_sdk_timeout_s: float = 6.0
+    # TTL (seconds) for the LIVE option-quote plane
+    # (services.alpaca_client.get_live_option_quotes): refresh cadence for
+    # the SMALL set of contracts being actively priced — open-position
+    # marks, stop/TP/liquidation checks, focused chain rows. One batched
+    # request per symbol per window (~0.1 req/s at the default), drawn from
+    # the interactive bucket; the 300s chain STRUCTURE cache is unaffected.
+    # Also caps how stale a "live" quote may be served — lowering it makes
+    # every consumer fresher at the cost of more (still batched) calls.
+    live_option_quote_ttl_s: float = 10.0
 
     # ---------------------------------------------------------------------
     # WS6 — real-time data feed (built behind a flag; ships DORMANT).

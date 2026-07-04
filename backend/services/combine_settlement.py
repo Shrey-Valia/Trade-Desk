@@ -11,9 +11,14 @@ testable and free of DB concerns.
 Model:
   * The combine "trading day" boundary / daily settlement is 5:00 PM
     Pacific. At that boundary the DLL window resets and each combine's
-    SETTLED high-water mark re-baselines UP to its running (day-high)
-    HWM. The MLL floor is computed from the SETTLED HWM, so it is FIXED
-    intraday and only ever steps up — never trails down mid-session.
+    SETTLED high-water mark re-baselines UP to the highest END-OF-DAY
+    balance among completed trading days — the advertised Topstep
+    convention: an intraday spike given back by the close moves the
+    floor $0; only profit KEPT at 5pm PT advances it. The MLL floor is
+    computed from the SETTLED HWM, so it is FIXED intraday and only
+    ever steps up — never trails down mid-session. The running
+    (day-high) HWM is intraday DISPLAY only and re-seeds to the balance
+    at each settlement.
   * PASS rules (Topstep-aligned): realized profit ≥ the 6% target, a
     minimum number of distinct trading days with a closed trade, and a
     consistency rule (no single day's realized profit may exceed 50% of
@@ -61,10 +66,31 @@ def needs_settlement(last_settled_at: datetime | None, now_utc: datetime) -> boo
     return last_settled_at < trading_day_start(now_utc)
 
 
-def settle_hwm(settled_hwm: float, running_hwm: float) -> float:
-    """Settlement re-baseline: the settled HWM advances UP to the running
-    (day-high) HWM, never down."""
-    return max(settled_hwm, running_hwm)
+def settle_hwm(settled_hwm: float, eod_balance: float) -> float:
+    """Settlement re-baseline: the settled HWM advances UP to the
+    end-of-day balance basis, never down."""
+    return max(settled_hwm, eod_balance)
+
+
+def peak_eod_balance(
+    starting_balance: float,
+    realized_by_day: dict[datetime, float],
+    current_day_start: datetime,
+) -> float:
+    """Highest END-OF-DAY balance across COMPLETED trading days — the basis
+    the settled HWM re-baselines to. Walks the per-day realized buckets in
+    day order accumulating the balance at each 5pm-PT close; buckets at or
+    after `current_day_start` are still in flight and excluded. Settlement
+    is lazy and may skip several boundaries between reads, so trailing the
+    PEAK across the gap (not just the latest boundary's balance) keeps the
+    floor independent of read timing."""
+    peak = balance = starting_balance
+    for day, pnl in sorted(realized_by_day.items()):
+        if day >= current_day_start:
+            break
+        balance += pnl
+        peak = max(peak, balance)
+    return peak
 
 
 def consistency_ok(largest_day_profit: float, total_realized: float) -> bool:

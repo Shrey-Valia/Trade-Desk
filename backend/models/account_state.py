@@ -1,13 +1,14 @@
-"""Combine-tier account state — Trade Desk Phase: account tiers.
+"""LEGACY single-tenant account state — MIGRATION-ONLY. Do not extend.
 
-Single-row table that stores which combine tier the user has active
-and the per-tier high-water mark used to trail the MLL (Maximum Loss
-Limit) drawdown floor.
+Retired by the multi-user shell: live per-account state now lives on
+``models.combine`` rows (see ``services.combine_state``). This model
+survives for exactly one caller — ``database._backfill_multiuser()`` —
+which reads a pre-multi-user database's ``active_tier`` and per-tier
+high-water marks during the one-time adoption of legacy trades. No
+request path reads or writes it, and fresh installs never seed a row
+(seeding was removed with the shell; see the note in ``database.py``).
 
-Tier constants live in ``services.account_tiers`` so the math has one
-source of truth; this model only persists state. Backwards-compat is
-not a concern — the previous single-$10K paper account is being
-replaced wholesale.
+Delete this model when the legacy backfill is retired, not before.
 """
 
 from __future__ import annotations

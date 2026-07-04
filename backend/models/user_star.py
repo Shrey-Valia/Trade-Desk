@@ -1,16 +1,16 @@
 """User-starred tickers — favorites surfaced in the search modal.
 
-The product runs single-tenant locally, so `user_id` defaults to 1
-across the codebase. Carrying it as a column anyway means that
-when multi-user lands, we add an auth layer and a real users table
-without a schema migration.
+Multi-user: every star belongs to a real account (user_id → users.id) and
+every insert path must pass user_id explicitly. There is deliberately NO
+column default — a call site that forgets user_id fails loudly at flush
+instead of silently filing the star under someone else's account.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Index, Integer, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base, UTCDateTime
@@ -26,7 +26,12 @@ class UserStar(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # The FK applies to fresh installs only — SQLite can't retrofit a
+    # constraint onto an existing table without a rebuild — but the ORM
+    # contract (explicit user_id, no default) holds everywhere.
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,

@@ -11,6 +11,7 @@ import { useOpenContractsCount } from "@/hooks/useOpenContractsCount";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteLeg } from "@/hooks/useOpenZeroDteLeg";
 import { useOpenZeroDteStraddle } from "@/hooks/useOpenZeroDteStraddle";
+import { useSelectedTicker } from "@/stores/selectedTicker";
 import {
   premiumExitForDirection,
   useTradeTicket,
@@ -132,6 +133,12 @@ export function TradeTicket() {
 
   // ── WS5: collapsible TOOLS tab (builder / sizer / Monte-Carlo). null = closed.
   const [activeTool, setActiveTool] = useState<ToolTab | null>(null);
+  // The tools only need a SYMBOL, not a chain selection — bind them to the
+  // charted symbol so an iron condor doesn't require first clicking an
+  // unrelated single leg. A selection (if any) still wins: the tools follow
+  // the contract the trader is actively working.
+  const chartedSymbol = useSelectedTicker((s) => s.symbol);
+  const toolsSymbol = selection?.symbol ?? chartedSymbol;
   // ── end WS5
 
   // WS6 power-UX: the B/S hotkeys "pre-arm" by focusing the matching action
@@ -219,6 +226,16 @@ export function TradeTicket() {
         {passed && <PassedBanner />}
         {locked && <LockBanner reason={lockReason} />}
         <CompactEmpty marketOpen={marketOpen} />
+        {/* WS5 tools stay reachable with NO chain selection — the builder /
+            sizer / Monte-Carlo only need the charted symbol. Collapsed by
+            default so the compact empty state keeps its footprint. */}
+        {toolsSymbol && (
+          <ToolsSection
+            symbol={toolsSymbol}
+            active={activeTool}
+            onSelect={(t) => setActiveTool((prev) => (prev === t ? null : t))}
+          />
+        )}
       </section>
     );
   }
@@ -285,7 +302,7 @@ export function TradeTicket() {
           Monte-Carlo. Additive; renders below the single/straddle ticket so
           the core BUY/SELL flow is unchanged. WS6 shares this file. ── */}
       <ToolsSection
-        symbol={selection.symbol}
+        symbol={toolsSymbol ?? selection.symbol}
         active={activeTool}
         onSelect={(t) => setActiveTool((prev) => (prev === t ? null : t))}
       />

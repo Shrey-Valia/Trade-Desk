@@ -4,7 +4,11 @@ import { useChainTable } from "@/hooks/useChainTable";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenZeroDteMultiLeg } from "@/hooks/useOpenZeroDteMultiLeg";
 import { premiumExitForDirection, useTradeTicket } from "@/stores/tradeTicket";
-import type { ChainStrikeRow, MultiLegSpec } from "@/types/zerodte";
+import type {
+  ChainStrikeRow,
+  MultiLegSpec,
+  OpenMultiLegInput,
+} from "@/types/zerodte";
 
 /**
  * WS5 — multi-leg strategy builder. Presets (vertical / iron condor /
@@ -39,6 +43,11 @@ export function StrategyBuilder({ symbol }: Props) {
   const [preset, setPreset] = useState<Preset>("vertical");
   const [contracts, setContracts] = useState(1);
   const [legs, setLegs] = useState<MultiLegSpec[]>([]);
+  // NET LIMIT mode: the structure rests until its net mark crosses the limit.
+  const [orderMode, setOrderMode] = useState<"market" | "limit">("market");
+  const [limitPrice, setLimitPrice] = useState<number | null>(null);
+  // Once the user types a price we stop re-seeding it from the live net.
+  const [limitDirty, setLimitDirty] = useState(false);
 
   // Re-derive preset legs whenever the preset / ATM / step changes (but not in
   // custom mode, where the user owns the legs).
@@ -47,9 +56,6 @@ export function StrategyBuilder({ symbol }: Props) {
     if (atm == null) return;
     setLegs(presetLegs(preset, atm, step));
   }, [preset, atm, step]);
-
-  const canFire =
-    marketOpen && atm != null && legs.length >= 2 && !openMulti.isPending;
 
   // Premium-exit presets (ticket store, shared with the single-leg ticket).
   // A structure's direction isn't a button here — derive net debit/credit
@@ -61,20 +67,39 @@ export function StrategyBuilder({ symbol }: Props) {
     [chain, legs],
   );
 
+  // Seed / track the NET LIMIT price from the live computed net premium until
+  // the user types their own value (limitDirty). Re-seeds as legs reprice so
+  // the pre-fill stays honest, but never clobbers a hand-entered price.
+  useEffect(() => {
+    if (orderMode !== "limit" || limitDirty) return;
+    setLimitPrice(netPremium != null ? +netPremium.toFixed(2) : null);
+  }, [orderMode, netPremium, limitDirty]);
+
+  const canFire =
+    marketOpen &&
+    atm != null &&
+    legs.length >= 2 &&
+    !openMulti.isPending &&
+    (orderMode === "market" || limitPrice != null);
+
   const fire = () => {
     if (!canFire) return;
     const exits =
       netPremium != null
         ? premiumExitForDirection(premiumExit, netPremium >= 0)
         : { tp: null, sl: null };
-    openMulti.mutate({
+    const payload = multiLegOrderPayload({
       symbol,
       contracts,
       strategy: preset,
       legs,
-      tp_premium_mult: exits.tp,
-      sl_premium_mult: exits.sl,
+      orderType: orderMode,
+      limitPrice,
+      tp: exits.tp,
+      sl: exits.sl,
     });
+    if (!payload) return;
+    openMulti.mutate(payload);
   };
 
   const netLabel = describeLegs(legs);
@@ -96,7 +121,12 @@ export function StrategyBuilder({ symbol }: Props) {
           <button
             key={p}
             type="button"
-            onClick={() => setPreset(p)}
+            onClick={() => {
+              setPreset(p);
+              // New preset = new legs — a hand-entered net limit no longer
+              // describes this structure, so fall back to live re-seeding.
+              setLimitDirty(false);
+            }}
             aria-pressed={preset === p}
             className={[
               "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
@@ -146,6 +176,67 @@ export function StrategyBuilder({ symbol }: Props) {
         )}
       </div>
 
+      {/* Order type: MARKET fills now; NET LIMIT rests at a net-premium price */}
+      <div className="flex flex-col gap-0.5">
+        <div className="flex items-center gap-2">
+          <div className="flex" style={{ gap: 4 }}>
+            {(["market", "limit"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => {
+                  setOrderMode(m);
+                  setLimitDirty(false);
+                }}
+                aria-pressed={orderMode === m}
+                title={
+                  m === "market"
+                    ? "Fill now at the server-priced net premium."
+                    : "Rest as a working order until the structure's NET mark reaches your price."
+                }
+                className={[
+                  "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+                  orderMode === m
+                    ? "bg-tier-3 border border-amber text-amber"
+                    : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                ].join(" ")}
+                style={{ height: 22, fontSize: 10 }}
+              >
+                {m === "market" ? "market" : "net limit"}
+              </button>
+            ))}
+          </div>
+          {orderMode === "limit" && (
+            <label className="flex items-center gap-1" style={{ fontSize: 11 }}>
+              <span className="uppercase tracking-label-up text-fg-tertiary-2">
+                net @
+              </span>
+              <input
+                type="number"
+                inputMode="decimal"
+                step={0.01}
+                value={limitPrice ?? ""}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  setLimitDirty(true);
+                  setLimitPrice(Number.isFinite(v) ? v : null);
+                }}
+                placeholder="0.00"
+                aria-label="Net limit price (per-share net premium of the structure)"
+                className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+                style={{ width: 68, height: 22, fontSize: 11 }}
+              />
+            </label>
+          )}
+        </div>
+        {orderMode === "limit" && (
+          <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+            net premium per 1× structure — a debit you pay is positive, a
+            credit you receive is negative
+          </span>
+        )}
+      </div>
+
       {/* Size + fire */}
       <div className="flex items-center gap-2 pt-0.5">
         <label className="flex items-center gap-1" style={{ fontSize: 11 }}>
@@ -180,7 +271,11 @@ export function StrategyBuilder({ symbol }: Props) {
           ].join(" ")}
           style={{ height: 28, fontSize: 12 }}
         >
-          {openMulti.isPending ? "submitting…" : "open structure"}
+          {openMulti.isPending
+            ? "submitting…"
+            : orderMode === "limit"
+              ? "place net limit"
+              : "open structure"}
         </button>
       </div>
 
@@ -364,6 +459,36 @@ export function netPremiumPerShare(
     net += (leg.action === "buy" ? 1 : -1) * price * (leg.ratio ?? 1);
   }
   return net;
+}
+
+/**
+ * Assemble the /open-multi payload. Market opens OMIT order_type/limit_price
+ * entirely (wire-compatible with backends that predate the field); NET LIMIT
+ * sends order_type:"limit" + limit_price — the structure's net premium per 1×
+ * ($/share): debit positive, credit negative. Null when a limit is requested
+ * without a usable price (callers must not fire). Exported for unit testing.
+ */
+export function multiLegOrderPayload(args: {
+  symbol: string;
+  contracts: number;
+  strategy: string;
+  legs: MultiLegSpec[];
+  orderType: "market" | "limit";
+  limitPrice: number | null;
+  tp: number | null;
+  sl: number | null;
+}): OpenMultiLegInput | null {
+  const base: OpenMultiLegInput = {
+    symbol: args.symbol,
+    contracts: args.contracts,
+    strategy: args.strategy,
+    legs: args.legs,
+    tp_premium_mult: args.tp,
+    sl_premium_mult: args.sl,
+  };
+  if (args.orderType === "market") return base;
+  if (args.limitPrice == null || !Number.isFinite(args.limitPrice)) return null;
+  return { ...base, order_type: "limit", limit_price: args.limitPrice };
 }
 
 function describeLegs(legs: MultiLegSpec[]): string {

@@ -45,6 +45,7 @@ import {
   type TradeStatus,
   type TradeUpdateInput,
   type TradesResponse,
+  type WorkingOrderPatch,
 } from "@/types/journal";
 import { NewsResponseSchema, type NewsResponse } from "@/types/news";
 import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
@@ -549,6 +550,18 @@ export const setBrackets = (
 /** Cancel a working (unfilled) limit/stop order. */
 export const cancelOrder = (id: number): Promise<Trade> =>
   mutate(`/api/journal/trades/${id}/cancel`, TradeOutSchema, { method: "POST" });
+
+/** Modify a WORKING (unfilled) order in place — trigger price(s) and/or TIF.
+ *  409 when the order is no longer working (filled/cancelled underneath the
+ *  form); the backend's detail is surfaced verbatim on the thrown error. */
+export const updateWorkingOrder = (
+  id: number,
+  patch: WorkingOrderPatch,
+): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/order`, TradeOutSchema, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
 
 /** Partial close (scale-out): book `qty` contracts of an OPEN position,
  *  leaving the rest open. `realized_pnl` is the booked P&L for the slice;
