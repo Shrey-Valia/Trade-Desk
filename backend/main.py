@@ -23,6 +23,7 @@ from jobs.prewarm_hot_tickers import prewarm_hot_tickers
 from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
 from jobs.monitor_orders import monitor_orders
+from jobs.renew_combines import renew_combines
 from jobs.settle_combines import settle_combines
 from routers.ticker import MarketDataDegraded
 from routers import account as account_router
@@ -227,6 +228,18 @@ async def lifespan(app: FastAPI):
         settle_combines,
         trigger=IntervalTrigger(minutes=5),
         id="settle_combines",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    # Billing renewal — daily boundary pass over paid_through: auto-renew
+    # (simulated rebill + banked reset credit) or archive combines canceled
+    # at period end. Idempotent + multi-period-aware, so a missed day
+    # self-heals on the next run.
+    scheduler.add_job(
+        renew_combines,
+        trigger=CronTrigger(hour=0, minute=15, timezone="America/New_York"),
+        id="renew_combines",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,

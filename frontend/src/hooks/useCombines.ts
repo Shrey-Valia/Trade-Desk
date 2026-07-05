@@ -4,12 +4,15 @@ import {
   activateAccount,
   activateCombine,
   archiveCombine,
+  cancelCombine,
   fetchCombineEvents,
   fetchCombines,
+  fetchPaymentsHistory,
   purchaseCombine,
   renameCombine,
   requestPayout,
   resetCombine,
+  resumeCombine,
   updateCopyConfig,
 } from "@/lib/api";
 import { useActivePosition } from "@/stores/activePosition";
@@ -20,6 +23,7 @@ const errMsg = (e: unknown) => (e as Error)?.message || "Something went wrong";
 
 export const COMBINES_KEY = ["combines"] as const;
 export const COMBINE_EVENTS_KEY = ["combines", "events"] as const;
+export const PAYMENTS_HISTORY_KEY = ["payments", "history"] as const;
 const ACCOUNT_STATE_KEY = ["account", "state"] as const;
 
 export function useCombines() {
@@ -113,6 +117,58 @@ export function useRequestPayout() {
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
       toast.success(`Payout requested — $${payout.amount.toLocaleString()}.`);
+    },
+    onError: (e) => toast.error(errMsg(e)),
+  });
+}
+
+/** Charge history for the Settings billing tab. Retry off: a 404 (endpoint
+ *  still rolling out) or auth failure should degrade to the tab's empty
+ *  state, not spin. */
+export function usePaymentsHistory() {
+  return useQuery({
+    queryKey: PAYMENTS_HISTORY_KEY,
+    queryFn: fetchPaymentsHistory,
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+const periodEndText = (iso: string | null | undefined) =>
+  iso
+    ? new Date(iso).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "the period end";
+
+/** Cancel at period end — the combine stays tradeable until paid_through,
+ *  then archives and the monthly charge stops. Reversible via resume. */
+export function useCancelCombine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => cancelCombine(id),
+    onSuccess: (combine) => {
+      qc.invalidateQueries({ queryKey: COMBINES_KEY });
+      qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
+      toast.info(
+        `${combine.name} cancelled — tradeable until ${periodEndText(combine.paid_through)}, then it archives and billing stops.`,
+      );
+    },
+    onError: (e) => toast.error(errMsg(e)),
+  });
+}
+
+/** Undo a pending cancel — the subscription renews at the period end. */
+export function useResumeCombine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => resumeCombine(id),
+    onSuccess: (combine) => {
+      qc.invalidateQueries({ queryKey: COMBINES_KEY });
+      qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
+      toast.success(`${combine.name} resumed — billing continues at the next renewal.`);
     },
     onError: (e) => toast.error(errMsg(e)),
   });

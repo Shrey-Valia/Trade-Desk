@@ -221,24 +221,26 @@ def test_close_trade_via_patch_recomputes_realized(client, session_factory, mock
 def test_scale_out_imbalanced_legs_guards_on_smallest_leg(client):
     """Scale-out guards on the SMALLEST leg so reducing every leg by qty can't
     drive any leg negative on an imbalanced multi-leg position."""
+    # 3 + 2 = 5 keeps the imbalanced structure within the 50K scaling cap
+    # (journal creates are now cap-checked like the execution path).
     legs = [
         {"side": "call", "action": "buy", "strike": 230,
-         "expiry": _future_expiry(), "contracts": 4, "entry_price": 6.20},
+         "expiry": _future_expiry(), "contracts": 3, "entry_price": 6.20},
         {"side": "put", "action": "buy", "strike": 230,
          "expiry": _future_expiry(), "contracts": 2, "entry_price": 5.80},
     ]
     tid = client.post("/api/journal/trades", json=_trade_payload(legs=legs)).json()["id"]
-    # qty 3 would drive the 2-contract leg to -1 → rejected (held = min leg = 2).
+    # qty 3 would drive the 2-contract leg negative → rejected (held = min leg = 2).
     r = client.post(
         f"/api/journal/trades/{tid}/scale-out", json={"qty": 3, "realized_pnl": 50.0}
     )
     assert r.status_code == 400
-    # qty 1 is fine → 4→3, 2→1 (no leg goes negative).
+    # qty 1 is fine → 3→2, 2→1 (no leg goes negative).
     r2 = client.post(
         f"/api/journal/trades/{tid}/scale-out", json={"qty": 1, "realized_pnl": 50.0}
     )
     assert r2.status_code == 200
-    assert sorted(leg["contracts"] for leg in r2.json()["legs"]) == [1, 3]
+    assert sorted(leg["contracts"] for leg in r2.json()["legs"]) == [1, 2]
 
 
 def test_delete_removes_trade(client):
@@ -504,10 +506,14 @@ def test_scale_out_accumulates_across_two_slices(client, mock_quote):
     """Two successive scale-outs ACCUMULATE realized; each books its own
     recomputed slice (running total, not a replace)."""
     mock_quote(250.0)
-    # 3 contracts so we can scale out twice (1, then 1) and still hold 1.
-    payload = _trade_payload()
-    for leg in payload["legs"]:
-        leg["contracts"] = 3
+    # 3 contracts so we can scale out twice (1, then 1) and still hold 1 —
+    # single-leg so the position (3 contracts total) fits the 50K scaling cap
+    # of 5, which journal creates now enforce like the execution path.
+    payload = _trade_payload(
+        strategy="long_call",
+        legs=[{"side": "call", "action": "buy", "strike": 230,
+               "expiry": _future_expiry(), "contracts": 3, "entry_price": 6.20}],
+    )
     tid = client.post("/api/journal/trades", json=payload).json()["id"]
 
     first = client.post(
@@ -578,3 +584,83 @@ def test_intraday_analytics_prices_each_leg_at_its_own_expiry(monkeypatch):
     same = journal_router._intraday_analytics(
         trade=_mk([near_leg, {**far_leg, "expiry": today}]), spot=100.0, rate=0.04, elapsed_hours=0.0)
     assert mixed.current_value > same.current_value
+
+
+# ---------------------------------------------------------------------------
+# Scaling cap — the manual-journal side door
+# ---------------------------------------------------------------------------
+#
+# POST /api/journal/trades creates OPEN paper positions on the combine, so it
+# must clear the same aggregate open-contracts cap the execution path
+# (/api/zerodte/open) enforces — otherwise a trader hand-journals a 50-lot
+# straight past the scaling plan. 50K tier cap = 5 contracts, counted as the
+# SUM across all legs (per-contract-per-leg, matching the execution path).
+
+
+def _sized_legs(call_contracts: int, put_contracts: int) -> list[dict]:
+    return [
+        {"side": "call", "action": "buy", "strike": 230,
+         "expiry": _future_expiry(), "contracts": call_contracts, "entry_price": 6.20},
+        {"side": "put", "action": "buy", "strike": 230,
+         "expiry": _future_expiry(), "contracts": put_contracts, "entry_price": 5.80},
+    ]
+
+
+def test_journal_create_over_cap_422(client):
+    # 4 + 2 = 6 contracts > the 50K cap of 5 — same error copy as /open.
+    res = client.post(
+        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(4, 2))
+    )
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert "Scaling plan: max 5 contracts" in detail
+    assert "requested 6" in detail
+
+
+def test_journal_create_at_cap_ok_then_aggregate_blocks(client):
+    # 3 + 2 = 5 = exactly at the cap → allowed.
+    res = client.post(
+        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(3, 2))
+    )
+    assert res.status_code == 201
+    # The cap is an AGGREGATE across the combine's open book — even a
+    # 1-contract journal entry is blocked while 5 are already open.
+    one_lot = _trade_payload(
+        strategy="long_call",
+        legs=[{"side": "call", "action": "buy", "strike": 230,
+               "expiry": _future_expiry(), "contracts": 1, "entry_price": 6.20}],
+    )
+    res2 = client.post("/api/journal/trades", json=one_lot)
+    assert res2.status_code == 422
+    assert "already have 5 open and requested 1" in res2.json()["detail"]
+
+
+def test_journal_closed_entries_free_the_cap(client, mock_quote):
+    # Closed trades are record-keeping, not open risk: filling the cap, then
+    # closing, frees the full budget for the next journal entry.
+    mock_quote(230.0)
+    tid = client.post(
+        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(3, 2))
+    ).json()["id"]
+    close = client.patch(
+        f"/api/journal/trades/{tid}",
+        json={
+            "status": "closed",
+            "exit_date": datetime.now(timezone.utc).isoformat(),
+            "exit_underlying_price": 230.0,
+        },
+    )
+    assert close.status_code == 200
+    res = client.post(
+        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(3, 2))
+    )
+    assert res.status_code == 201
+
+
+def test_journal_non_paper_entry_uncapped(client):
+    # is_paper=False records OUTSIDE activity (pure journaling) — no cap.
+    res = client.post(
+        "/api/journal/trades",
+        json=_trade_payload(is_paper=False, legs=_sized_legs(30, 20)),
+    )
+    assert res.status_code == 201

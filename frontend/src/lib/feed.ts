@@ -49,9 +49,14 @@ function closeTone(realizedPnl: number): FeedTone {
 }
 
 function eventTone(type: string): FeedTone {
-  if (type === "funded" || type === "payout") return "bullish";
-  if (type === "failed") return "bearish";
-  return "neutral"; // settled, reset
+  if (type === "funded" || type === "payout" || type === "payout_approved") {
+    return "bullish";
+  }
+  if (type === "failed" || type === "refunded" || type === "personal_dll") {
+    return "bearish";
+  }
+  // settled, reset, payout_requested (pending), renewal, sub_cancel/resume/ended
+  return "neutral";
 }
 
 function strategyLabel(strategy: string): string {

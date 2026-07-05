@@ -1,5 +1,5 @@
 from collections.abc import Generator
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import DateTime, create_engine, inspect, text
@@ -221,6 +221,11 @@ _COMBINE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # NULL = not locked; a stamp within the current 5pm-PT trading day
     # day-locks the combine until the boundary.
     ("profit_locked_at", "DATETIME"),
+    # Billing period ("Billed monthly, cancel anytime"): the end of the paid
+    # 30-day period (backfilled to now + 30 days for non-archived rows below)
+    # and the cancel-at-period-end flag the renewal job archives on.
+    ("paid_through", "DATETIME"),
+    ("cancel_at_period_end", "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 # Copy trading added a lead pointer to users; per-tier DLL overrides added the
@@ -233,6 +238,8 @@ _USER_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("dll_disabled_json", "TEXT NOT NULL DEFAULT '[]'"),
     # Personal daily profit target as JSON {"amount", "lock"}; 'null' = unset.
     ("profit_target_json", "TEXT NOT NULL DEFAULT 'null'"),
+    # Free reset credits banked by monthly rebills (jobs/renew_combines).
+    ("reset_credits", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -304,6 +311,25 @@ def _additive_migrate_combines() -> None:
                     f"settled_hwm = CASE tier {tier_case} ELSE settled_hwm END "
                     f"WHERE funded_activated_at IS NOT NULL"
                 )
+            )
+        # Give existing non-archived combines a full billing period from the
+        # migration instant so nobody is instantly past-due on upgrade. Bound
+        # as a naive-UTC ISO string (the UTCDateTime storage format) so the
+        # sqlite3 driver needs no datetime adapter.
+        if "paid_through" in {name for name, _ in pending}:
+            from services.pricing import BILLING_PERIOD_DAYS
+
+            seeded = (
+                (datetime.now(timezone.utc) + timedelta(days=BILLING_PERIOD_DAYS))
+                .replace(tzinfo=None)
+                .isoformat(sep=" ")
+            )
+            conn.execute(
+                text(
+                    "UPDATE combines SET paid_through = :pt "
+                    "WHERE status != 'archived'"
+                ),
+                {"pt": seeded},
             )
         conn.commit()
 

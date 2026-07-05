@@ -19,6 +19,7 @@ When Stripe IS configured:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -123,6 +124,57 @@ def create_checkout(
         raise HTTPException(502, "could not start checkout") from exc
 
     return CheckoutOut(mode="stripe", checkout_url=checkout.url)
+
+
+class PaymentOut(BaseModel):
+    id: int
+    combine_id: int | None
+    tier: str
+    # Simulated dollars. NULL ledger rows (migration grants) read as 0.0 so
+    # the shape stays a plain number for the billing tab.
+    amount: float
+    status: str = Field(
+        ...,
+        description="paid | activation_paid | reset_paid | reset_credit | "
+        "pending | failed | refunded | migration_grant",
+    )
+    created_at: datetime
+
+
+class PaymentsHistoryOut(BaseModel):
+    payments: list[PaymentOut]
+
+
+@router.get("/history", response_model=PaymentsHistoryOut)
+def payments_history(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> PaymentsHistoryOut:
+    """The signed-in user's payment ledger, newest first — purchases,
+    monthly renewals, resets (paid or credit-covered), activations.
+    Simulated money, real bookkeeping."""
+    rows = (
+        session.execute(
+            select(Payment)
+            .where(Payment.user_id == user.id)
+            .order_by(Payment.created_at.desc(), Payment.id.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return PaymentsHistoryOut(
+        payments=[
+            PaymentOut(
+                id=p.id,
+                combine_id=p.combine_id,
+                tier=p.tier,
+                amount=float(p.amount or 0.0),
+                status=p.status,
+                created_at=p.created_at,
+            )
+            for p in rows
+        ]
+    )
 
 
 # Webhook event types we act on; everything else is acked so Stripe stops

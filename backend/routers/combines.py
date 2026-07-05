@@ -34,6 +34,7 @@ from services.account_tiers import TIERS
 from services.auth import get_current_user
 from services.combine_provision import MAX_COMBINES, provision_combine
 from services.combine_state import (
+    PAYOUT_DEBIT_TYPES,
     combine_snapshot,
     has_open_book,
     realized_by_trading_day,
@@ -105,6 +106,15 @@ class CombineOut(BaseModel):
     funded_activated: bool = Field(
         ..., description="True once the funded account is activated (payouts unlocked)."
     )
+    # --- billing ("Billed monthly, cancel anytime") ---
+    paid_through: datetime | None = Field(
+        None,
+        description="End of the current paid 30-day period (auto-renews unless canceled).",
+    )
+    cancel_at_period_end: bool = Field(
+        ...,
+        description="True when the subscription ends (combine archives) at paid_through.",
+    )
     # --- copy trading ---
     copy_follow: bool = Field(
         ..., description="True if this combine mirrors the lead combine's trades."
@@ -128,6 +138,11 @@ class CombinesOut(BaseModel):
     slots_total: int
     copy_lead_combine_id: int | None = Field(
         None, description="The combine whose trades mirror to followers (None = off)."
+    )
+    reset_credits: int = Field(
+        0,
+        description="Banked free reset credits — one per monthly renewal, "
+        "spent automatically on the next reset.",
     )
 
 
@@ -174,7 +189,10 @@ class CombineEventOut(BaseModel):
     combine_id: int
     combine_name: str | None
     type: str = Field(
-        ..., description="funded | failed | settled | reset | payout | activation"
+        ...,
+        description="funded | failed | settled | reset | payout_requested | "
+        "payout_approved | activation | renewal | sub_cancel | sub_resume | "
+        "sub_ended (legacy data may carry plain 'payout')",
     )
     message: str
     amount: float | None
@@ -182,10 +200,12 @@ class CombineEventOut(BaseModel):
 
 
 def _payouts_requested(session: Session, combine_id: int) -> float:
-    """Sum of payout amounts already requested on this combine."""
+    """Sum of payout amounts already requested on this combine — the debit
+    events only (PAYOUT_DEBIT_TYPES), never the approvals that echo them."""
     rows = session.execute(
         select(CombineEvent.amount).where(
-            CombineEvent.combine_id == combine_id, CombineEvent.type == "payout"
+            CombineEvent.combine_id == combine_id,
+            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
         )
     ).all()
     return float(sum((r[0] or 0.0) for r in rows))
@@ -207,7 +227,7 @@ def _payouts_requested_by_combine(
         )
         .where(
             CombineEvent.combine_id.in_(combine_ids),
-            CombineEvent.type == "payout",
+            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
         )
         .group_by(CombineEvent.combine_id)
     ).all()
@@ -255,6 +275,8 @@ def _to_out(
         activation_required=snap.activation_required,
         activation_fee=snap.activation_fee,
         funded_activated=snap.funded_activated,
+        paid_through=combine.paid_through,
+        cancel_at_period_end=combine.cancel_at_period_end,
         copy_follow=combine.copy_follow,
         copy_multiplier=combine.copy_multiplier,
         copy_stop_loss=combine.copy_stop_loss,
@@ -294,6 +316,7 @@ def list_combines(
         slots_used=sum(1 for c in combines if c.status != "archived"),
         slots_total=MAX_COMBINES,
         copy_lead_combine_id=user.copy_lead_combine_id,
+        reset_credits=int(user.reset_credits or 0),
     )
 
 
@@ -472,12 +495,14 @@ def reset_combine(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
-    """Restart a FAILED evaluation. Books a reset fee at the combine's
-    monthly rate (Topstep model), stamps eval_reset_at (the engine then
-    counts only trades opened after it), re-baselines the HWM/MLL to the
-    tier start, and clears the outcome — the trade history is preserved.
-    Requires a FLAT book: an open position's eventual P&L would escape
-    eval accounting entirely (only entry_date >= eval_reset_at counts)."""
+    """Restart a FAILED evaluation. A banked free reset credit (one per
+    monthly rebill, jobs/renew_combines) covers the reset first; otherwise
+    books a reset fee at the combine's monthly rate (Topstep model). Either
+    way it stamps eval_reset_at (the engine then counts only trades opened
+    after it), re-baselines the HWM/MLL to the tier start, and clears the
+    outcome — the trade history is preserved. Requires a FLAT book: an open
+    position's eventual P&L would escape eval accounting entirely (only
+    entry_date >= eval_reset_at counts)."""
     # Per-user throttle: a reset books a fee payment — same budget as the
     # other financial endpoints (purchase / payout / activation).
     enforce_user(financial_limiter, user.id, "reset")
@@ -491,14 +516,29 @@ def reset_combine(
         )
     now = datetime.now(timezone.utc)
     tier = TIERS[combine.tier]
-    fee = pricing.reset_fee(combine.tier, combine.pricing_path, combine.profit_split)
+    # Banked credits are spent before any money: the $0 ledger row keeps the
+    # payment history complete (status 'reset_credit' vs 'reset_paid').
+    credits = int(user.reset_credits or 0)
+    if credits > 0:
+        user.reset_credits = credits - 1
+        session.add(user)
+        fee = 0.0
+        status = "reset_credit"
+        message = (
+            "Evaluation reset — free reset credit used "
+            f"({user.reset_credits} remaining)."
+        )
+    else:
+        fee = pricing.reset_fee(combine.tier, combine.pricing_path, combine.profit_split)
+        status = "reset_paid"
+        message = f"Evaluation reset — ${fee:,.0f} reset fee paid."
     session.add(
         Payment(
             user_id=user.id,
             combine_id=combine.id,
             tier=combine.tier,
             amount=fee,
-            status="reset_paid",
+            status=status,
         )
     )
     combine.outcome = "active"
@@ -517,12 +557,68 @@ def reset_combine(
         session,
         combine,
         "reset",
-        f"Evaluation reset — ${fee:,.0f} reset fee paid.",
+        message,
         amount=fee,
     )
     session.add(combine)
     session.commit()
     session.refresh(combine)
+    return _to_out(session, combine)
+
+
+@router.post("/{combine_id}/cancel", response_model=CombineOut)
+def cancel_subscription(
+    combine_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> CombineOut:
+    """'Cancel anytime': flag the combine to archive at the end of the paid
+    period instead of auto-renewing. It stays fully tradable (whatever its
+    outcome) until paid_through; the renewal job then archives it. Idempotent
+    — re-canceling records nothing new."""
+    combine = _owned_combine(session, user, combine_id)
+    if combine.status == "archived":
+        raise HTTPException(409, "combine is already archived")
+    if not combine.cancel_at_period_end:
+        combine.cancel_at_period_end = True
+        record_event(
+            session,
+            combine,
+            "sub_cancel",
+            "Subscription canceled — active until the end of the paid period.",
+        )
+        session.add(combine)
+        session.commit()
+        session.refresh(combine)
+    return _to_out(session, combine)
+
+
+@router.post("/{combine_id}/resume", response_model=CombineOut)
+def resume_subscription(
+    combine_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> CombineOut:
+    """Undo a pending cancel before the period ends — auto-renew re-enables.
+    409 once the combine is archived (the boundary already passed and the
+    subscription ended). Idempotent — resuming an un-canceled combine is a
+    no-op."""
+    combine = _owned_combine(session, user, combine_id)
+    if combine.status == "archived":
+        raise HTTPException(
+            409, "subscription already ended — the combine is archived"
+        )
+    if combine.cancel_at_period_end:
+        combine.cancel_at_period_end = False
+        record_event(
+            session,
+            combine,
+            "sub_resume",
+            "Subscription resumed — auto-renew re-enabled.",
+        )
+        session.add(combine)
+        session.commit()
+        session.refresh(combine)
     return _to_out(session, combine)
 
 
@@ -536,8 +632,11 @@ def request_payout(
     """Request a payout on a FUNDED, ACTIVATED account: the trader's split
     (80/20 or 50/50) of FUNDED-STAGE realized profit, net of prior requests.
     Body is optional JSON {amount?: number}; absent → the full available
-    amount. Simulated — records a payout event but moves no money. The
-    booked amount DEBITS the funded balance (services/combine_state).
+    amount. Simulated — records a 'payout_requested' event but moves no
+    money. The booked amount DEBITS the funded balance at REQUEST time
+    (services/combine_state — funds are held while the simulated review
+    runs); the settle pass approves it after the review window by recording
+    a matching 'payout_approved' (jobs/settle_combines).
 
     Policy gates (each a distinct 409): the PAYOUT_* minimums above — at
     least $125, within the available balance, 5 funded-stage winning days
@@ -613,7 +712,7 @@ def request_payout(
         select(CombineEvent.id)
         .where(
             CombineEvent.combine_id == combine.id,
-            CombineEvent.type == "payout",
+            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
             CombineEvent.created_at >= cutoff,
         )
         .limit(1)
@@ -631,7 +730,7 @@ def request_payout(
         select(CombineEvent.id)
         .where(
             CombineEvent.combine_id == combine.id,
-            CombineEvent.type == "payout",
+            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
             CombineEvent.created_at >= interval_cutoff,
         )
         .limit(1)
@@ -668,8 +767,8 @@ def request_payout(
     record_event(
         session,
         locked,
-        "payout",
-        f"Payout requested — ${amount:,.2f}.",
+        "payout_requested",
+        f"Payout requested — ${amount:,.2f} (pending review).",
         amount=amount,
     )
     session.commit()

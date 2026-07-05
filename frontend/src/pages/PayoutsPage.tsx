@@ -281,12 +281,50 @@ function PayoutConfirmDialog({
   );
 }
 
-/** Prior payout requests across all accounts — date, account, amount. Fed
- *  by the same events endpoint the dashboard feed uses, filtered to payout
- *  events, so the ledger and the toasts can never disagree. */
+/** Payout request rows with review status. Requests book as
+ *  'payout_requested' (funds held immediately) and the review desk records a
+ *  matching 'payout_approved' after the simulated window; legacy 'payout'
+ *  rows (pre-review-desk data) were terminal, so they render as PAID.
+ *  Approvals are matched to a combine's requests oldest-first — the same
+ *  positional convention the backend's approval pass uses. */
+export function payoutLedgerRows(
+  events: CombineEvent[],
+): Array<{ event: CombineEvent; status: "pending" | "paid" }> {
+  const requests = events.filter(
+    (e) => e.type === "payout" || e.type === "payout_requested",
+  );
+  const approvalsLeft = new Map<number, number>();
+  for (const e of events) {
+    if (e.type === "payout_approved") {
+      approvalsLeft.set(e.combine_id, (approvalsLeft.get(e.combine_id) ?? 0) + 1);
+    }
+  }
+  // Consume approvals oldest-request-first per combine.
+  const byOldest = [...requests].sort((a, b) =>
+    a.created_at.localeCompare(b.created_at),
+  );
+  const paidIds = new Set<number>();
+  for (const e of byOldest) {
+    if (e.type === "payout") {
+      paidIds.add(e.id); // legacy terminal row
+      continue;
+    }
+    const left = approvalsLeft.get(e.combine_id) ?? 0;
+    if (left > 0) {
+      approvalsLeft.set(e.combine_id, left - 1);
+      paidIds.add(e.id);
+    }
+  }
+  return requests.map((event) => ({
+    event,
+    status: paidIds.has(event.id) ? ("paid" as const) : ("pending" as const),
+  }));
+}
+
 function PayoutLedger() {
   const { data, isPending } = useCombineEvents();
-  const payouts = (data ?? []).filter((e) => e.type === "payout");
+  const rows = payoutLedgerRows(data ?? []);
+  const payouts = rows.map((r) => r.event);
 
   return (
     <div className="border border-hairline-strong bg-tier-1" style={{ borderRadius: 4 }}>
@@ -306,8 +344,8 @@ function PayoutLedger() {
         </div>
       ) : (
         <ul className="divide-y divide-hairline">
-          {payouts.map((e) => (
-            <LedgerRow key={e.id} event={e} />
+          {rows.map((r) => (
+            <LedgerRow key={r.event.id} event={r.event} status={r.status} />
           ))}
         </ul>
       )}
@@ -315,7 +353,13 @@ function PayoutLedger() {
   );
 }
 
-function LedgerRow({ event }: { event: CombineEvent }) {
+function LedgerRow({
+  event,
+  status,
+}: {
+  event: CombineEvent;
+  status: "pending" | "paid";
+}) {
   return (
     <li className="flex items-baseline gap-3 px-3 py-1.5 tabular-nums">
       <span className="text-tiny text-fg-tertiary-2 shrink-0" style={{ minWidth: 84 }}>
@@ -323,6 +367,22 @@ function LedgerRow({ event }: { event: CombineEvent }) {
       </span>
       <span className="text-tiny text-fg-secondary truncate flex-1">
         {event.combine_name ?? `Combine #${event.combine_id}`}
+      </span>
+      <span
+        className={[
+          "inline-flex items-center px-1 border uppercase tracking-label-up rounded-btn shrink-0",
+          status === "paid"
+            ? "border-tier-3 text-fg-tertiary-2"
+            : "border-warning text-warning",
+        ].join(" ")}
+        style={{ fontSize: 11, height: 14 }}
+        title={
+          status === "paid"
+            ? "Approved and paid."
+            : "Processing — approves after the review window. Funds are already held against your balance."
+        }
+      >
+        {status === "paid" ? "PAID" : "PENDING"}
       </span>
       <span className="text-tiny text-bullish shrink-0">
         {event.amount != null ? formatDollar(event.amount) : "—"}

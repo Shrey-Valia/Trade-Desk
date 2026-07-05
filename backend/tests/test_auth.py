@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from fastapi.testclient import TestClient
+
 from config import settings
+from main import app
 from models.auth_session import AuthSession
 
 
@@ -165,3 +168,108 @@ def test_slid_session_is_still_revocable(auth_client, session_factory):
     assert auth_client.get("/api/auth/me").status_code == 401
     with session_factory() as s:
         assert s.query(AuthSession).count() == 0
+
+
+# --- change password ---------------------------------------------------------
+#
+# POST /api/auth/change-password re-proves the current password (403 on
+# mismatch), applies the SAME policy signup uses to the new one, and revokes
+# every OTHER session — the one making the change survives.
+
+
+def _change(client: TestClient, current: str, new: str):
+    return client.post(
+        "/api/auth/change-password",
+        json={"current_password": current, "new_password": new},
+    )
+
+
+def test_change_password_happy_path(auth_client):
+    assert _change(auth_client, "password123", "newpassword456").status_code == 204
+    # The old password no longer signs in; the new one does.
+    auth_client.post("/api/auth/signout")
+    old = auth_client.post(
+        "/api/auth/signin",
+        json={"email": "trader@test.local", "password": "password123"},
+    )
+    assert old.status_code == 401
+    new = auth_client.post(
+        "/api/auth/signin",
+        json={"email": "trader@test.local", "password": "newpassword456"},
+    )
+    assert new.status_code == 200
+
+
+def test_change_password_wrong_current_403(auth_client):
+    res = _change(auth_client, "not-the-password", "newpassword456")
+    assert res.status_code == 403
+    assert res.json()["detail"] == "current password is incorrect"
+    # Nothing changed: the session survives and the old password still works.
+    assert auth_client.get("/api/auth/me").status_code == 200
+    auth_client.post("/api/auth/signout")
+    res = auth_client.post(
+        "/api/auth/signin",
+        json={"email": "trader@test.local", "password": "password123"},
+    )
+    assert res.status_code == 200
+
+
+def test_change_password_weak_new_password_422(auth_client):
+    # Same policy as signup (min 8 chars) — enforced by the shared Field.
+    assert _change(auth_client, "password123", "short").status_code == 422
+
+
+def test_change_password_requires_auth(client):
+    res = client.post(
+        "/api/auth/change-password",
+        json={"current_password": "password123", "new_password": "newpassword456"},
+    )
+    assert res.status_code == 401
+
+
+def test_change_password_revokes_other_sessions_keeps_current(
+    auth_client, session_factory
+):
+    # A second signin (separate TestClient → its own cookie jar) creates a
+    # second AuthSession row for the same user.
+    other = TestClient(app)
+    signin = other.post(
+        "/api/auth/signin",
+        json={"email": "trader@test.local", "password": "password123"},
+    )
+    assert signin.status_code == 200
+    assert other.get("/api/auth/me").status_code == 200
+    with session_factory() as s:
+        assert s.query(AuthSession).count() == 2
+
+    assert _change(auth_client, "password123", "newpassword456").status_code == 204
+
+    # The changing session survives; every other session is revoked.
+    assert auth_client.get("/api/auth/me").status_code == 200
+    assert other.get("/api/auth/me").status_code == 401
+    with session_factory() as s:
+        assert s.query(AuthSession).count() == 1
+
+
+def test_change_password_kept_session_still_slides(auth_client, session_factory):
+    # The surviving session is the SAME row/token — sliding renewal from
+    # wave 3 keeps working on it after the change.
+    assert _change(auth_client, "password123", "newpassword456").status_code == 204
+    ttl = settings.session_ttl
+    _set_session_expiry(session_factory, datetime.now(timezone.utc) + ttl / 4)
+    assert auth_client.get("/api/auth/me").status_code == 200
+    with session_factory() as s:
+        remaining = s.query(AuthSession).one().expires_at - datetime.now(timezone.utc)
+    assert remaining > ttl * 0.9
+
+
+def test_change_password_throttled_429(auth_client, monkeypatch):
+    # Same per-IP sliding-window limiter as signin, under its own scope.
+    from services.rate_limit import auth_limiter
+
+    monkeypatch.setattr(auth_limiter, "max_attempts", 2)
+    assert _change(auth_client, "wrong-wrong", "newpassword456").status_code == 403
+    assert _change(auth_client, "wrong-wrong", "newpassword456").status_code == 403
+    res = _change(auth_client, "wrong-wrong", "newpassword456")  # 3rd → blocked
+    assert res.status_code == 429
+    assert "Retry-After" in res.headers

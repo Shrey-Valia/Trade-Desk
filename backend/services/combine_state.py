@@ -214,13 +214,21 @@ def realized_by_trading_day(
     return by_day
 
 
+# Payout DEBIT event types. The REQUEST is the debit instant (funds are held
+# while the simulated review runs), and legacy terminal 'payout' rows keep
+# counting so historical data still debits. 'payout_approved' is deliberately
+# EXCLUDED — approval re-records the same amount and must not double-debit.
+PAYOUT_DEBIT_TYPES: tuple[str, ...] = ("payout", "payout_requested")
+
+
 def payouts_booked(session: Session, combine_id: int) -> float:
     """Sum of payout amounts already booked on this combine. A booked
     payout DEBITS the funded-stage balance (and with it the HWM basis and
     the MLL fail test) — withdrawn money stops counting as equity."""
     rows = session.execute(
         select(CombineEvent.amount).where(
-            CombineEvent.combine_id == combine_id, CombineEvent.type == "payout"
+            CombineEvent.combine_id == combine_id,
+            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
         )
     ).all()
     return float(sum((r[0] or 0.0) for r in rows))

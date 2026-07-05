@@ -44,6 +44,16 @@ BASE_MONTHLY: dict[str, float] = {
     "150K": 169.0,
 }
 
+# Billing cycle: a combine is paid through this many days from purchase, and
+# each renewal extends it by the same span ("Billed monthly" = a fixed 30-day
+# period, so every cycle prices identically). jobs/renew_combines runs the
+# boundary: simulated rebill, or archive when cancel_at_period_end is set.
+BILLING_PERIOD_DAYS: int = 30
+
+# Each monthly rebill banks ONE free evaluation-reset credit (Topstep parity).
+# Capped so a long-running subscription can't stockpile unlimited resets.
+RESET_CREDIT_CAP: int = 12
+
 # One-time fee to activate a funded account on the "activation" path. Flat
 # across all sizes (Topstep-style). $0 on the "no_activation" path.
 ACTIVATION_FEE: float = 149.0

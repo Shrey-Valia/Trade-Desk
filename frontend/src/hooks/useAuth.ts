@@ -1,6 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { fetchMe, signin, signout, signup } from "@/lib/api";
+import {
+  changePassword,
+  fetchMe,
+  signin,
+  signout,
+  signup,
+  type ChangePasswordInput,
+} from "@/lib/api";
 import { toast } from "@/stores/toast";
 import type { SigninInput, SignupInput } from "@/types/auth";
 
@@ -54,5 +61,17 @@ export function useSignout() {
       // Drop everything — all user data is stale after signout.
       qc.clear();
     },
+  });
+}
+
+/** Change password. Success revokes every OTHER session server-side (this
+ *  one stays signed in). Errors — 403 wrong current password, 422 policy —
+ *  are left on `mutation.error` for the form to render verbatim; no error
+ *  toast here so the message sits next to the fields it belongs to. */
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (input: ChangePasswordInput) => changePassword(input),
+    onSuccess: () =>
+      toast.success("Password changed — your other sessions were signed out."),
   });
 }

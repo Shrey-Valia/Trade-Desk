@@ -49,6 +49,13 @@ export const CombineOutSchema = z.object({
   profit_split: z.number().default(0.8),
   /** Monthly subscription paid for this combine. */
   monthly_price: z.number().default(0),
+  /** End of the current paid month (ISO) — the next billing date, or the
+   *  archive date once cancelled. nullable().optional(): degrades gracefully
+   *  while the backend field is in flight. */
+  paid_through: z.string().nullable().optional(),
+  /** Cancelled — stays tradeable until paid_through, then archives and the
+   *  monthly charge stops. */
+  cancel_at_period_end: z.boolean().nullable().optional(),
   /** Funded but not yet activated — payouts locked until the fee is paid. */
   activation_required: z.boolean().default(false),
   /** Activation fee owed to unlock payouts ($149 on the activation path). */
@@ -71,7 +78,8 @@ export const CombineEventSchema = z.object({
   id: z.number().int(),
   combine_id: z.number().int(),
   combine_name: z.string().nullable(),
-  /** funded | failed | settled | reset | payout */
+  /** funded | failed | settled | reset | payout_requested | payout_approved
+   *  (legacy data may still carry plain "payout"). */
   type: z.string(),
   message: z.string(),
   amount: z.number().nullable(),
@@ -86,6 +94,24 @@ export const PayoutOutSchema = z.object({
 });
 export type PayoutOut = z.infer<typeof PayoutOutSchema>;
 
+/** One row of /api/payments/history — the simulated charge ledger (real
+ *  pricing, no real card by design). status "reset_credit" marks a reset
+ *  covered by a banked free credit rather than a charge. */
+export const PaymentRecordSchema = z.object({
+  id: z.union([z.number().int(), z.string()]),
+  combine_id: z.number().int().nullable(),
+  tier: z.string(),
+  amount: z.number(),
+  status: z.string(),
+  created_at: z.string(),
+});
+export type PaymentRecord = z.infer<typeof PaymentRecordSchema>;
+
+export const PaymentsHistorySchema = z.object({
+  payments: z.array(PaymentRecordSchema),
+});
+export type PaymentsHistory = z.infer<typeof PaymentsHistorySchema>;
+
 export const CombinesOutSchema = z.object({
   combines: z.array(CombineOutSchema),
   active_combine_id: z.number().int().nullable(),
@@ -93,6 +119,9 @@ export const CombinesOutSchema = z.object({
   slots_total: z.number().int(),
   /** Copy-trading lead combine (null = copy trading off). */
   copy_lead_combine_id: z.number().int().nullable().default(null),
+  /** Banked free reset credits — one per monthly renewal, spent automatically
+   *  on the next reset. nullable().optional(): field is in flight backend-side. */
+  reset_credits: z.number().nullable().optional(),
 });
 export type CombinesOut = z.infer<typeof CombinesOutSchema>;
 

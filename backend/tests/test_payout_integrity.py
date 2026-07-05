@@ -90,9 +90,12 @@ def _booked_payouts(client, combine_id: int) -> list[float]:
     session = next(client.app.dependency_overrides[get_session]())
     from sqlalchemy import select
 
+    from services.combine_state import PAYOUT_DEBIT_TYPES
+
     rows = session.execute(
         select(CombineEvent.amount).where(
-            CombineEvent.combine_id == combine_id, CombineEvent.type == "payout"
+            CombineEvent.combine_id == combine_id,
+            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
         )
     ).all()
     session.close()

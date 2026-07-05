@@ -65,6 +65,10 @@ class User(Base):
     # follower combines (those with combine.copy_follow=True). None = copy
     # trading off. Plain Integer for the same circular-FK reason as above.
     copy_lead_combine_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Free evaluation-reset credits. Each monthly rebill banks one (Topstep
+    # parity), capped at pricing.RESET_CREDIT_CAP; reset_combine consumes one
+    # before charging the reset fee.
+    reset_credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Per-tier Daily Loss Limit overrides as JSON {tier: dollars}. Empty {}
     # means use each tier's default DLL. Enforced server-side in

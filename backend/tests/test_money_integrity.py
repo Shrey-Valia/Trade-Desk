@@ -194,7 +194,11 @@ def test_many_sequential_scale_outs_accumulate_exactly(client, mock_quote):
     and compare to the value the endpoint reports after every scale-out."""
     mock_quote(243.37)  # an awkward spot so slices aren't round numbers
     held = 30
-    tid = client.post("/api/journal/trades", json=_straddle_payload(held)).json()["id"]
+    # is_paper=False: a 30-lot is far past the 50K scaling cap that journal
+    # creates now enforce on PAPER positions; the non-paper record-keeping
+    # path stays uncapped and exercises the identical scale-out accumulation.
+    payload = _straddle_payload(held) | {"is_paper": False}
+    tid = client.post("/api/journal/trades", json=payload).json()["id"]
 
     running = Decimal("0.00")
     prev_reported = Decimal("0.00")

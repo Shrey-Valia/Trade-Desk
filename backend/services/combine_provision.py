@@ -15,6 +15,8 @@ the whole purchase is atomic.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,7 +26,12 @@ from models.payment import Payment
 from models.user import User
 from services.account_tiers import TIERS
 from services.combine_objectives import generate_account_code
-from services.pricing import DEFAULT_PATH, DEFAULT_SPLIT, monthly_price
+from services.pricing import (
+    BILLING_PERIOD_DAYS,
+    DEFAULT_PATH,
+    DEFAULT_SPLIT,
+    monthly_price,
+)
 
 # Max non-archived combines a user may hold at once; archiving frees a slot.
 MAX_COMBINES = 5
@@ -88,6 +95,9 @@ def provision_combine(
         outcome="active",
         pricing_path=pricing_path,
         profit_split=profit_split,
+        # First billing period: "Billed monthly" starts at purchase. The
+        # renewal job extends (or archives) at each boundary.
+        paid_through=datetime.now(timezone.utc) + timedelta(days=BILLING_PERIOD_DAYS),
     )
     session.add(combine)
     session.flush()  # assign combine.id for the payment link

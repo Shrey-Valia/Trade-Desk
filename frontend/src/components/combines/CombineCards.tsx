@@ -4,6 +4,7 @@ import { CopyRoleBadge, StageBadge } from "@/components/combines/CombineSwitcher
 import {
   useActivateAccount,
   useArchiveCombine,
+  useCombines,
   useRenameCombine,
   useResetCombine,
 } from "@/hooks/useCombines";
@@ -70,6 +71,9 @@ function CombineCard({
   const archive = useArchiveCombine();
   const rename = useRenameCombine();
   const reset = useResetCombine();
+  // Free reset credits (banked one per monthly rebill) come on the combines
+  // list payload — react-query dedupes this with the parent page's fetch.
+  const resetCredits = useCombines().data?.reset_credits ?? 0;
   const activateAccount = useActivateAccount();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(combine.name);
@@ -250,11 +254,17 @@ function CombineCard({
               type="button"
               disabled={reset.isPending}
               onClick={() => reset.mutate(combine.id)}
-              title="Restart the evaluation. Trade history is kept; the eval P&L starts fresh."
+              title={
+                resetCredits > 0
+                  ? `Restart the evaluation using 1 of your ${resetCredits} free reset credit${resetCredits === 1 ? "" : "s"} (banked one per monthly renewal). Trade history is kept; the eval P&L starts fresh.`
+                  : `Restart the evaluation for a $${Math.round(combine.monthly_price).toLocaleString()} reset fee (the monthly rate — renewals bank a free credit). Trade history is kept; the eval P&L starts fresh.`
+              }
               className="h-6 px-2 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-50"
               style={{ borderRadius: 0 }}
             >
-              Reset
+              {resetCredits > 0
+                ? `Reset · free (${resetCredits} left)`
+                : `Reset · $${Math.round(combine.monthly_price).toLocaleString()}`}
             </button>
           )}
           <div className="ml-auto">

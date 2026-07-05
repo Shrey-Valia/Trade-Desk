@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from fastapi import Cookie, Depends, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -103,6 +103,21 @@ def revoke_session(db: Session, raw_token: str) -> None:
     if row is not None:
         db.delete(row)
         db.commit()
+
+
+def revoke_other_sessions(db: Session, user_id: int, current_raw_token: str | None) -> None:
+    """Delete every session for `user_id` EXCEPT the one carrying
+    `current_raw_token` — password-change semantics: anyone else holding the
+    account is kicked, the session that just proved the current password
+    survives (same row/token, so sliding renewal keeps working on it).
+
+    Does NOT commit — the caller lands the new password hash and the
+    revocation in ONE transaction, so a crash can't leave old sessions
+    alive against a new password (or vice versa)."""
+    stmt = delete(AuthSession).where(AuthSession.user_id == user_id)
+    if current_raw_token:
+        stmt = stmt.where(AuthSession.token_hash != _hash_token(current_raw_token))
+    db.execute(stmt)
 
 
 # -- FastAPI dependencies ----------------------------------------------------

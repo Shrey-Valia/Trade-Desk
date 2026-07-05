@@ -112,6 +112,18 @@ class Combine(Base):
     profit_locked_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True
     )
+    # --- billing ("Billed monthly, cancel anytime") -----------------------
+    # End of the current paid 30-day period. Seeded to purchase +
+    # pricing.BILLING_PERIOD_DAYS by provision_combine; the daily renewal job
+    # (jobs/renew_combines) extends it on each simulated rebill. Nullable so
+    # legacy rows read cleanly until the boot migration backfills them.
+    paid_through: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # When True the subscription ends at paid_through: the renewal job
+    # archives the combine instead of rebilling. Set/cleared by the
+    # /cancel and /resume endpoints.
+    cancel_at_period_end: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,

@@ -61,11 +61,13 @@ import {
   CombineEventSchema,
   CombineOutSchema,
   CombinesOutSchema,
+  PaymentsHistorySchema,
   PayoutOutSchema,
   type CombineEvent,
   type CombineOut,
   type CombinesOut,
   type CopyConfigInput,
+  type PaymentsHistory,
   type PayoutOut,
   type PurchaseInput,
 } from "@/types/combine";
@@ -424,6 +426,21 @@ export const requestPayout = (id: number, amount?: number): Promise<PayoutOut> =
 export const activateAccount = (id: number): Promise<CombineOut> =>
   mutate(`/api/combines/${id}/activate-account`, CombineOutSchema, { method: "POST" });
 
+/** Cancel at period end: the combine stays tradeable until `paid_through`,
+ *  then archives and the monthly charge stops. Returns the updated combine
+ *  (cancel_at_period_end = true). */
+export const cancelCombine = (id: number): Promise<CombineOut> =>
+  mutate(`/api/combines/${id}/cancel`, CombineOutSchema, { method: "POST" });
+
+/** Undo a pending cancel — the subscription renews at the period end. */
+export const resumeCombine = (id: number): Promise<CombineOut> =>
+  mutate(`/api/combines/${id}/resume`, CombineOutSchema, { method: "POST" });
+
+/** Charge history for the billing tab (simulated payments — real pricing,
+ *  no real card by design). */
+export const fetchPaymentsHistory = (): Promise<PaymentsHistory> =>
+  request("/api/payments/history", PaymentsHistorySchema);
+
 /** Recent lifecycle events across the user's combines (newest first). */
 export const fetchCombineEvents = (): Promise<CombineEvent[]> =>
   request("/api/combines/events", z.array(CombineEventSchema));
@@ -529,6 +546,20 @@ export const signin = (input: SigninInput): Promise<UserOut> =>
 
 export const signout = (): Promise<void> =>
   mutate("/api/auth/signout", z.void(), { method: "POST" });
+
+export interface ChangePasswordInput {
+  current_password: string;
+  new_password: string;
+}
+
+/** Change the signed-in user's password. 204 on success (the backend revokes
+ *  every OTHER session; this one stays signed in). A 403 (wrong current
+ *  password) or 422 (policy) carries its `detail` verbatim as Error.message. */
+export const changePassword = (input: ChangePasswordInput): Promise<void> =>
+  mutate("/api/auth/change-password", z.void(), {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 
 export const updateTrade = (id: number, patch: TradeUpdateInput): Promise<Trade> =>
   mutate(`/api/journal/trades/${id}`, TradeOutSchema, {

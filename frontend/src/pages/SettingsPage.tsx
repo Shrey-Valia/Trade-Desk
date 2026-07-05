@@ -10,8 +10,14 @@ import {
   useDllOverrides,
   useUpdateDllOverrides,
 } from "@/hooks/useAccountState";
-import { useActivateCombine } from "@/hooks/useCombines";
-import { useMe, useSignout } from "@/hooks/useAuth";
+import {
+  useActivateCombine,
+  useCancelCombine,
+  useCombines,
+  usePaymentsHistory,
+  useResumeCombine,
+} from "@/hooks/useCombines";
+import { useChangePassword, useMe, useSignout } from "@/hooks/useAuth";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import {
   normalizeDllOverride,
@@ -23,6 +29,7 @@ import { TIER_SPECS } from "@/lib/tierSpecs";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { APPEARANCE_DEFAULTS, useUserSettings } from "@/stores/userSettings";
 import type { TierKey, TierSpec } from "@/types/account";
+import type { CombineOut, PaymentRecord } from "@/types/combine";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 
 // Standard candle-interval ladder. Default selection "5m" matches the
@@ -30,10 +37,11 @@ import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 // the two stay in lockstep automatically.
 const TIMEFRAMES: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
 
-type SettingsTab = "account" | "risk" | "copy" | "trading" | "appearance";
+type SettingsTab = "account" | "billing" | "risk" | "copy" | "trading" | "appearance";
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "account", label: "Account" },
+  { id: "billing", label: "Billing" },
   { id: "risk", label: "Risk management" },
   { id: "copy", label: "Copy trading" },
   { id: "trading", label: "Trading" },
@@ -44,7 +52,8 @@ const SETTINGS_MAXW = 960;
 
 /**
  * Settings — organized into tabs so each concern has room to breathe:
- *   Account          who's signed in + your combines
+ *   Account          who's signed in + password + your combines
+ *   Billing          per-combine subscriptions, cancel/resume, charge history
  *   Risk management  per-tier daily-loss-limit overrides (enforced)
  *   Copy trading     mirror a lead account to followers
  *   Trading          chart/ticket defaults
@@ -107,6 +116,13 @@ export function SettingsPage() {
             <Panel>
               <AccountSection />
               <CombineTierSection />
+              <PasswordChangeSection />
+            </Panel>
+          )}
+
+          {tab === "billing" && (
+            <Panel>
+              <BillingSection />
             </Panel>
           )}
 
@@ -210,6 +226,396 @@ function AccountSection() {
       </button>
     </div>
   );
+}
+
+/**
+ * Change password — current + new + confirm, client-side match check.
+ * POSTs /api/auth/change-password; a 403 (wrong current password) or 422
+ * (policy) detail renders verbatim under the fields. Success toasts that
+ * every other session was signed out (this one stays).
+ */
+function PasswordChangeSection() {
+  const change = useChangePassword();
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const mismatch = confirm !== "" && next !== confirm;
+  const ready = current !== "" && next !== "" && next === confirm;
+  return (
+    <form
+      className="px-5 py-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!ready || change.isPending) return;
+        change.mutate(
+          { current_password: current, new_password: next },
+          {
+            onSuccess: () => {
+              setCurrent("");
+              setNext("");
+              setConfirm("");
+            },
+          },
+        );
+      }}
+    >
+      <div
+        className="uppercase tracking-label-up text-fg-secondary"
+        style={{ fontSize: 12, letterSpacing: "0.08em" }}
+      >
+        Change password
+      </div>
+      <div className="text-fg-tertiary-2 mt-1" style={{ fontSize: 12, lineHeight: 1.45 }}>
+        Changing your password signs out every other session; this one stays
+        signed in.
+      </div>
+      <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <PasswordField
+          label="Current password"
+          value={current}
+          onChange={setCurrent}
+          autoComplete="current-password"
+        />
+        <PasswordField
+          label="New password"
+          value={next}
+          onChange={setNext}
+          autoComplete="new-password"
+        />
+        <PasswordField
+          label="Confirm new password"
+          value={confirm}
+          onChange={setConfirm}
+          autoComplete="new-password"
+        />
+      </div>
+      {mismatch && (
+        <div className="text-warning mt-2" style={{ fontSize: 11 }}>
+          New passwords don&rsquo;t match.
+        </div>
+      )}
+      {change.isError && (
+        <div
+          className="text-bearish mt-2"
+          style={{ fontSize: 11, lineHeight: 1.4 }}
+          role="alert"
+        >
+          {(change.error as Error).message}
+        </div>
+      )}
+      <button
+        type="submit"
+        disabled={!ready || change.isPending}
+        className="mt-3 h-7 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed"
+        style={{ borderRadius: 0 }}
+      >
+        {change.isPending ? "Changing…" : "Change password"}
+      </button>
+    </form>
+  );
+}
+
+function PasswordField({
+  label,
+  value,
+  onChange,
+  autoComplete,
+}: {
+  label: string;
+  value: string;
+  onChange: (s: string) => void;
+  autoComplete: "current-password" | "new-password";
+}) {
+  return (
+    <label className="flex flex-col gap-1 min-w-0">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 11 }}
+      >
+        {label}
+      </span>
+      <input
+        type="password"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete={autoComplete}
+        required
+        className="h-7 px-1.5 text-xs2 font-mono bg-tier-2 border border-tier-3 text-fg-primary rounded-btn focus:border-amber focus:outline-none"
+        aria-label={label}
+      />
+    </label>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Billing tab — where "billed monthly, cancel anytime" gets its surface.
+// ---------------------------------------------------------------------------
+
+/**
+ * Billing-tab spend math (pure, exported for tests): active (non-archived)
+ * combines that are NOT flagged cancel-at-period-end keep charging monthly;
+ * cancelled ones stop at the period end, so they drop out of the total.
+ */
+export function totalMonthlySpend(
+  combines: Array<
+    Pick<CombineOut, "status" | "monthly_price"> & {
+      cancel_at_period_end?: boolean | null;
+    }
+  >,
+): number {
+  return combines
+    .filter((c) => c.status !== "archived" && !c.cancel_at_period_end)
+    .reduce((sum, c) => sum + (c.monthly_price ?? 0), 0);
+}
+
+/** Human label for a charge-history status — reset_credit rows are banked
+ *  free-credit resets, not charges. */
+export function paymentStatusLabel(status: string): string {
+  return status === "reset_credit" ? "free reset credit" : status.replace(/_/g, " ");
+}
+
+/**
+ * Billing — per-combine subscription rows (price, next bill date,
+ * cancel/resume), the total monthly spend, the banked reset credits, and
+ * the charge history. All charges are simulated by design: real pricing,
+ * no card is ever billed.
+ */
+function BillingSection() {
+  const { data, isPending, isError } = useCombines();
+  const cancel = useCancelCombine();
+  const resume = useResumeCombine();
+  const all = data?.combines ?? [];
+  const billable = all.filter((c) => c.status !== "archived");
+  const resetCredits = data?.reset_credits ?? 0;
+  const spend = totalMonthlySpend(billable);
+  return (
+    <>
+      <div className="border-b border-hairline px-5 pt-4 pb-3">
+        <div
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 12, letterSpacing: "0.08em" }}
+        >
+          Subscriptions
+        </div>
+        <div className="text-fg-tertiary-2 mt-1" style={{ fontSize: 12, lineHeight: 1.45 }}>
+          Billed monthly, cancel anytime. Cancelling keeps the combine
+          tradeable until the period end, then archives it and stops the
+          charge. Charges are simulated by design — real pricing, no card is
+          billed.
+        </div>
+      </div>
+      {isPending ? (
+        <div className="px-5 py-4 text-tiny text-fg-tertiary-2">Loading billing…</div>
+      ) : isError ? (
+        <div className="px-5 py-4 text-tiny text-fg-tertiary-2">
+          Couldn&rsquo;t load your combines — billing is unavailable right now.
+        </div>
+      ) : billable.length === 0 ? (
+        <div className="px-5 py-4 border-b border-hairline text-tiny text-fg-tertiary-2">
+          No active combines — nothing is billing.
+        </div>
+      ) : (
+        <>
+          {billable.map((c) => (
+            <BillingRow key={c.id} combine={c} cancel={cancel} resume={resume} />
+          ))}
+          <div className="flex items-baseline justify-between gap-3 px-5 py-3 border-b border-hairline tabular-nums">
+            <div>
+              <span
+                className="uppercase tracking-label-up text-fg-secondary"
+                style={{ fontSize: 12, letterSpacing: "0.08em" }}
+              >
+                Total monthly spend
+              </span>
+              <span className="text-fg-tertiary-2 ml-2" style={{ fontSize: 11 }}>
+                combines set to cancel don&rsquo;t count
+              </span>
+            </div>
+            <span className="text-fg-primary" style={{ fontSize: 13 }}>
+              ${spend.toLocaleString("en-US")}/mo
+            </span>
+          </div>
+        </>
+      )}
+      <div className="flex items-baseline justify-between gap-3 px-5 py-3 border-b border-hairline">
+        <span
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 12, letterSpacing: "0.08em" }}
+        >
+          Free reset credits
+        </span>
+        <span className="text-fg-tertiary-2 text-right" style={{ fontSize: 12 }}>
+          <span className="text-fg-primary tabular-nums">{resetCredits}</span> free
+          reset credit{resetCredits === 1 ? "" : "s"} — banked one per monthly
+          renewal, used automatically on your next reset.
+        </span>
+      </div>
+      <ChargeHistory combines={all} />
+    </>
+  );
+}
+
+function BillingRow({
+  combine,
+  cancel,
+  resume,
+}: {
+  combine: CombineOut;
+  cancel: ReturnType<typeof useCancelCombine>;
+  resume: ReturnType<typeof useResumeCombine>;
+}) {
+  const cancelled = combine.cancel_at_period_end === true;
+  return (
+    <div className="flex items-center gap-4 px-5 py-3 border-b border-hairline">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-fg-primary font-medium truncate" style={{ fontSize: 13 }}>
+            {combine.name}
+          </span>
+          {cancelled && (
+            <span
+              className="border border-warning text-warning px-1 uppercase tracking-label-up shrink-0"
+              style={{ fontSize: 11, borderRadius: 2 }}
+            >
+              cancelled at period end
+            </span>
+          )}
+        </div>
+        <div className="text-fg-tertiary-2 tabular-nums mt-0.5" style={{ fontSize: 12 }}>
+          {combine.tier} · {combine.account_code}
+        </div>
+      </div>
+      <div className="flex flex-col items-end shrink-0 tabular-nums">
+        <span className="text-fg-secondary" style={{ fontSize: 13 }}>
+          ${combine.monthly_price.toLocaleString("en-US")}/mo
+        </span>
+        <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+          {cancelled
+            ? `archives ${formatBillingDate(combine.paid_through)}`
+            : `next bill ${formatBillingDate(combine.paid_through)}`}
+        </span>
+      </div>
+      {cancelled ? (
+        <button
+          type="button"
+          disabled={resume.isPending}
+          onClick={() => resume.mutate(combine.id)}
+          title="Undo the cancel — the subscription renews and billing continues."
+          className="h-7 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50 shrink-0"
+          style={{ borderRadius: 0 }}
+        >
+          Resume
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled={cancel.isPending}
+          onClick={() => cancel.mutate(combine.id)}
+          title="Cancel — the combine stays tradeable until the period end, then it archives and the charge stops."
+          className="h-7 px-3 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:text-bearish hover:border-bearish disabled:opacity-50 shrink-0"
+          style={{ borderRadius: 0 }}
+        >
+          Cancel
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Charge history from /api/payments/history — date, account, amount,
+ *  status. Missing endpoint / errors degrade to a quiet unavailable note. */
+function ChargeHistory({ combines }: { combines: CombineOut[] }) {
+  const { data, isPending, isError } = usePaymentsHistory();
+  const payments = data?.payments ?? [];
+  const nameById = new Map(combines.map((c) => [c.id, c.name]));
+  return (
+    <div>
+      <div className="flex items-baseline justify-between px-5 pt-4 pb-1">
+        <span
+          className="uppercase tracking-label-up text-fg-secondary"
+          style={{ fontSize: 12, letterSpacing: "0.08em" }}
+        >
+          Charge history
+        </span>
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2 tabular-nums"
+          style={{ fontSize: 11 }}
+        >
+          {payments.length} charge{payments.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {isPending ? (
+        <div className="px-5 py-3 text-tiny text-fg-tertiary-2">Loading…</div>
+      ) : isError ? (
+        <div className="px-5 py-3 text-tiny text-fg-tertiary-2">
+          Charge history is unavailable right now.
+        </div>
+      ) : payments.length === 0 ? (
+        <div className="px-5 py-3 text-tiny text-fg-tertiary-2">
+          No charges yet — purchases, renewals, and resets will show up here.
+        </div>
+      ) : (
+        <ul className="divide-y divide-hairline border-t border-hairline">
+          {payments.map((p) => (
+            <ChargeRow
+              key={String(p.id)}
+              payment={p}
+              accountName={
+                p.combine_id != null
+                  ? (nameById.get(p.combine_id) ?? `${p.tier} · #${p.combine_id}`)
+                  : p.tier
+              }
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ChargeRow({
+  payment,
+  accountName,
+}: {
+  payment: PaymentRecord;
+  accountName: string;
+}) {
+  return (
+    <li className="flex items-baseline gap-3 px-5 py-1.5 tabular-nums">
+      <span className="text-tiny text-fg-tertiary-2 shrink-0" style={{ minWidth: 84 }}>
+        {formatBillingDate(payment.created_at)}
+      </span>
+      <span className="text-tiny text-fg-secondary truncate flex-1">{accountName}</span>
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2 shrink-0"
+        style={{ fontSize: 11 }}
+      >
+        {paymentStatusLabel(payment.status)}
+      </span>
+      <span className="text-tiny text-fg-secondary shrink-0" style={{ minWidth: 72, textAlign: "right" }}>
+        {formatBillingDollar(payment.amount)}
+      </span>
+    </li>
+  );
+}
+
+function formatBillingDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  return d.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatBillingDollar(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  return `$${v.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 // ---------------------------------------------------------------------------

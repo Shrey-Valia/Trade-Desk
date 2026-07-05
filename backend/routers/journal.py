@@ -42,6 +42,11 @@ from database import get_session
 from models.combine import Combine
 from models.trade import Trade
 from models.user import User
+# Read-only sibling-router import: the manual-journal create must enforce the
+# SAME aggregate open-contracts count the execution path uses, not a parallel
+# reimplementation that can drift. zerodte has no module-level import back
+# into this module, so the import is acyclic.
+from routers.zerodte import _open_contracts_for_combine
 from schemas.calendar_journal import (
     CalendarDayOut,
     CalendarMonthOut,
@@ -63,6 +68,7 @@ from schemas.journal import (
 from services.alpaca_client import get_quotes
 from services.auth import get_active_combine, get_current_user
 from services.cache import cache
+from services.combine_state import combine_snapshot
 from services.copy_trade import (
     mirror_cancel,
     mirror_close,
@@ -199,6 +205,29 @@ def create_trade(
     warnings = _validate_soft(payload)
     if warnings:
         response.headers["X-Journal-Warnings"] = " | ".join(warnings)
+
+    # SCALING CAP — the manual-journal path must not be a side door around
+    # the execution path's aggregate cap: a hand-journaled paper position is
+    # live risk on the combine exactly like an /api/zerodte/open fill (this
+    # endpoint always creates status='open'). Same count helper + error copy
+    # as zerodte's _require_tradeable. Non-paper entries are pure
+    # record-keeping of outside activity — uncapped.
+    if payload.is_paper:
+        contracts = sum(int(leg.contracts) for leg in payload.legs)
+        snap = combine_snapshot(session, combine)
+        open_now = _open_contracts_for_combine(session, combine.id)
+        if open_now + contracts > snap.max_contracts:
+            plural = "s" if snap.max_contracts != 1 else ""
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Scaling plan: max {snap.max_contracts} contract{plural} open "
+                    f"at once at your current balance — you already have {open_now} "
+                    f"open and requested {contracts}. Close a position or build "
+                    "equity to scale up; the limit re-evaluates at the 5pm-PT "
+                    "settlement."
+                ),
+            )
 
     net = (
         payload.net_debit_credit
