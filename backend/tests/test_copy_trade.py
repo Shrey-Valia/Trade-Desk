@@ -230,6 +230,47 @@ def test_lead_close_cascades_to_followers_scaled(
         assert copy.realized_pnl == round(lead_realized * 0.5, 2)
 
 
+def test_full_close_cancels_working_follower_without_booking_pnl(
+    auth_client, session_factory
+):
+    """recent-waves #8: a follower whose OWN order never filled (still
+    'working' — followers fill independently through the monitor) must be
+    CANCELLED when the lead full-closes, NOT flipped to 'closed' with
+    fabricated realized P&L on an order that never executed (which would
+    corrupt the follower combine's balance / payout eligibility)."""
+    lead = make_combine(auth_client, "50K", name="Lead")
+    f2 = make_combine(auth_client, "50K", name="F2")
+    _set_config(auth_client, lead["id"], [(f2["id"], 1.0)])
+
+    with session_factory() as s:
+        lead_c = s.get(Combine, lead["id"])
+        trade = _lead_trade(s, lead_c, contracts=2)  # open lead
+        mirror_open(s, lead_c, trade)
+        lead_id = trade.id
+        # Force the follower copy to WORKING (its own limit hasn't filled yet).
+        copy = s.execute(
+            select(Trade).where(Trade.copied_from_trade_id == lead_id)
+        ).scalars().one()
+        copy.status = "working"
+        copy.realized_pnl = None
+        s.add(copy)
+        s.commit()
+        # Full-close the lead and cascade.
+        trade.status = "closed"
+        trade.realized_pnl = 500.0
+        trade.exit_date = datetime.now(timezone.utc)
+        s.add(trade)
+        s.commit()
+        mirror_close(s, trade, final_slice_pnl=500.0)
+
+    with session_factory() as s:
+        copy = s.execute(
+            select(Trade).where(Trade.copied_from_trade_id == lead_id)
+        ).scalars().one()
+        assert copy.status == "cancelled"       # cancelled, not closed
+        assert copy.realized_pnl is None        # NO fabricated P&L
+
+
 def test_lead_cancel_cascades_to_followers(auth_client, session_factory):
     lead = make_combine(auth_client, "50K", name="Lead")
     f2 = make_combine(auth_client, "50K", name="F2")

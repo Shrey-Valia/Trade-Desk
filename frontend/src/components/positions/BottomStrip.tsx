@@ -440,7 +440,14 @@ function OpenPositionCol({
       queryClient.invalidateQueries({ queryKey: ["account", "state"] });
       setActiveTradeId(null);
     },
-    onError: (e) => toast.error((e as Error)?.message || "Could not close position"),
+    onError: (e) => {
+      // A 409 here means the monitor already booked this close (bracket /
+      // liquidation) while the row still rendered as open — a ghost. Refetch so
+      // the closed state lands and the ghost disappears instead of lingering.
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+      toast.error((e as Error)?.message || "Could not close position");
+    },
   });
 
   // Scale-out: close `closeQty` of `held` contracts (default = full). The
@@ -471,7 +478,13 @@ function OpenPositionCol({
       if (trade) queryClient.invalidateQueries({ queryKey: ["trade-analytics", trade.id] });
       setCloseQty(null); // reset to "full" for the now-smaller remaining position
     },
-    onError: (e) => toast.error((e as Error)?.message || "Could not scale out"),
+    onError: (e) => {
+      // 409 → the position was closed concurrently (bracket / liquidation);
+      // refetch so the stale "open" row reconciles to closed.
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+      toast.error((e as Error)?.message || "Could not scale out");
+    },
   });
 
   // WS6 power-UX: the "C" hotkey (and the palette's "Close active position")

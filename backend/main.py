@@ -273,6 +273,16 @@ async def lifespan(app: FastAPI):
     # async-running-loop landmine in prewarm doesn't fire.
     async def _background_warm() -> None:
         log.info("background warm: starting refresh_watchlist + prewarm")
+        # Billing CATCH-UP on boot. The renew_combines cron only fires at
+        # 00:15 ET; with an in-memory jobstore a process that is down at that
+        # instant (a dev box, a market-hours-only host) drops the run and never
+        # rebills — subscriptions drift past-due while staying tradeable. The
+        # job is idempotent + multi-period-aware, so running it once at startup
+        # settles every boundary missed while the app was down.
+        try:
+            await asyncio.to_thread(renew_combines)
+        except Exception:  # noqa: BLE001
+            log.exception("startup billing catch-up (renew_combines) failed")
         try:
             await asyncio.to_thread(refresh_watchlist, force=True)
         except Exception:  # noqa: BLE001
@@ -354,6 +364,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Baseline security response headers for the authenticated SPA.
+
+    - `X-Frame-Options: DENY` + `frame-ancestors 'none'` — the app can't be
+      framed, so the session-cookie UI can't be clickjacked.
+    - `X-Content-Type-Options: nosniff` — the browser won't MIME-sniff a
+      response into an executable type (defense in depth for the
+      user-uploaded screenshot bytes served by journal_media).
+    - `Referrer-Policy: same-origin` — don't leak internal URLs cross-site.
+    - HSTS only in production (never on plain-HTTP dev, where it would pin
+      localhost to HTTPS).
+    """
+    response = await call_next(request)
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    if settings.is_production:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 # Paths exempt from the global throttle: health/readiness probes must never

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -57,6 +57,7 @@ def _owned_trade(session: Session, user: User, trade_id: int) -> Trade:
 @router.post("/trades/{trade_id}/screenshot", response_model=TradeOut)
 async def upload_screenshot(
     trade_id: int,
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
@@ -69,6 +70,14 @@ async def upload_screenshot(
     client can swap it straight into its trade cache.
     """
     trade = _owned_trade(session, user, trade_id)
+
+    # Cheap up-front reject on the declared Content-Length so a giant body is
+    # refused BEFORE it's buffered/spooled to disk. The post-read ceiling below
+    # is the real enforcement (Content-Length is client-supplied), but this
+    # avoids ingesting an oversize upload just to reject it.
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_BYTES:
+        raise HTTPException(413, f"file too large; max {MAX_BYTES} bytes (5 MB)")
 
     data = await file.read()
     # Guard memory before validation too — read() already buffered, but the

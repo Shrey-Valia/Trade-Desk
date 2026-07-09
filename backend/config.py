@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     # security posture isn't coupled to whether Sentry is configured.
     app_env: str = "development"
 
+    # Whether to trust the X-Forwarded-For header for client-IP resolution
+    # (rate-limit keying). OFF by default: XFF is client-controlled, so trusting
+    # it with no proxy in front lets an attacker rotate the header to bypass the
+    # brute-force / global throttles. Set TRUST_PROXY=1 ONLY when the app truly
+    # sits behind a reverse proxy that appends the real peer address.
+    trust_proxy: bool = False
+
     # ---------------------------------------------------------------------
     # Auth (multi-user prop-firm shell). bcrypt cost factor is 12 for
     # real use; tests drop it to 4 so signup-per-test stays fast.

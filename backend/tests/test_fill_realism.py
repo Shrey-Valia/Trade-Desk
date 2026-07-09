@@ -300,3 +300,57 @@ def test_reverse_reopen_crosses_the_spread(auth_client, session_factory, monkeyp
     assert rev.legs[0]["action"] == "sell"
     assert rev.legs[0]["entry_price"] == pytest.approx(1.0)
     s.close()
+
+
+def test_multileg_working_fill_capped_at_net_limit(
+    auth_client, session_factory, monkeypatch
+):
+    """recent-waves #7: a multi-leg NET-limit order must not fill THROUGH its
+    limit. Crossing the spread on each leg pushes the booked net past the mid
+    that triggered — the booked net must be CAPPED at the signed limit_price
+    (the multi-leg analog of the single-leg min(crossed, trigger))."""
+    import services.order_monitor as om
+
+    c = make_combine(auth_client, "50K")
+    legs = [
+        {"side": "call", "action": "buy", "strike": 100.0,
+         "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 0.0},
+        {"side": "call", "action": "sell", "strike": 105.0,
+         "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 0.0},
+    ]
+    # Debit vertical, net limit = 1.00 (debit positive).
+    tid = _seed(session_factory, c["id"], status="working",
+                order_type="limit", limit_price=1.00, _legs=legs)
+
+    # Frictionless per-leg mids: buy 2.00 / sell 1.00 → mid net = 1.00 == limit.
+    mids = {(100.0, "call"): 2.00, (105.0, "call"): 1.00}
+    monkeypatch.setattr(om, "_option_chain_rows", lambda sym: None)
+    monkeypatch.setattr(om, "_rate", lambda: 0.04)
+    monkeypatch.setattr(
+        om, "_leg_model_price",
+        lambda rows, leg, spot, now, rate: mids[(float(leg["strike"]), leg["side"])],
+    )
+    # WIDE two-sided quotes so crossing (buy→ask, sell→bid) blows the net to
+    # 2.5 − 0.5 = 2.00, well through the 1.00 limit without the cap.
+    def _lq(symbol, legs_):
+        return {
+            (100.0, "call"): types.SimpleNamespace(bid=1.5, ask=2.5, last=2.0),
+            (105.0, "call"): types.SimpleNamespace(bid=0.5, ask=1.5, last=1.0),
+        }
+    monkeypatch.setattr(fills, "live_leg_quotes", _lq)
+
+    with session_factory() as s:
+        t = s.get(Trade, tid)
+        # option_mark returns the mid net (== limit) so the trigger fires.
+        om._process_working_multi(
+            s, t, spot=100.0, now=datetime.now(timezone.utc),
+            option_mark=lambda tr, sp: 1.00,
+        )
+        s.commit()
+
+    with session_factory() as s:
+        t = s.get(Trade, tid)
+        assert t.status == "open"
+        px = {(float(l["strike"]), l["side"]): l["entry_price"] for l in t.legs}
+        booked_net = px[(100.0, "call")] - px[(105.0, "call")]  # buy − sell, base 1
+        assert booked_net <= 1.00 + 1e-6   # never filled through the limit

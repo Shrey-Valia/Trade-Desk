@@ -683,16 +683,18 @@ def _now():
 
 
 def _today_et_noon():
-    """Today at 12:00 ET — safely inside today's ET trading day on any
-    UTC offset. Returned as a UTC-aware datetime to match how the
-    journal POST path persists exit timestamps."""
-    from datetime import datetime, time
-    from zoneinfo import ZoneInfo
+    """An instant guaranteed INSIDE the current 5pm-PT trading day — the
+    midpoint of [trading_day_start(now), now]. Anchored to the same 5pm-PT
+    boundary the DLL/settlement engine uses so the seeded trade always
+    counts as 'today', regardless of wall-clock (a fixed 'noon ET' falls
+    into the PREVIOUS trading day once the clock passes 5pm PT). Returned
+    as a UTC-aware datetime, matching how the journal POST path persists
+    exit timestamps. Name kept for call-site readability."""
+    from datetime import datetime, timezone
 
-    et = ZoneInfo("America/New_York")
-    now_et = datetime.now(et)
-    noon_et = datetime.combine(now_et.date(), time(12, 0), tzinfo=et)
-    return noon_et.astimezone(ZoneInfo("UTC"))
+    now = datetime.now(timezone.utc)
+    start = trading_day_start(now)
+    return start + (now - start) / 2
 
 
 def _yesterday_et_noon():
@@ -700,12 +702,14 @@ def _yesterday_et_noon():
 
 
 def _days_ago_et_noon(days: int):
-    """N days ago at 12:00 ET — inside a COMPLETED 5pm-PT trading day, so a
-    forced resettlement counts it in the end-of-day balance basis."""
-    from datetime import datetime, time, timedelta
-    from zoneinfo import ZoneInfo
+    """An instant inside a COMPLETED prior 5pm-PT trading day (N boundaries
+    back), so a forced resettlement counts it in the end-of-day balance
+    basis and today's DLL window does NOT. Anchored to trading_day_start so
+    it's robust to wall-clock time-of-day."""
+    from datetime import datetime, timedelta, timezone
 
-    et = ZoneInfo("America/New_York")
-    day = datetime.now(et).date() - timedelta(days=days)
-    noon_et = datetime.combine(day, time(12, 0), tzinfo=et)
-    return noon_et.astimezone(ZoneInfo("UTC"))
+    now = datetime.now(timezone.utc)
+    start = trading_day_start(now)
+    # 6h after the boundary N days back = still inside that trading day,
+    # and strictly before the current day's start for days >= 1.
+    return start - timedelta(days=days) + timedelta(hours=6)

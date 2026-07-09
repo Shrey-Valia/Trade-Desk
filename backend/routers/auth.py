@@ -27,6 +27,7 @@ from services.auth import (
     revoke_session,
     set_session_cookie,
     verify_password,
+    verify_password_timing_safe,
 )
 from services.rate_limit import auth_limiter, enforce
 
@@ -108,8 +109,12 @@ def signin(
     user = session.execute(
         select(User).where(User.email == email)
     ).scalar_one_or_none()
-    # Identical message for unknown email and bad password.
-    if user is None or not verify_password(payload.password, user.password_hash):
+    # Identical message AND identical timing for unknown email vs bad password
+    # (the timing-safe verify burns equal bcrypt work on the user-is-None path).
+    ok = verify_password_timing_safe(
+        payload.password, user.password_hash if user else None
+    )
+    if user is None or not ok:
         raise HTTPException(401, "invalid email or password")
     set_session_cookie(response, create_session(session, user.id))
     return UserOut(id=user.id, email=user.email, display_name=user.display_name)

@@ -335,6 +335,31 @@ def set_dll_overrides(
     day_start = trading_day_start(now)
     existing = user.dll_override_entries
 
+    # For the tighten-only lock below: has the ACTIVE combine's realized day
+    # loss already reached a tier's personal limit TODAY? A limit that has been
+    # HIT can't be weakened until the next boundary even if it was SET on a
+    # prior day — otherwise a trader breaches the limit (monitor flattens +
+    # day-locks), then raises/removes it and trades on, defeating the whole
+    # point of the daily lock (Topstep: weakenings take effect the next day).
+    active = None
+    if user.active_combine_id is not None:
+        active = session.execute(
+            select(Combine).where(
+                Combine.id == user.active_combine_id,
+                Combine.user_id == user.id,
+                Combine.status != "archived",
+            )
+        ).scalar_one_or_none()
+
+    def _hit_today(tier_key: str, old_amount: float) -> bool:
+        if active is None or active.tier != tier_key:
+            return False
+        from services.combine_state import dll_used_today_for_combine
+
+        since = active.funded_epoch_at or active.eval_reset_at
+        used = dll_used_today_for_combine(session, active.id, now, since)
+        return used >= old_amount - 1e-9
+
     cleaned: dict[str, dict] = {}
     for tier_key, value in payload.overrides.items():
         if tier_key not in TIERS:
@@ -363,8 +388,11 @@ def set_dll_overrides(
             continue
         if stamped.tzinfo is None:
             stamped = stamped.replace(tzinfo=timezone.utc)
-        if stamped < day_start:
-            continue  # set on a prior trading day — freely editable
+        if stamped < day_start and not _hit_today(tier_key, old["amount"]):
+            # Set on a prior day AND not breached today → freely editable. A
+            # prior-day limit that HAS been hit today falls through to the
+            # weakening guards (can't be raised/removed/weakened until reset).
+            continue
         locked_msg = (
             f"{tier_key} daily loss limit is locked in for today — it can only"
             " be tightened until the next 5pm-PT reset"

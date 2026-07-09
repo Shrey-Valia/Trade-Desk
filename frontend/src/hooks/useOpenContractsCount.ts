@@ -2,6 +2,7 @@ import { useMemo } from "react";
 
 import { useAccountState } from "@/hooks/useAccountState";
 import { useTrades } from "@/hooks/useTrades";
+import { isActiveCombineTrade } from "@/lib/combineScope";
 import type { Trade } from "@/types/journal";
 
 /**
@@ -13,17 +14,22 @@ import type { Trade } from "@/types/journal";
  * enforcement. TradeTicket and RightChain's QuickOrder both size off this so
  * a one-click order can never exceed what the server would accept.
  *
- * Scope: the ACTIVE combine. Trades carry only their tier (the payload has
- * no per-trade combine id), so the count filters by the active combine's
- * tier — the closest client-side approximation; the server remains the
- * per-combine authority on open.
+ * Scope: the ACTIVE combine, BY combine id. Two combines can share a tier (a
+ * copy-trade follower pair is the normal case), so a tier filter would fold the
+ * other combine's open size into the cap. When the trade carries a combine_id
+ * (all do now), scope on it; fall back to tier only for legacy rows that
+ * predate the field. The server remains the per-combine authority on open.
  */
-export function sumOpenContracts(trades: Trade[], tier: string): number {
+export function sumOpenContracts(
+  trades: Trade[],
+  tier: string,
+  combineId?: number | null,
+): number {
   return trades
     .filter(
       (t) =>
         (t.status === "open" || t.status === "working") &&
-        (t.tier ?? "50K") === tier,
+        isActiveCombineTrade(t, combineId, tier),
     )
     .reduce(
       (sum, t) =>
@@ -51,9 +57,10 @@ export function useOpenContractsCount(): OpenContractsCount {
   // Default high until account state loads so the UI never wrongly blocks.
   const maxContracts = accountState?.max_contracts ?? 99;
   const activeTier = accountState?.active_tier ?? "50K";
+  const combineId = accountState?.combine_id;
   const openContracts = useMemo(
-    () => sumOpenContracts(tradesData?.trades ?? [], activeTier),
-    [tradesData, activeTier],
+    () => sumOpenContracts(tradesData?.trades ?? [], activeTier, combineId),
+    [tradesData, activeTier, combineId],
   );
   return {
     openContracts,

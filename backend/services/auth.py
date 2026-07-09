@@ -78,6 +78,30 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+# A throwaway bcrypt hash used to burn equivalent work on the "no such user"
+# login path, so response latency doesn't reveal whether an email is
+# registered. Cached per cost factor (tests drop bcrypt_rounds to 4) so it's
+# computed once and always matches a real verify's timing.
+_dummy_hash_cache: dict[int, str] = {}
+
+
+def verify_password_timing_safe(plain: str, hashed: str | None) -> bool:
+    """Password check that does equal work whether or not the account exists.
+
+    On the unknown-email path `hashed` is None; we still run a full bcrypt
+    verify against a dummy hash (at the current cost factor) and return False,
+    so a bad-password-for-a-real-user and a nonexistent-user take the same time
+    — closing the account-enumeration timing side-channel."""
+    if hashed is None:
+        dummy = _dummy_hash_cache.get(settings.bcrypt_rounds)
+        if dummy is None:
+            dummy = hash_password("timing-equalizer")
+            _dummy_hash_cache[settings.bcrypt_rounds] = dummy
+        verify_password(plain, dummy)
+        return False
+    return verify_password(plain, hashed)
+
+
 # -- sessions ----------------------------------------------------------------
 
 def _hash_token(raw: str) -> str:

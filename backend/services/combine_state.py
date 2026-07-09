@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from models.combine import Combine
@@ -139,6 +139,11 @@ def realized_sum_for_combine(
         select(Trade.realized_pnl)
         .where(Trade.combine_id == combine_id)
         .where(Trade.status == "closed")
+        # INTEGRITY: only server-priced execution fills move combine equity.
+        # Hand-keyed 'manual' journal rows carry client-supplied entry_price /
+        # timestamps / size that can't be verified, so they never count here
+        # (closes the manual-journal P&L fabrication channel).
+        .where(Trade.origin == "execution")
     )
     if since is not None:
         stmt = stmt.where(Trade.entry_date >= since)
@@ -158,6 +163,10 @@ def _closed_exits(
         .where(Trade.combine_id == combine_id)
         .where(Trade.status == "closed")
         .where(Trade.exit_date.is_not(None))
+        # Execution-only, same integrity boundary as realized_sum_for_combine:
+        # manual journal rows never touch the DLL window, per-day buckets, the
+        # consistency rule or the min-trading-days count.
+        .where(Trade.origin == "execution")
     )
     if since is not None:
         stmt = stmt.where(Trade.entry_date >= since)
@@ -221,16 +230,28 @@ def realized_by_trading_day(
 PAYOUT_DEBIT_TYPES: tuple[str, ...] = ("payout", "payout_requested")
 
 
-def payouts_booked(session: Session, combine_id: int) -> float:
+def payouts_booked(
+    session: Session, combine_id: int, since: datetime | None = None
+) -> float:
     """Sum of payout amounts already booked on this combine. A booked
     payout DEBITS the funded-stage balance (and with it the HWM basis and
-    the MLL fail test) — withdrawn money stops counting as equity."""
-    rows = session.execute(
-        select(CombineEvent.amount).where(
-            CombineEvent.combine_id == combine_id,
-            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
-        )
-    ).all()
+    the MLL fail test) — withdrawn money stops counting as equity.
+
+    `since` scopes the sum to the CURRENT funded epoch (funded_epoch_at). This
+    is essential across a fail → reset → re-pass → re-activate cycle: the reset
+    clears funded_epoch_at and re-seeds the HWM to the tier start, so a
+    prior-stint payout must NOT keep debiting the new stint's balance — else
+    the first flat-book read after paying to re-activate reads
+    `start − prior_payouts` and instantly terminates the account through the
+    MLL floor. Legacy pre-epoch payout rows count only when they postdate the
+    epoch, which the created_at filter gives for free."""
+    stmt = select(CombineEvent.amount).where(
+        CombineEvent.combine_id == combine_id,
+        CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
+    )
+    if since is not None:
+        stmt = stmt.where(CombineEvent.created_at >= since)
+    rows = session.execute(stmt).all()
     return float(sum((r[0] or 0.0) for r in rows))
 
 
@@ -247,6 +268,20 @@ def has_open_book(session: Session, combine_id: int) -> bool:
         ).scalar_one_or_none()
         is not None
     )
+
+
+def cancel_working_orders(session: Session, combine_id: int) -> int:
+    """Cancel every still-WORKING (unfilled) order on a combine — no P&L, they
+    never executed. Used by the AUTOMATIC archive paths (subscription period
+    end / refund) so a dead combine doesn't leave GTC zombie orders resting
+    forever. Caller owns the commit. Open positions are left to settle at
+    expiry via the normal settlement pass. Returns how many were cancelled."""
+    return session.execute(
+        update(Trade)
+        .where(Trade.combine_id == combine_id, Trade.status == "working")
+        .values(status="cancelled")
+        .execution_options(synchronize_session=False)
+    ).rowcount
 
 
 def record_event(
@@ -307,7 +342,9 @@ def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
     since = epoch if funded_stage else combine.eval_reset_at
 
     realized = realized_sum_for_combine(session, combine.id, since)
-    payouts = payouts_booked(session, combine.id) if funded_stage else 0.0
+    # Scope payout debits to the current funded epoch — prior-stint payouts
+    # must not debit a reset-and-re-passed account (see payouts_booked).
+    payouts = payouts_booked(session, combine.id, since=epoch) if funded_stage else 0.0
     balance = compute_balance(tier.starting_balance, realized, 0.0) - payouts
     dirty = False
 

@@ -13,6 +13,7 @@ a warning header, strategy-leg-count mismatch is a warning header).
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, time, timezone
 from typing import Literal
@@ -21,7 +22,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from calculations.journal_calendar import build_month, parse_month
@@ -42,11 +43,6 @@ from database import get_session
 from models.combine import Combine
 from models.trade import Trade
 from models.user import User
-# Read-only sibling-router import: the manual-journal create must enforce the
-# SAME aggregate open-contracts count the execution path uses, not a parallel
-# reimplementation that can drift. zerodte has no module-level import back
-# into this module, so the import is acyclic.
-from routers.zerodte import _open_contracts_for_combine
 from schemas.calendar_journal import (
     CalendarDayOut,
     CalendarMonthOut,
@@ -68,7 +64,6 @@ from schemas.journal import (
 from services.alpaca_client import get_quotes
 from services.auth import get_active_combine, get_current_user
 from services.cache import cache
-from services.combine_state import combine_snapshot
 from services.copy_trade import (
     mirror_cancel,
     mirror_close,
@@ -206,29 +201,15 @@ def create_trade(
     if warnings:
         response.headers["X-Journal-Warnings"] = " | ".join(warnings)
 
-    # SCALING CAP — the manual-journal path must not be a side door around
-    # the execution path's aggregate cap: a hand-journaled paper position is
-    # live risk on the combine exactly like an /api/zerodte/open fill (this
-    # endpoint always creates status='open'). Same count helper + error copy
-    # as zerodte's _require_tradeable. Non-paper entries are pure
-    # record-keeping of outside activity — uncapped.
-    if payload.is_paper:
-        contracts = sum(int(leg.contracts) for leg in payload.legs)
-        snap = combine_snapshot(session, combine)
-        open_now = _open_contracts_for_combine(session, combine.id)
-        if open_now + contracts > snap.max_contracts:
-            plural = "s" if snap.max_contracts != 1 else ""
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Scaling plan: max {snap.max_contracts} contract{plural} open "
-                    f"at once at your current balance — you already have {open_now} "
-                    f"open and requested {contracts}. Close a position or build "
-                    "equity to scale up; the limit re-evaluates at the 5pm-PT "
-                    "settlement."
-                ),
-            )
-
+    # INTEGRITY: this endpoint hand-keys a trade from client-supplied
+    # entry_price / entry_date / size that can't be server-verified, so every
+    # row it writes is tagged origin='manual' — RECORD-KEEPING that never moves
+    # combine equity, the DLL/MLL windows, the scaling cap, the profit target
+    # or payout eligibility (all of which sum over origin='execution' only).
+    # That closes the manual-journal P&L fabrication channel at the source, so
+    # no scaling-cap / risk gate is needed here — a manual row bears no combine
+    # risk. Real combine positions are opened through the server-priced
+    # /api/zerodte/open* path, which enforces the cap and risk gates.
     net = (
         payload.net_debit_credit
         if payload.net_debit_credit is not None
@@ -251,6 +232,7 @@ def create_trade(
         screenshot_url=payload.screenshot_url,
         tier=combine.tier,
         combine_id=combine.id,
+        origin="manual",          # record-keeping — never moves combine equity
     )
     trade.legs = [leg.model_dump(mode="json") for leg in payload.legs]
     trade.tags = list(payload.tags)
@@ -364,7 +346,17 @@ def update_trade(
         trade.status = "closed"
         # Exit fields are part of the CLOSE transition only — a decided trade's
         # settlement record can't be rewritten after the fact.
-        if payload.exit_date is not None:
+        #
+        # INTEGRITY: for an execution trade the exit timestamp is stamped from
+        # the SERVER clock, never the client. A client-chosen exit_date would
+        # let a trader move a loss into a different 5pm-PT trading day and dodge
+        # the DLL day-lock, forge distinct winning days for the payout gate, or
+        # satisfy the min-trading-days count in one sitting. Manual (record-
+        # keeping) rows don't touch combine accounting, so a logged exit_date is
+        # honored there.
+        if trade.origin == "execution":
+            trade.exit_date = datetime.now(timezone.utc)
+        elif payload.exit_date is not None:
             trade.exit_date = _as_utc(payload.exit_date)
         if payload.exit_underlying_price is not None:
             trade.exit_underlying_price = payload.exit_underlying_price
@@ -392,7 +384,10 @@ def update_trade(
     # Only on the actual transition — a metadata edit to an already-closed
     # trade must not re-run the cascade.
     if closing_now:
-        mirror_close(session, trade)
+        # Thread the FINAL SLICE just booked (this close covers only the
+        # remaining contracts after any prior scale-outs) so followers
+        # accumulate that slice instead of re-booking the lead's running total.
+        mirror_close(session, trade, final_slice_pnl=realized)
     return _to_out(trade)
 
 
@@ -446,15 +441,41 @@ def scale_out_trade(
     slice_realized = round(slice_unrealized - exit_commission - friction, 2)
 
     # Reduce every leg by qty (all legs scale together — a straddle closes qty
-    # of each side) and ACCUMULATE the slice's realized onto the running total.
+    # of each side).
     for leg in legs:
         leg["contracts"] = int(leg.get("contracts", 1) or 1) - payload.qty
-    trade.legs = legs
-    trade.realized_pnl = round((trade.realized_pnl or 0.0) + slice_realized, 2)
-    if payload.exit_underlying_price is not None:
-        trade.exit_underlying_price = payload.exit_underlying_price
     px = f"${payload.exit_underlying_price:.2f}" if payload.exit_underlying_price else "—"
-    trade.notes = (trade.notes or "") + f" · scaled out {payload.qty} @ {px}"
+    new_notes = (trade.notes or "") + f" · scaled out {payload.qty} @ {px}"
+
+    # RACE GUARD: write the slice through ONE conditional UPDATE claimed on
+    # status='open'. The recompute above spans a network window (live mark,
+    # option quotes, FRED); a bracket / liquidation full-close landing there
+    # would flip status to 'closed', and without this guard the scale-out would
+    # commit reduced legs + a doubled realized onto a CLOSED row (and cascade a
+    # phantom partial to followers). rowcount 0 → the position closed
+    # concurrently → 409. The realized ACCUMULATE is done in SQL (coalesce + …)
+    # so it's atomic against the concurrent booking rather than a stale
+    # read-modify-write.
+    values: dict = {
+        "legs_json": json.dumps(legs),
+        "realized_pnl": func.coalesce(Trade.realized_pnl, 0.0) + slice_realized,
+        "notes": new_notes,
+    }
+    if payload.exit_underlying_price is not None:
+        values["exit_underlying_price"] = payload.exit_underlying_price
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id == trade.id, Trade.status == "open")
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        session.rollback()
+        raise HTTPException(
+            409,
+            "position is no longer open — it was closed concurrently"
+            " (bracket / liquidation); refresh to see the booked close",
+        )
     session.commit()
     session.refresh(trade)
     # Copy-trade: cascade the partial close proportionally to follower copies.
@@ -546,11 +567,14 @@ def cancel_order(
 
 class OrderModify(BaseModel):
     """PATCH body for modifying a WORKING order (cancel/replace). Every field
-    optional, but at least one must be provided. Validated like placement:
-    prices must be positive; stop_price only applies while the order rests as
-    a stop_limit (so both trigger fields stay coherent)."""
+    optional, but at least one must be provided. `limit_price` is validated in
+    the handler, NOT here: a single-leg premium limit is positive, but a
+    multi-leg NET-premium limit is signed (debit positive / credit negative),
+    so a fixed `gt=0` bound both blocked tightening a credit order and let a
+    positive value silently flip a credit order to a debit → instant mis-fill.
+    stop_price only applies while the order rests as a stop_limit."""
 
-    limit_price: float | None = Field(default=None, gt=0)
+    limit_price: float | None = None
     stop_price: float | None = Field(default=None, gt=0)
     time_in_force: Literal["day", "gtc"] | None = None
 
@@ -587,6 +611,32 @@ def modify_order(
             "stop_price only applies to a stop_limit order — this order is"
             f" a {trade.order_type}",
         )
+
+    # limit_price sign/positivity, validated like placement:
+    #   * single-leg premium limit → strictly positive;
+    #   * multi-leg NET limit → signed (debit +, credit −), non-zero, and the
+    #     sign must MATCH the resting order's direction — a modify retightens a
+    #     credit/debit limit but can never flip the structure (which would fill
+    #     it at any price on the next tick, the exact thing a limit prevents).
+    if payload.limit_price is not None:
+        is_multi_net = len(trade.legs or []) > 1
+        if payload.limit_price == 0:
+            raise HTTPException(400, "limit_price must be non-zero")
+        if not is_multi_net and payload.limit_price < 0:
+            raise HTTPException(
+                400, "limit_price must be > 0 for a single-leg order"
+            )
+        if (
+            is_multi_net
+            and trade.limit_price is not None
+            and (payload.limit_price > 0) != (trade.limit_price > 0)
+        ):
+            raise HTTPException(
+                400,
+                "net limit sign must match the order's direction "
+                "(debit positive / credit negative) — a modify can't flip a "
+                "credit structure to a debit",
+            )
 
     values = order_modification_values(
         trade,
@@ -863,6 +913,21 @@ def delete_trade(
     session: Session = Depends(get_session),
 ) -> None:
     trade = _owned_trade(session, user, trade_id)
+    # INTEGRITY: an execution trade that is OPEN or CLOSED is part of the
+    # combine ledger — its realized_pnl is summed into balance / DLL / MLL /
+    # payout eligibility. Deleting it would silently erase a booked loss (heal
+    # a day-lock, un-fail an account, inflate a payout) or drop a live losing
+    # position out of risk. This is the same ledger the PATCH whitelist
+    # protects against un-closing; DELETE must honor it too. Working orders
+    # (never filled) and cancelled rows carry no P&L, and manual record-keeping
+    # rows never touch the combine — those stay freely deletable.
+    if trade.origin == "execution" and trade.status in ("open", "closed"):
+        raise HTTPException(
+            409,
+            "execution trades that are open or closed are permanent combine "
+            "ledger entries and cannot be deleted — they can only be closed. "
+            "Cancel a working order instead, or delete a manual journal entry.",
+        )
     session.delete(trade)
     session.commit()
 
@@ -1159,6 +1224,8 @@ def _to_out(trade: Trade) -> TradeOut:
         sl_premium_mult=trade.sl_premium_mult,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
         time_in_force=trade.time_in_force,  # type: ignore[arg-type]
+        combine_id=trade.combine_id,
+        origin=trade.origin,
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
         confidence=trade.confidence,

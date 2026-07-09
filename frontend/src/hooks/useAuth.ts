@@ -8,6 +8,7 @@ import {
   signup,
   type ChangePasswordInput,
 } from "@/lib/api";
+import { resetSessionStores } from "@/lib/session";
 import { toast } from "@/stores/toast";
 import type { SigninInput, SignupInput } from "@/types/auth";
 
@@ -44,10 +45,14 @@ export function useSignin() {
   return useMutation({
     mutationFn: (input: SigninInput) => signin(input),
     onSuccess: (user) => {
+      // A different user may be signing in. DROP the prior user's cached
+      // payloads outright (not just invalidate) so their trades / balances
+      // never flash for the new user before a refetch lands, and reset the
+      // session-scoped zustand stores (selection / journal scope). Clear first,
+      // then seed the new identity.
+      qc.clear();
+      resetSessionStores();
       qc.setQueryData(ME_KEY, user);
-      // A different user may have signed in — every cached per-user
-      // payload (trades, account state, stars) is suspect.
-      qc.invalidateQueries();
       toast.success(`Signed in as ${user.email}.`);
     },
   });
@@ -58,8 +63,11 @@ export function useSignout() {
   return useMutation({
     mutationFn: () => signout(),
     onSuccess: () => {
-      // Drop everything — all user data is stale after signout.
+      // Drop everything — all user data is stale after signout. Clear the
+      // query cache AND the session-scoped zustand stores (selection / journal
+      // scope) so nothing survives into the next user's session in this tab.
       qc.clear();
+      resetSessionStores();
     },
   });
 }

@@ -310,6 +310,11 @@ def _refund_payment(session: Session, payment: Payment, event_type: str) -> bool
     )
     if combine is not None:
         if combine.status != "archived":
+            # Cancel resting orders so a refunded/archived combine leaves no
+            # GTC zombie working orders (open positions settle at expiry).
+            from services.combine_state import cancel_working_orders
+
+            cancel_working_orders(session, combine.id)
             combine.status = "archived"
             user = session.get(User, combine.user_id)
             if user is not None and user.active_combine_id == combine.id:

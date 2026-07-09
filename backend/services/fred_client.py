@@ -158,6 +158,13 @@ def latest_dgs3mo_rate() -> float:
             payload = r.json()
     except Exception as exc:  # noqa: BLE001
         log.warning("FRED DGS3MO fetch failed: %s; using fallback %s", exc, DEFAULT_RATE_FALLBACK)
+        # NEGATIVE-CACHE the fallback for a short window. latest_dgs3mo_rate is
+        # called per-trade per-tick by the order monitor; without this, a FRED
+        # outage means every tick makes a fresh 10s httpx call on the scheduler
+        # thread, stretching a sweep toward minutes and delaying every bracket /
+        # liquidation check. 5 min balances "don't hammer a down dependency"
+        # against "recover reasonably quickly once FRED is back".
+        cache.set(cache_key, DEFAULT_RATE_FALLBACK, ttl_seconds=300)
         return DEFAULT_RATE_FALLBACK
 
     # FRED uses "." for missing observations on holidays; walk newest-first

@@ -36,8 +36,11 @@ def _archive_at_period_end(session, combine) -> None:
     non-archived one — written on the models so a job doesn't call a router."""
     from models.combine import Combine
     from models.user import User
-    from services.combine_state import record_event
+    from services.combine_state import cancel_working_orders, record_event
 
+    # Cancel any resting (unfilled) orders so a dead combine leaves no GTC
+    # zombie working orders. Open positions settle at expiry via the monitor.
+    cancel_working_orders(session, combine.id)
     combine.status = "archived"
     user = session.get(User, combine.user_id)
     if user is not None and user.active_combine_id == combine.id:
@@ -118,7 +121,7 @@ def renew_combines(session_factory=None, now: datetime | None = None) -> dict:
     if now is None:
         now = datetime.now(timezone.utc)
     session = session_factory()
-    renewed = archived = periods = seeded = failed = 0
+    renewed = archived = periods = seeded = failed = funded_frozen = 0
     try:
         combines = (
             session.execute(select(Combine).where(Combine.status != "archived"))
@@ -127,6 +130,20 @@ def renew_combines(session_factory=None, now: datetime | None = None) -> dict:
         )
         for combine in combines:
             try:
+                if combine.funded_activated_at is not None:
+                    # FUNDED (activation fee paid) — the account now trades firm
+                    # capital and the monthly EVAL subscription stops, matching
+                    # Topstep and the pricing model's own "no more monthly once
+                    # funded" premise. Freeze paid_through ahead so it's never
+                    # past-due and never archived for non-payment, and bank NO
+                    # reset credit off it. (A funded account that later FAILS is
+                    # a terminal combine; it isn't billed either.)
+                    if combine.paid_through is None or combine.paid_through <= now:
+                        combine.paid_through = now + timedelta(days=BILLING_PERIOD_DAYS)
+                        session.add(combine)
+                        funded_frozen += 1
+                    session.commit()
+                    continue
                 if combine.paid_through is None:
                     # Legacy row that predates the billing columns and missed
                     # the boot backfill — seed a fresh period, bill nothing.
@@ -151,6 +168,7 @@ def renew_combines(session_factory=None, now: datetime | None = None) -> dict:
             "archived": archived,
             "periods": periods,
             "seeded": seeded,
+            "funded_frozen": funded_frozen,
             "failed": failed,
             "total": len(combines),
         }

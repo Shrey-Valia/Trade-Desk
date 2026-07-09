@@ -11,6 +11,7 @@ import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { useTrades } from "@/hooks/useTrades";
 import { fetchTradeAnalytics } from "@/lib/api";
+import { isActiveCombineTrade } from "@/lib/combineScope";
 import { expectedMoveFromChain } from "@/lib/expectedMove";
 import { formatPercent, formatPrice } from "@/lib/formatters";
 import { isZeroDteTrade } from "@/types/journal";
@@ -237,20 +238,22 @@ function MetricPills() {
   const { data: account } = useAccountState();
   const { data: tradesData } = useTrades();
   const activeTier = (account?.active_tier ?? "50K") as TierKey;
+  const combineId = account?.combine_id;
 
   // Header UP&L is an account-level number: the live unrealized P&L
-  // summed across ALL open positions on the active tier, independent of
+  // summed across ALL open positions on the ACTIVE COMBINE, independent of
   // which row (if any) is selected on the chart. This is why the pill no
   // longer reads $0.00 just because nothing is selected. We deliberately
   // use live analytics (no scrubber override) — the theta scrubber is a
   // per-position what-if for the chart/payoff panel, not something that
-  // should move the account's balance readout.
+  // should move the account's balance readout. Scope by combine id (not tier)
+  // so a second same-tier combine's UPL never bleeds into this header.
   const openPositions = useMemo(
     () =>
       (tradesData?.trades ?? []).filter(
-        (t) => t.status === "open" && (t.tier ?? "50K") === activeTier,
+        (t) => t.status === "open" && isActiveCombineTrade(t, combineId, activeTier),
       ),
-    [tradesData, activeTier],
+    [tradesData, activeTier, combineId],
   );
   // One analytics query per open position. Keys/staleTime/poll cadence
   // mirror useTradeAnalytics so the cache is shared with the chart's

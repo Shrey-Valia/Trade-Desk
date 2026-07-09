@@ -250,6 +250,34 @@ def test_canceled_combine_archives_at_boundary(auth_client, session_factory):
     assert ended[0]["message"] == "Subscription ended — combine archived."
 
 
+def test_period_end_archive_cancels_resting_working_orders(auth_client, session_factory):
+    """recent-waves #10: the AUTOMATIC period-end archive must cancel resting
+    (unfilled) orders so a dead combine leaves no GTC zombie working orders."""
+    from datetime import datetime, timezone
+    from models.trade import Trade
+
+    c = make_combine(auth_client, "50K", name="Goner")
+    with session_factory() as s:
+        t = Trade(
+            symbol="SPY", strategy="long_call",
+            entry_date=datetime.now(timezone.utc), entry_underlying_price=100.0,
+            net_debit_credit=0.0, status="working", order_type="limit",
+            limit_price=1.0, is_paper=True, tier="50K",
+            combine_id=c["id"], legs_json="[]", origin="execution",
+        )
+        s.add(t)
+        s.commit()
+        tid = t.id
+    assert auth_client.post(f"/api/combines/{c['id']}/cancel").status_code == 200
+    _set_paid_through(session_factory, c["id"], _now() - timedelta(days=1))
+
+    summary = renew_combines(session_factory=session_factory)
+    assert summary["archived"] == 1
+    with session_factory() as s:
+        assert s.get(Combine, c["id"]).status == "archived"
+        assert s.get(Trade, tid).status == "cancelled"   # zombie order pulled
+
+
 def test_resume_before_boundary_renews_instead_of_archiving(
     auth_client, session_factory
 ):
@@ -489,3 +517,27 @@ def test_migration_adds_reset_credits_default_zero(monkeypatch):
         ).scalar_one()
     engine.dispose()
     assert credits == 0
+
+
+def test_funded_combine_is_not_billed(auth_client, session_factory):
+    """A FUNDED (activation-paid) combine stops paying the eval monthly and
+    banks no reset credit — the account trades firm capital now. Its
+    paid_through is frozen forward so it's never past-due, and renew_combines
+    reports it under `funded_frozen`, not `renewed`."""
+    c = make_combine(auth_client, "50K")  # 1 paid Payment (the purchase)
+    old = _now() - timedelta(days=1)
+    with session_factory() as s:
+        combine = s.get(Combine, c["id"])
+        combine.funded_activated_at = _now() - timedelta(days=10)
+        combine.paid_through = old
+        s.commit()
+    before_credits = _user(session_factory).reset_credits
+
+    summary = renew_combines(session_factory=session_factory)
+    assert summary["renewed"] == 0
+    assert summary["funded_frozen"] == 1
+    # No rebill Payment and no banked reset credit off the funded account.
+    assert len(_paid_payments(session_factory, c["id"])) == 1
+    assert _user(session_factory).reset_credits == before_credits
+    with session_factory() as s:
+        assert s.get(Combine, c["id"]).paid_through > _now()  # frozen forward

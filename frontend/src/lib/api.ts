@@ -108,6 +108,31 @@ function notifyUnauthorized(path: string, status: number): void {
 }
 // ── end session expiry ───────────────────────────────────────────────────────
 
+// Render a FastAPI error `detail` into a readable string. A plain HTTPException
+// detail is a string, but a pydantic 422 detail is a LIST of
+// `{loc, msg, type}` objects — `String(detail)` on that yields the useless
+// "[object Object]". Join the `msg`s (with the offending field) instead.
+function detailToMessage(detail: unknown): string | null {
+  if (detail == null) return null;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((e) => {
+        if (e && typeof e === "object" && "msg" in e) {
+          const loc = Array.isArray((e as { loc?: unknown[] }).loc)
+            ? (e as { loc: unknown[] }).loc.slice(1).join(".")
+            : "";
+          const msg = String((e as { msg: unknown }).msg);
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return typeof e === "string" ? e : null;
+      })
+      .filter(Boolean);
+    return parts.length ? parts.join("; ") : null;
+  }
+  return null;
+}
+
 // ── WS3: market-data graceful-degrade ───────────────────────────────────────
 // Typed error for the backend's 503 "market data unavailable" degraded
 // response (circuit breaker open / Alpaca rate-limited). The chart UI keys
@@ -141,8 +166,8 @@ async function request<S extends z.ZodTypeAny>(
     let body: unknown = null;
     try {
       body = await res.json();
-      const d = (body as { detail?: unknown })?.detail;
-      if (d) detail = String(d);
+      const msg = detailToMessage((body as { detail?: unknown })?.detail);
+      if (msg) detail = msg;
     } catch {
       /* non-JSON body */
     }
@@ -269,7 +294,8 @@ async function mutate<S extends z.ZodTypeAny>(
     let detail = `Request failed: ${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
-      if (body?.detail) detail = String(body.detail);
+      const msg = detailToMessage(body?.detail);
+      if (msg) detail = msg;
     } catch {
       /* non-JSON body */
     }
@@ -334,7 +360,8 @@ export const uploadTradeScreenshot = async (
     let detail = `Upload failed: ${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
-      if (body?.detail) detail = String(body.detail);
+      const msg = detailToMessage(body?.detail);
+      if (msg) detail = msg;
     } catch {
       /* non-JSON body */
     }

@@ -56,6 +56,24 @@ class Trade(Base):
         Integer, nullable=True, index=True
     )
 
+    # Provenance of the trade for combine ACCOUNTING purposes:
+    #   "execution" — filled through a server-priced path (zerodte /open*,
+    #     copy-trade mirror). Authoritative for the funded combine: balance,
+    #     DLL/MLL windows, scaling cap, profit target and payout eligibility
+    #     are all summed over execution trades only.
+    #   "manual"    — hand-keyed through the journal-entry modal
+    #     (POST /api/journal/trades). Pure record-keeping: the entry price,
+    #     entry/exit timestamps and size are client-supplied and CANNOT be
+    #     server-verified, so these rows never move combine equity. This is
+    #     the integrity boundary that closes the manual-journal P&L
+    #     fabrication channel (client entry_price of 0.01 on a deep-ITM leg,
+    #     backdated exit_date to forge winning days, etc.).
+    # Defaults to "execution" so every existing row and every Trade() built
+    # without an explicit origin keeps its historical accounting weight.
+    origin: Mapped[str] = mapped_column(
+        String(12), nullable=False, default="execution", server_default="execution"
+    )
+
     # Phase 2 (overnight polish) — metadata enrichment. All fields below
     # are NULLABLE and DEFAULTED so existing trade rows keep working
     # without migration; new trades opt in by filling them.

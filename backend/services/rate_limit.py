@@ -154,11 +154,24 @@ class TokenBucket:
 
 
 def _client_ip(request: Request) -> str:
-    # Honour the first hop of X-Forwarded-For when present (a reverse proxy
-    # sets it); fall back to the socket peer. Good enough for throttling.
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Best available client IP for throttle keying.
+
+    X-Forwarded-For is CLIENT-CONTROLLED: with no trusted proxy in front, an
+    attacker rotates the header on every request and lands each auth attempt
+    under a fresh key — defeating the brute-force / global throttles entirely.
+    So the header is honored ONLY when explicitly enabled (settings.trust_proxy
+    — set it when the app really is behind a proxy that appends the real peer),
+    and even then we take the RIGHT-most hop (the address the trusted proxy
+    saw), not the left-most spoofable one. Otherwise the socket peer is used.
+    """
+    from config import settings
+
+    if settings.trust_proxy:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            hops = [h.strip() for h in fwd.split(",") if h.strip()]
+            if hops:
+                return hops[-1]
     return request.client.host if request.client else "unknown"
 
 

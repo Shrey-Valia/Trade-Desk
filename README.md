@@ -344,7 +344,7 @@ Three fixed prop-firm-style combines, no customization (matches the real industr
 | 150K  | $150,000         | $4,500            | $145,500    | $4,500 |
 
 - **MLL (Maximum Loss Limit)**: trails the account's high-water mark by the tier's trailing distance and is **capped at the starting balance** (Topstep rule). Implemented in `services/account_tiers.compute_mll`. The HWM is monotonic per tier — switching tiers preserves each tier's progress independently.
-- **DLL (Daily Loss Limit)**: per-tier daily floor that resets at the next ET open. ~3% of starting balance, configurable per tier in Settings within a 1–10% band. Backend computes `dll_used` as the realized loss across trades closed since today's ET midnight; the frontend folds in any active position's negative UPL before painting the pill. Display-only — no enforcement on new opens.
+- **DLL (Daily Loss Limit)**: per-tier daily floor that resets at the **5pm-PT** trading-day boundary (the settlement clock the whole app uses). ~3% of starting balance, configurable per tier in Settings within a 1–10% band, with per-tier enforcement modes (`alert` / `liquidate` / `liquidate_block`) and an optional off toggle. Backend computes `dll_used` as the realized loss across trades closed in the current trading day; the frontend folds in any active position's negative UPL before painting the pill. **Enforced**: once realized day-loss exhausts the budget the account is day-locked and the open book is flattened (`services/order_monitor`).
 
 Switching tiers preserves the HWM of the tier you're leaving and clears the active position so cross-tier P&L can't contaminate the new tier's pill.
 
@@ -455,7 +455,7 @@ The `account_tiers.py` math (`compute_mll`, `compute_balance`, `update_hwm`, plu
 
 ## Design system
 
-Dark-tiered, navy + amber, Topstep-influenced. Tokens in [`frontend/src/lib/palette.js`](frontend/src/lib/palette.js) (with a TypeScript declaration at `palette.d.ts`).
+Dark-tiered **monochrome** (black & white chrome; color reserved for money — green gains / red losses). The earlier navy+amber and electric-cyan themes were retired. Tokens in [`frontend/src/lib/palette.js`](frontend/src/lib/palette.js) (with a TypeScript declaration at `palette.d.ts`) — the palette file is the source of truth for color.
 
 **Surface tiers** (depth)
 ```
@@ -498,12 +498,13 @@ These are the truthful gaps; they're not embarrassments but they shape what the 
 - **Indices unavailable**: SPX, NDX, RUT, VIX, DJX, OEX are cash-settled CBOE products with no Alpaca bars and no free-tier chain. They're filtered out of search + curated universe + popular slate; a defense-in-depth denylist in `services/symbol_catalog._INDEX_DENYLIST` catches them even if they ever drifted into the curated list.
 - **30-symbol search universe**: the prior 13K-symbol live Alpaca catalog was retired because 0DTE liquidity drops off a cliff outside this set. Expanding will be revisited once we have selection data telling us which symbols are actually getting picked.
 - **Drawing tools on the chart**: not implemented. A TradingView Lightweight Charts swap was attempted to inherit their drawing toolbar; the free TV widget doesn't expose price-axis coordinates to host code, so the swap was reverted. The on-disk artifact `screenshots/tradingview_phase1_attempt.png` is evidence of the exploration, not a live build.
-- **No DLL / MLL enforcement on open**: both are display-only. The trade-open path doesn't gate against them. This matches the v1 "monitored not enforced" posture and is intentional for now.
-- **No multi-user**: single-tenant, single-machine, single-DB-file. `user_id` columns are on `user_stars` and `ticker_selections` defaulting to 1 so adding auth later doesn't need a schema migration.
-- **No real OPRA**: paper trades only. The whole product is honest about being a paper terminal until profit-targets and a payout flow ship.
+- **No real OPRA**: paper trades only. The whole product is honest about being a paper terminal; profit targets, the funded stage, and the payout flow are all simulated on top of the indicative feed.
+- **Simulated payments**: the combine purchase / activation / reset / monthly-renewal money is simulated. A Stripe webhook + checkout path exists on the backend (signature-verified, idempotent) but the default purchase flow is the free placeholder — real charging is not wired on the frontend.
 - **Dormant ML signals**: backend routes (`/api/models`, `/api/signal`) and deps (`torch`, `catboost`, `scikit-learn`) are present but no trained artifacts ship; cells are not mounted in the active UI.
 
-`AUDIT.md` / `AUDIT_REPORT.md` / `VERIFY_BE_REPORT.md` at the repo root carry detailed verification artifacts for individual features.
+> **Enforcement, multi-user, and payouts now SHIP** (they were listed as gaps in earlier drafts of this README): the trade-open path is gated against the MLL/DLL/scaling-cap/day-lock (`services/order_monitor` auto-liquidates at the floor; `routers/zerodte._require_tradeable`); auth + sessions are real (`routers/auth`, per-user scoping throughout); and the funded stage + payout request/review desk are live (`routers/combines`, `jobs/settle_combines`). See the [Rules & enforcement](#) sections above.
+
+Historical verification artifacts for individual features live under [`docs/legacy/`](docs/legacy/).
 
 ---
 
@@ -512,12 +513,13 @@ These are the truthful gaps; they're not embarrassments but they shape what the 
 In rough order of priority for the full prop-firm product:
 
 1. **Real OPRA pricing** — upgrade the Alpaca tier or wire ORATS for chains; flip the volume-as-OI proxy off when real OI lands.
-2. **Profit targets + minimum trading days + payout flow** — the rest of the combine product. Today's app is the trading surface; the evaluation rules around it (e.g. "hit +$3K profit on the 50K combine over ≥5 trading days without violating MLL or DLL → funded account") are the remaining product spec.
-3. **Drawing tools on the chart** — horizontal levels, trendlines, ranges. Needs to live inside the lightweight-charts coordinate space, not a wrapper iframe.
-4. **DLL / MLL enforcement on open** — once the combine rules ship, the trade-open path needs to gate.
+2. **Real payments** — wire the existing Stripe checkout/webhook path into the frontend purchase flow so the (currently simulated) combine/activation/reset/renewal charges are real.
+3. **Email infrastructure** — forgot-password reset + email verification (change-password already ships; a sender is the missing piece).
+4. **Drawing tools on the chart** — horizontal levels, trendlines, ranges. Needs to live inside the lightweight-charts coordinate space, not a wrapper iframe.
 5. **Expanded ticker universe** — driven by what `ticker_selections` actually shows users picking; the algorithmic-popular feed flips on when there's enough signal.
 6. **Real-time stream over WS** — replace the 5s react-query polling on hot endpoints. Lower priority while we're on indicative.
-7. **Multi-user + auth** — the schema is ready; the routes need a real `_CURRENT_USER_ID` dependency instead of the hardcoded 1.
+
+> Profit targets, minimum trading days, DLL/MLL enforcement, the funded stage, the payout desk, and multi-user auth have all shipped and are no longer roadmap items.
 
 ---
 

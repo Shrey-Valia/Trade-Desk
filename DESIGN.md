@@ -2,11 +2,13 @@
 
 ## Intent
 
-This is the contract every visual change in this dashboard calibrates against. The product is a single-user, single-screen, single-session options trading workspace. The aesthetic is the Bloomberg Terminal archetype: graphite-black surface, IBM Plex Mono everywhere, hairline 1px borders, amber + cyan accents, zero decorative chrome. The currency is information per square inch.
+This is the contract every visual change in this dashboard calibrates against. The product is a single-user, single-screen, single-session options trading workspace. The aesthetic is the Bloomberg Terminal archetype: graphite-black surface, IBM Plex Mono everywhere, hairline 1px borders, **monochrome black-and-white chrome with color reserved for money** (green gains / red losses), zero decorative chrome. The currency is information per square inch.
 
 The dashboard does not have a marketing surface. It does not have an onboarding flow. It does not explain itself. Every pixel earns informational value or it gets cut.
 
-`palette.js` is the runtime source of truth for color. `tailwind.config.js` imports from `palette.js`. This file (`DESIGN.md`) is the source of truth for everything else — type ramp, density, chrome, anti-patterns, contrast requirements. If `palette.js` and this file disagree, this file wins and `palette.js` should be updated to match.
+[`frontend/src/lib/palette.js`](frontend/src/lib/palette.js) is the source of truth for **color** — `tailwind.config.js` imports from it, and if this file's hex tables disagree with `palette.js`, **`palette.js` wins** (the theme evolved to monochrome after the tables below were written, so the tables are historical). This file (`DESIGN.md`) is the source of truth for everything ELSE — type ramp, density, chrome, anti-patterns, contrast requirements.
+
+> ⚠️ **The "Palette" hex tables below are HISTORICAL** (they describe the retired amber→cyan era). Do not restore those colors from this doc. The live theme is monochrome; read `palette.js`.
 
 ---
 

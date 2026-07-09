@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from models.combine import Combine
@@ -242,16 +242,24 @@ def mirror_close(
     *,
     closed_qty: int | None = None,
     slice_pnl: float | None = None,
+    final_slice_pnl: float | None = None,
 ) -> int:
     """Cascade a lead trade's close to its still-open follower copies.
 
     Linked via Trade.copied_from_trade_id. Two modes:
 
-    * ``closed_qty is None`` (default) — FULL close. Each follower copy is
-      closed outright; its realized P&L is the lead's scaled by the contract
-      ratio (followers may hold fewer contracts after the multiplier + cap
-      clamp). This is the historical behaviour other callers
-      (zerodte.py / order_monitor.py / journal full-close) rely on.
+    * ``closed_qty is None`` (default) — FULL close. Each follower is settled
+      by STATUS: an OPEN follower is closed through a conditional
+      ``UPDATE ... WHERE status='open'`` that ACCUMULATES the lead's FINAL
+      SLICE (``final_slice_pnl``, scaled by the follower/lead contract ratio)
+      onto its existing realized — so a follower that was partially scaled out
+      earlier keeps those slices instead of having them overwritten, and a
+      concurrent monitor close is never double-booked (rowcount 0 → skip). A
+      still-WORKING follower (its own limit never filled) is CANCELLED with no
+      P&L — booking realized on an order that never executed would fabricate
+      combine equity. ``final_slice_pnl`` defaults to the lead's realized (the
+      whole P&L for a never-scaled position), so callers of a never-scaled
+      close need not pass it.
 
     * ``closed_qty`` set — PROPORTIONAL PARTIAL close (the WS-A scale-out
       seam). The lead reduced its leg contracts by ``closed_qty`` and
@@ -272,12 +280,13 @@ def mirror_close(
         return 0
 
     if closed_qty is None:
-        _cascade_full_close(lead_trade, followers)
+        _cascade_full_close(session, lead_trade, followers, final_slice_pnl)
     else:
         _cascade_partial_close(lead_trade, followers, closed_qty, slice_pnl)
-
-    for f in followers:
-        session.add(f)
+        # The partial path mutates ORM objects in place; the full path owns its
+        # writes via conditional UPDATE (below), so only add here.
+        for f in followers:
+            session.add(f)
     session.commit()
     log.info(
         "copy-trade: lead trade %s cascaded close (closed_qty=%s) to %d follower copies",
@@ -288,16 +297,53 @@ def mirror_close(
     return len(followers)
 
 
-def _cascade_full_close(lead_trade: Trade, followers: list[Trade]) -> None:
+def _cascade_full_close(
+    session: Session,
+    lead_trade: Trade,
+    followers: list[Trade],
+    final_slice_pnl: float | None = None,
+) -> None:
+    """Settle each follower of a FULL lead close by status, via race-guarded
+    conditional UPDATEs (never a bare ORM assignment that would clobber a
+    concurrent monitor close or overwrite accumulated scale-out slices)."""
     lead_contracts = _leg_contracts(lead_trade)
+    # Default to the lead's full realized — correct for a never-scaled position
+    # (its whole realized IS the final slice). Callers that full-close AFTER a
+    # scale-out thread the just-booked slice so earlier slices aren't re-booked.
+    lead_final = (
+        final_slice_pnl if final_slice_pnl is not None else lead_trade.realized_pnl
+    )
     for f in followers:
+        if f.status == "working":
+            # Never filled → cancel with NO P&L (mirror_cancel semantics). The
+            # status guard leaves a copy the monitor filled mid-cascade alone.
+            session.execute(
+                update(Trade)
+                .where(Trade.id == f.id, Trade.status == "working")
+                .values(status="cancelled")
+                .execution_options(synchronize_session=False)
+            )
+            session.expire(f)
+            continue
+        # OPEN follower → close, ACCUMULATING the scaled final slice. rowcount 0
+        # means a concurrent monitor close already booked it — skip.
         ratio = (_leg_contracts(f) / lead_contracts) if lead_contracts else 1.0
-        f.status = "closed"
-        f.exit_date = lead_trade.exit_date
-        f.exit_underlying_price = lead_trade.exit_underlying_price
-        if lead_trade.realized_pnl is not None:
-            f.realized_pnl = round(lead_trade.realized_pnl * ratio, 2)
-        f.close_reason = "copy"
+        values: dict = {
+            "status": "closed",
+            "close_reason": "copy",
+            "exit_date": lead_trade.exit_date,
+            "exit_underlying_price": lead_trade.exit_underlying_price,
+        }
+        if lead_final is not None:
+            slice_amt = round(lead_final * ratio, 2)
+            values["realized_pnl"] = func.coalesce(Trade.realized_pnl, 0.0) + slice_amt
+        session.execute(
+            update(Trade)
+            .where(Trade.id == f.id, Trade.status == "open")
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        session.expire(f)
 
 
 def _cascade_partial_close(
@@ -448,9 +494,18 @@ def mirror_cancel(session: Session, lead_trade: Trade) -> int:
     ).scalars().all()
     if not followers:
         return 0
+    # Conditional UPDATE guarded on status='working' (like mirror_modify): a
+    # copy the monitor FILLED between the read above and here (working→open)
+    # must NOT be overwritten to cancelled — its rowcount is 0 and it's skipped.
+    cancelled = 0
     for f in followers:
-        f.status = "cancelled"
-        session.add(f)
+        cancelled += session.execute(
+            update(Trade)
+            .where(Trade.id == f.id, Trade.status == "working")
+            .values(status="cancelled")
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        session.expire(f)
     session.commit()
-    log.info("copy-trade: lead trade %s cancelled %d follower copies", lead_trade.id, len(followers))
-    return len(followers)
+    log.info("copy-trade: lead trade %s cancelled %d follower copies", lead_trade.id, cancelled)
+    return cancelled

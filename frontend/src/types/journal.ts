@@ -32,6 +32,16 @@ export const TradeOutSchema = z.object({
   notes: z.string().nullable().optional(),
   /** Combine tier this trade was opened on (50K / 100K / 150K). */
   tier: z.string().default("50K"),
+  /**
+   * The combine instance this trade belongs to. Prefer this over `tier` for
+   * scoping live terminal state to the ACTIVE combine — two combines can share
+   * a tier (e.g. a copy-trade follower pair), so a tier filter would fold the
+   * other combine's positions in. nullable().optional() tolerates older
+   * payloads from before the backend echoed it.
+   */
+  combine_id: z.number().int().nullable().optional(),
+  /** Accounting provenance: "execution" (moves combine equity) vs "manual". */
+  origin: z.string().default("execution"),
   // Limit/stop orders + SL/TP brackets.
   order_type: OrderTypeSchema.default("market"),
   // Time-in-force for a working order ('gtc' rests; 'day' expires next session).

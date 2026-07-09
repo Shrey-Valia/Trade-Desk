@@ -1,8 +1,9 @@
+import logging
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import DateTime, create_engine, inspect, text
+from sqlalchemy import DateTime, create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.types import TypeDecorator
@@ -77,6 +78,34 @@ def _make_engine(url: str):
 
 
 engine = _make_engine(settings.database_url)
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_conn, _record) -> None:
+    """Reliability PRAGMAs for the single-file SQLite deploy.
+
+    The app runs several concurrent writers against one file — the 20s order
+    monitor, the settlement / renewal jobs, the watchlist refresh, and request
+    handlers. In SQLite's default rollback-journal mode a writer blocks all
+    readers, and past the driver's short default wait a losing connection
+    raises `database is locked`. WAL lets readers run concurrently with a
+    writer; `busy_timeout` makes a blocked writer WAIT (up to 5s) instead of
+    erroring; `synchronous=NORMAL` is the WAL-safe durability setting. No-op on
+    Postgres (guarded by dialect) and on in-memory test engines (which build
+    their own engine without this hook). `foreign_keys` is intentionally left
+    OFF here — enabling FK enforcement is a behavior change that needs its own
+    test pass, not a silent flip on a live DB.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    cur = dbapi_conn.cursor()
+    try:
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cur.close()
+
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
@@ -160,6 +189,11 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # Time-in-force for working orders. 'gtc' (default) preserves legacy
     # rest-indefinitely behavior; 'day' expires unfilled at the next session.
     ("time_in_force", "VARCHAR(8) NOT NULL DEFAULT 'gtc'"),
+    # Accounting provenance (see models/trade.py). Legacy rows backfill to
+    # 'execution' so they keep their combine-accounting weight; only the
+    # manual journal-entry path stamps 'manual' (record-keeping, excluded
+    # from combine equity). Additive — never triggers the tier-wipe branch.
+    ("origin", "VARCHAR(12) NOT NULL DEFAULT 'execution'"),
 ]
 
 
@@ -179,7 +213,22 @@ def _additive_migrate_trades() -> None:
             conn.execute(text(f"ALTER TABLE trades ADD COLUMN {name} {ddl}"))
         # Legacy $10K-paper-account rows pre-date the tier model and
         # would otherwise pollute the 50K combine's history. Wipe them.
+        #
+        # DANGER: this fires whenever `tier` is absent — which also happens if
+        # someone points the app at a PRE-tier backup. Log the row count LOUDLY
+        # before the irreversible delete so an accidental restore-then-boot is
+        # visible in the logs (and recoverable from the backup) instead of a
+        # silent history wipe.
         if needs_wipe:
+            count = conn.execute(text("SELECT COUNT(*) FROM trades")).scalar() or 0
+            if count:
+                logging.getLogger(__name__).warning(
+                    "MIGRATION: 'tier' column absent — treating this as a "
+                    "pre-tier database and DELETING all %d existing trade "
+                    "row(s). If this is a restored backup, stop the app and "
+                    "recover before it boots again.",
+                    count,
+                )
             conn.execute(text("DELETE FROM trades"))
         conn.commit()
 

@@ -574,6 +574,9 @@ def _open_contracts_for_combine(session: Session, combine_id: int) -> int:
             select(Trade).where(
                 Trade.combine_id == combine_id,
                 Trade.status.in_(("open", "working")),
+                # Only execution fills bear combine risk / consume the cap;
+                # manual journal rows are record-keeping.
+                Trade.origin == "execution",
             )
         )
         .scalars()
@@ -1488,7 +1491,9 @@ def _close_one(
     if not booked:
         return None
     session.flush()
-    mirror_close(session, trade)
+    # Cascade the just-booked slice (delta) to followers so a scaled-out lead's
+    # earlier slices aren't re-booked.
+    mirror_close(session, trade, final_slice_pnl=round((trade.realized_pnl or 0.0) - prior, 2))
     return round((trade.realized_pnl or 0.0) - prior, 2)
 
 

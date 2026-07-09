@@ -179,6 +179,31 @@ def test_dll_day_lock_flattens_open_positions(auth_client, session_factory):
     s.close()
 
 
+def test_day_lock_flatten_fails_combine_including_prior_scale_out_loss(
+    auth_client, session_factory
+):
+    """M7 regression: the day-lock flatten's MLL fail test must include a still-
+    open position's ALREADY-booked scale-out loss, not just the delta this close
+    realizes. Setup: a closed −1,600 loss day-locks the combine (balance 48,400,
+    still above the 48,000 floor), and the open position carries a prior −500
+    scale-out slice. Flattening it books ≈ −550 more → true realized 47,850 ≤
+    48,000 → FAILED. The old delta-only accrual dropped the −500 and left the
+    account wrongly ACTIVE."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    _seed(
+        session_factory, c["id"], status="closed",
+        realized_pnl=-1_600.0, exit_date=datetime.now(timezone.utc),
+    )
+    _seed(session_factory, c["id"], status="open", realized_pnl=-500.0)
+    summary = _run(session_factory, unrealized_for=lambda t, s: -50.0)
+    assert summary.get("liquidated", 0) == 1
+    s = session_factory()
+    assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
 def test_day_working_order_expires_into_a_later_session(auth_client, session_factory):
     """A DAY working order that survives unfilled into a later ET session is
     cancelled by the monitor; a GTC order rests indefinitely."""
@@ -585,6 +610,34 @@ def test_auto_liquidates_when_urpl_breaches_mll(auth_client, session_factory):
     s.close()
 
 
+def test_scale_out_realized_on_open_book_counts_toward_mll_gate(
+    auth_client, session_factory
+):
+    """M8 regression: a position scaled out of earlier holds its booked loss in
+    realized_pnl while status stays 'open'. That loss is in neither the closed
+    balance nor the remaining-contract URPL — so a 99%-scale-out loser would be
+    invisible to the liquidation gate until the final close. The gate must fold
+    the open book's realized in: −2,100 booked slice + a tiny −50 remaining URPL
+    drops the live balance to 47,850 ≤ 48,000 → force-close + FAILED, even
+    though URPL alone (49,950) is comfortably above the floor."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    # realized_pnl already booked on the still-open trade (a prior scale-out).
+    tid = _seed(session_factory, c["id"], status="open", realized_pnl=-2_100.0)
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: 99.9,
+        unrealized_for=lambda t, s: -50.0,  # remaining contracts barely underwater
+    )
+    assert summary["liquidated"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed" and t.close_reason == "liquidation"
+    assert s.get(Combine, c["id"]).outcome == "failed"
+    s.close()
+
+
 def test_no_liquidation_when_live_balance_above_mll(auth_client, session_factory):
     """A −1,000 open URPL leaves live balance 49,000 > 48,000 floor, and DLL
     used 1,000 < 1,500 budget → nothing is touched."""
@@ -964,6 +1017,33 @@ def test_settlement_books_short_put_itm_loss(auth_client, session_factory):
     s = session_factory()
     t = s.get(Trade, tid)
     assert t.realized_pnl == pytest.approx(-200.0 - 2 * settings.per_contract_fee, abs=0.01)
+    s.close()
+
+
+def test_settlement_stale_expiry_uses_expiry_date_close_not_live_spot(
+    auth_client, session_factory, monkeypatch
+):
+    """recent-waves #6 / backend-correctness #1: when the app was down across the
+    expiry's close (now is DAYS after expiry), settle at the EXPIRY DATE's daily
+    close — NOT today's drifted spot, which would corrupt intrinsic and the
+    booked realized P&L (and with it balance / MLL / DLL)."""
+    import services.order_monitor as om
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="open",
+                _legs=[_leg("call", "buy", 100.0, 1.0)])   # expiry 2026-01-16
+    # The true 4pm print on the expiry date was 105.0; today's spot drifted to 200.
+    monkeypatch.setattr(om, "_daily_close_for_date", lambda sym, day: 105.0)
+    now_days_later = datetime(2026, 1, 20, 21, 30, tzinfo=timezone.utc)  # Tue after
+    n = settle_expired_positions(
+        session_factory, now=now_days_later, spot_for=lambda s: 200.0
+    )
+    assert n == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.exit_underlying_price == 105.0     # expiry-date close, not the 200 spot
+    # intrinsic at 105 → +4.00/sh ×100 = +400 (NOT the +9,900 a 200 spot fabricates).
+    assert t.realized_pnl == pytest.approx(400.0 - 2 * settings.per_contract_fee, abs=0.01)
     s.close()
 
 

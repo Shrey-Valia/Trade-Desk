@@ -37,5 +37,5 @@ data/
 .DS_Store
 .gstack/
 
-# Local git worktrees (in-flight feature branches; not part of the main repo)
-.claude/worktrees/
+# Claude Code tooling / local worktrees (per-machine, not part of the repo)
+.claude/

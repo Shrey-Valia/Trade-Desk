@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQueries } from "@tanstack/react-query";
 
 import { fetchTradeAnalytics } from "@/lib/api";
+import { isActiveCombineTrade } from "@/lib/combineScope";
 import { AnnotatedChart, type PositionOverlay } from "@/components/stock/AnnotatedChart";
 import type { BracketOverlay } from "@/components/stock/PositionBracketsLayer";
 import { BottomStrip } from "@/components/positions/BottomStrip";
@@ -84,19 +85,26 @@ export function PositionsPage() {
   const elapsedHours = useActivePosition((s) => s.elapsedHours);
   const { data: account } = useAccountState();
   const activeTier = account?.active_tier ?? "50K";
-  const { data: tradesData } = useTrades();
+  const combineId = account?.combine_id;
+  // Poll the shared trades cache on the terminal (12s) so server-booked closes
+  // — stop-loss / take-profit / trailing / OCO / premium exits, DLL
+  // liquidations, and limit fills the order monitor books autonomously — reach
+  // the UI instead of a stopped-out position lingering as a live "ghost". The
+  // ["journal","trades",{}] key is shared, so header / risk hooks refresh too.
+  const { data: tradesData } = useTrades(undefined, { refetchInterval: 12_000 });
   const setBracketsMutation = useSetBrackets();
   const trades = useMemo(() => tradesData?.trades ?? [], [tradesData]);
-  // Filter active-trade resolution by the current tier — a trade
-  // opened on tier A must not surface as the active position on
-  // tier B's screen. Paired with useActivateCombine clearing the
-  // activePosition store, this gives a clean combine boundary.
+  // Filter active-trade resolution by the current COMBINE — a trade opened on
+  // combine A must not surface as the active position on combine B's screen.
+  // Scoping by combine id (not tier) keeps two same-tier combines distinct.
+  // Paired with useActivateCombine clearing the activePosition store, this
+  // gives a clean combine boundary.
   const activeTrade = useMemo(
     () =>
       trades.find(
-        (t) => t.id === activeTradeId && (t.tier ?? "50K") === activeTier,
+        (t) => t.id === activeTradeId && isActiveCombineTrade(t, combineId, activeTier),
       ) ?? null,
-    [trades, activeTradeId, activeTier],
+    [trades, activeTradeId, activeTier, combineId],
   );
   const isIntraday = useMemo(() => isZeroDteTrade(activeTrade), [activeTrade]);
 
@@ -151,13 +159,13 @@ export function PositionsPage() {
     // wrong tier's trade.
     if (!tradesData || !account) return;
     const mostRecentOpen = trades
-      .filter((t) => t.status === "open" && (t.tier ?? "50K") === activeTier)
+      .filter((t) => t.status === "open" && isActiveCombineTrade(t, combineId, activeTier))
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
     if (mostRecentOpen) {
       setActiveTradeId(mostRecentOpen.id);
     }
     didAutoSelectRef.current = true;
-  }, [tradesData, account, trades, activeTier, activeTradeId, setActiveTradeId]);
+  }, [tradesData, account, trades, activeTier, combineId, activeTradeId, setActiveTradeId]);
 
   // Orphan-leg recovery. Closing the active position (BottomStrip CLOSE)
   // sets activeTradeId = null. The once-per-mount auto-select above won't
@@ -196,10 +204,10 @@ export function PositionsPage() {
     // the ref first so a "no survivor" close doesn't keep re-evaluating.
     prevActiveIdRef.current = null;
     const survivor = trades
-      .filter((t) => t.status === "open" && (t.tier ?? "50K") === activeTier)
+      .filter((t) => t.status === "open" && isActiveCombineTrade(t, combineId, activeTier))
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
     if (survivor) setActiveTradeId(survivor.id);
-  }, [tradesData, account, trades, activeTier, activeTradeId, setActiveTradeId]);
+  }, [tradesData, account, trades, activeTier, combineId, activeTradeId, setActiveTradeId]);
 
   const analyticsQuery = useTradeAnalytics(activeTradeId, scrubberDte, {
     intraday: isIntraday,

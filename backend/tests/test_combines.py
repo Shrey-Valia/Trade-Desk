@@ -88,6 +88,29 @@ def test_archive_frees_a_slot(auth_client):
     )
 
 
+def test_archive_blocked_with_open_book(auth_client, session_factory):
+    """recent-waves #10: a combine with an OPEN position can't be archived — a
+    user near the MLL could otherwise archive to freeze the outcome, orphaning
+    the open book. Must 409 until the book is flat."""
+    from datetime import datetime, timezone
+    from models.trade import Trade
+
+    c = make_combine(auth_client, "50K")
+    s = session_factory()
+    t = Trade(
+        symbol="SPY", strategy="long_call",
+        entry_date=datetime.now(timezone.utc), entry_underlying_price=100.0,
+        net_debit_credit=0.0, status="open", is_paper=True, tier="50K",
+        combine_id=c["id"], legs_json="[]", origin="execution",
+    )
+    s.add(t)
+    s.commit()
+    s.close()
+    r = auth_client.post(f"/api/combines/{c['id']}/archive")
+    assert r.status_code == 409
+    assert "flat" in r.json()["detail"].lower() or "close" in r.json()["detail"].lower()
+
+
 def test_archiving_active_combine_repoints(auth_client):
     a = make_combine(auth_client, "50K", name="A")
     b = make_combine(auth_client, "100K", name="B")

@@ -169,6 +169,36 @@ def test_patch_close_409s_when_monitor_closed_first(auth_client, session_factory
     assert t.close_reason == "take_profit"
 
 
+def test_scale_out_409s_when_monitor_closed_first(auth_client, session_factory, monkeypatch):
+    """A scale-out claims its slice conditionally on status='open': a bracket /
+    liquidation full-close landing during its recompute window returns 409
+    instead of committing a doubled realized onto a now-closed row."""
+    c = make_combine(auth_client, "50K")
+    # 2 contracts so qty=1 is a legal partial (qty < held) and the recompute runs.
+    tid = _seed(
+        session_factory, c["id"], status="open",
+        _legs=[{"side": "call", "action": "buy", "strike": 100.0,
+                "expiry": _TODAY.isoformat(), "contracts": 2, "entry_price": 1.0}],
+    )
+
+    def recompute_and_lose(trade):
+        _flip_status(
+            session_factory, tid, "closed",
+            realized_pnl=55.0, close_reason="liquidation",
+        )
+        return 200.0
+
+    monkeypatch.setattr(journal_router, "_recompute_unrealized", recompute_and_lose)
+    res = auth_client.post(
+        f"/api/journal/trades/{tid}/scale-out", json={"qty": 1}
+    )
+    assert res.status_code == 409
+    t = _get(session_factory, tid)
+    assert t.realized_pnl == pytest.approx(55.0)     # monitor's booking intact
+    assert t.close_reason == "liquidation"
+    assert t.status == "closed"
+
+
 def test_journal_cancel_409s_when_fill_lands_first(auth_client, session_factory, monkeypatch):
     """A monitor fill landing between the cancel endpoint's read and its write
     wins the row: the cancel 409s instead of silently erasing the fill."""

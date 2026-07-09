@@ -4,6 +4,7 @@ import { keepPreviousData, useQueries } from "@tanstack/react-query";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useTrades } from "@/hooks/useTrades";
 import { fetchTradeAnalytics } from "@/lib/api";
+import { isActiveCombineTrade } from "@/lib/combineScope";
 import type { TierKey } from "@/types/account";
 import { isZeroDteTrade } from "@/types/journal";
 
@@ -69,13 +70,14 @@ export function useCombineStatus(): CombineStatus {
   const { data: account } = useAccountState();
   const { data: tradesData } = useTrades();
   const activeTier = (account?.active_tier ?? "50K") as TierKey;
+  const combineId = account?.combine_id;
 
   const openPositions = useMemo(
     () =>
       (tradesData?.trades ?? []).filter(
-        (t) => t.status === "open" && (t.tier ?? "50K") === activeTier,
+        (t) => t.status === "open" && isActiveCombineTrade(t, combineId, activeTier),
       ),
-    [tradesData, activeTier],
+    [tradesData, activeTier, combineId],
   );
   const positionAnalytics = useQueries({
     queries: openPositions.map((t) => {
@@ -120,8 +122,15 @@ export function useCombineStatus(): CombineStatus {
       : account?.status === "passed"
         ? "passed"
         : "active";
+  // Guard against a FALSE day-lock while account state is loading or 404s:
+  // with no account, dllBudget and dllUsedLive are both 0, so `0 >= 0` would
+  // otherwise flash (and permanently show, on 404) a red "DAY LOCK" banner and
+  // disable the ticket. Require a real account with a positive budget for the
+  // live-DLL branch; the backend's own `day_locked` flag still counts.
   const dayLocked =
-    !dllDisabled && ((account?.day_locked ?? false) || dllUsedLive >= dllBudget);
+    !!account &&
+    !dllDisabled &&
+    ((account.day_locked ?? false) || (dllBudget > 0 && dllUsedLive >= dllBudget));
 
   // PASS / profit-target progress. Passing PERSISTS on realized profit
   // (backend); live URPL only moves the displayed proximity.

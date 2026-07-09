@@ -199,35 +199,52 @@ class CombineEventOut(BaseModel):
     created_at: datetime
 
 
-def _payouts_requested(session: Session, combine_id: int) -> float:
+def _payouts_requested(
+    session: Session, combine_id: int, since: datetime | None = None
+) -> float:
     """Sum of payout amounts already requested on this combine — the debit
-    events only (PAYOUT_DEBIT_TYPES), never the approvals that echo them."""
-    rows = session.execute(
-        select(CombineEvent.amount).where(
-            CombineEvent.combine_id == combine_id,
-            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
-        )
-    ).all()
+    events only (PAYOUT_DEBIT_TYPES), never the approvals that echo them.
+
+    `since` scopes to the current funded epoch so a reset-and-re-passed account
+    starts with a clean `available` — prior-stint withdrawals don't suppress
+    new-stint payouts (mirrors payouts_booked's epoch scoping on the balance)."""
+    stmt = select(CombineEvent.amount).where(
+        CombineEvent.combine_id == combine_id,
+        CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
+    )
+    if since is not None:
+        stmt = stmt.where(CombineEvent.created_at >= since)
+    rows = session.execute(stmt).all()
     return float(sum((r[0] or 0.0) for r in rows))
 
 
 def _payouts_requested_by_combine(
-    session: Session, combine_ids: list[int]
+    session: Session, combines: list[Combine]
 ) -> dict[int, float]:
-    """Per-combine sum of requested payouts for MANY combines in ONE grouped
-    query — the batched form of `_payouts_requested`, used by list_combines to
-    kill its N+1 (was one sum query per card). Combines with no payout events
-    are simply absent from the map; callers default them to 0.0."""
-    if not combine_ids:
+    """Per-combine sum of requested payouts for MANY combines in ONE query —
+    the batched form of `_payouts_requested`, used by list_combines to kill its
+    N+1 (was one sum query per card). Each combine's sum is scoped to ITS OWN
+    funded epoch (funded_epoch_at → funded_activated_at), so a reset-and-
+    re-passed card doesn't carry prior-stint withdrawals. Combines with no
+    payout events (in-epoch) are simply absent from the map; callers default
+    them to 0.0."""
+    if not combines:
         return {}
+    combine_ids = [c.id for c in combines]
+    # The epoch lives on the combine row, so JOIN and filter in SQL — this stays
+    # ONE grouped query (no N+1). A NULL epoch (eval / funded-but-unactivated)
+    # counts every debit; otherwise only debits at/after the epoch count.
+    epoch = func.coalesce(Combine.funded_epoch_at, Combine.funded_activated_at)
     rows = session.execute(
         select(
             CombineEvent.combine_id,
             func.coalesce(func.sum(CombineEvent.amount), 0),
         )
+        .join(Combine, Combine.id == CombineEvent.combine_id)
         .where(
             CombineEvent.combine_id.in_(combine_ids),
             CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
+            (epoch.is_(None)) | (CombineEvent.created_at >= epoch),
         )
         .group_by(CombineEvent.combine_id)
     ).all()
@@ -240,9 +257,12 @@ def _to_out(
     snap = combine_snapshot(session, combine)
     # `requested` may be precomputed by a batched grouped query (list_combines)
     # to avoid a per-combine round-trip; fall back to the single-combine sum
-    # when called in isolation (purchase/rename/archive/etc.).
+    # when called in isolation (purchase/rename/archive/etc.). Scope to the
+    # current funded epoch so a re-passed account's available isn't suppressed
+    # by prior-stint withdrawals.
     if requested is None:
-        requested = _payouts_requested(session, combine.id)
+        epoch = combine.funded_epoch_at or combine.funded_activated_at
+        requested = _payouts_requested(session, combine.id, since=epoch)
     available = max(0.0, snap.payout_eligible - requested)
     return CombineOut(
         id=combine.id,
@@ -306,7 +326,7 @@ def list_combines(
     ).scalars().all()
     # N+1 fix: one grouped query for every combine's requested-payout sum,
     # instead of `_payouts_requested` firing once per card inside `_to_out`.
-    requested_by_id = _payouts_requested_by_combine(session, [c.id for c in combines])
+    requested_by_id = _payouts_requested_by_combine(session, list(combines))
     return CombinesOut(
         combines=[
             _to_out(session, c, requested=requested_by_id.get(c.id, 0.0))
@@ -468,6 +488,17 @@ def archive_combine(
 ) -> CombineOut:
     combine = _owned_combine(session, user, combine_id)
     if combine.status != "archived":
+        # Require a FLAT book before archiving (like reset/activate): an open
+        # losing position must be CLOSED first (booking its loss — which may
+        # fail the account) rather than frozen. Otherwise a user near the MLL
+        # could archive to dodge an in-flight breach, and the open positions
+        # would orphan on a frozen combine.
+        if has_open_book(session, combine.id):
+            raise HTTPException(
+                409,
+                "close all open positions and cancel working orders before "
+                "archiving this combine",
+            )
         combine.status = "archived"
         # Archiving the active combine repoints to the newest remaining
         # active one (or clears the selection).
@@ -507,6 +538,11 @@ def reset_combine(
     # other financial endpoints (purchase / payout / activation).
     enforce_user(financial_limiter, user.id, "reset")
     combine = _owned_combine(session, user, combine_id)
+    if combine.status == "archived":
+        # An archived combine is terminal — it can never trade again. Resetting
+        # it would burn a reset credit (or book a fee) and clear its recorded
+        # outcome, polluting the ledger. Cancel/resume/activate all guard this.
+        raise HTTPException(409, "an archived combine cannot be reset")
     if combine.outcome != "failed":
         raise HTTPException(409, "only a failed combine can be reset")
     if has_open_book(session, combine.id):
@@ -743,8 +779,11 @@ def request_payout(
         )
 
     # `available` is read UNDER the lock so a racing request can't have booked
-    # against the same balance without us seeing it.
-    available = max(0.0, snap.payout_eligible - _payouts_requested(session, combine.id))
+    # against the same balance without us seeing it. Scope prior requests to the
+    # current funded epoch (same basis as snap.payout_eligible).
+    available = max(
+        0.0, snap.payout_eligible - _payouts_requested(session, combine.id, since=epoch)
+    )
     if available <= 0:
         raise HTTPException(409, "no payout currently available")
     amount = available if payload is None or payload.amount is None else float(payload.amount)

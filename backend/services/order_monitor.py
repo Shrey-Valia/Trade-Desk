@@ -42,6 +42,7 @@ Three responsibilities each tick:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from datetime import date, datetime, time, timezone
 from math import gcd
@@ -499,6 +500,48 @@ def _settlement_unrealized_for(trade: Trade, settle_spot: float) -> float:
     return gross - _commission_side(trade)
 
 
+def _daily_close_for_date(symbol: str, day: date) -> float | None:
+    """The official daily-bar CLOSE for `symbol` on `day` (ET), or None. Used to
+    settle a STALE expired position at the right day's print rather than a
+    drifted live spot. Best-effort — any feed failure returns None."""
+    try:
+        from services.alpaca_client import get_bars
+
+        bars = get_bars(symbol, "1D")
+    except Exception:  # noqa: BLE001 — degraded feed → caller falls back
+        return None
+    if not bars:
+        return None
+    for b in bars:
+        ts = getattr(b, "timestamp", None)
+        if ts is not None and ts.astimezone(_ET).date() == day:
+            close = getattr(b, "close", None)
+            if close and float(close) > 0:
+                return float(close)
+    return None
+
+
+def _settlement_spot(trade, expiry: date, now: datetime, spot_cache, spot_for):
+    """Underlying to settle an expired position against.
+
+    SAME-DAY expiry (settled right after the bell): the live/last-good spot ≈
+    the 4pm print — reliable and used as before. A PAST-DATED expiry means the
+    app was down across that day's close, so today's spot would corrupt
+    intrinsic — settle at the expiry date's official daily CLOSE instead,
+    falling back to the live spot only if that bar is unavailable."""
+    if expiry >= now.astimezone(_ET).date():
+        return _liquidation_spot(trade.symbol, spot_for, now, spot_cache)
+    close = _daily_close_for_date(trade.symbol, expiry)
+    if close is not None:
+        return close
+    log.warning(
+        "settlement: no daily close for %s on %s — falling back to live spot "
+        "(intrinsic may drift from the true expiry print)",
+        trade.symbol, expiry,
+    )
+    return _liquidation_spot(trade.symbol, spot_for, now, spot_cache)
+
+
 def settle_expired_positions(
     session_factory=None, *, now: datetime, spot_for=None
 ) -> int:
@@ -540,23 +583,32 @@ def settle_expired_positions(
                 expiry = _latest_leg_expiry(trade)
                 if expiry is None or now_et < _session_close_for_date(expiry):
                     continue  # no expiry data, or the last leg hasn't expired
-                # Settle against the 4pm print: the live spot if the feed is
-                # warm, else the last-known-good fallback. No price ⇒ defer to a
-                # later tick (never fabricate a settlement value).
-                spot = _liquidation_spot(trade.symbol, spot_for, now, spot_cache)
+                # Settle against the EXPIRY DATE's 4pm print: the live/last-good
+                # spot for a same-day expiry (≈ the print right after the bell),
+                # or the expiry date's official daily close for a stale position
+                # (downtime spanned that close). No price ⇒ defer to a later tick
+                # (never fabricate a settlement value).
+                spot = _settlement_spot(trade, expiry, now, spot_cache, spot_for)
                 if spot is None:
                     log.warning(
                         "settlement: no spot for %s (trade %s) — deferring",
                         trade.symbol, trade.id,
                     )
                     continue
+                prior_realized = trade.realized_pnl or 0.0
                 if not _book_close(
                     session, trade, spot, now, _settlement_unrealized_for, "expiry"
                 ):
                     continue  # closed concurrently — never settle twice
                 trade.notes = (trade.notes or "") + " · settled at expiry"
                 session.commit()
-                mirror_close(session, trade)  # cascade to follower copies
+                # Cascade to follower copies, threading only the slice THIS close
+                # booked (delta) so a scaled-out lead's earlier slices aren't
+                # re-booked onto followers.
+                mirror_close(
+                    session, trade,
+                    final_slice_pnl=(trade.realized_pnl or 0.0) - prior_realized,
+                )
                 settled += 1
             except Exception:  # noqa: BLE001 — isolate one bad trade from the rest
                 session.rollback()
@@ -781,8 +833,17 @@ def _flatten_book(
             continue  # closed concurrently — never double-book
         t.notes = (t.notes or "") + note
         session.flush()
-        mirror_close(session, t)
-        realized_base += (t.realized_pnl or 0.0) - prior_realized
+        # Cascade threading only the slice THIS close booked (delta) so a
+        # scaled-out lead's earlier slices aren't re-booked onto followers.
+        mirror_close(session, t, final_slice_pnl=(t.realized_pnl or 0.0) - prior_realized)
+        # Add the FULL post-close realized, not just this close's delta. A
+        # position scaled out of earlier holds its booked slice(s) in
+        # realized_pnl while still OPEN — so that slice is in neither
+        # start_balance (closed-trades only) nor the delta. Adding the delta
+        # dropped it, floating the flatten's realized balance above the true
+        # figure and letting an MLL breach escape the fail test. Mirrors the
+        # worst-first loop's `realized_base += t.realized_pnl`.
+        realized_base += t.realized_pnl or 0.0
     return realized_base
 
 
@@ -877,6 +938,21 @@ def _auto_liquidate(
             # DLL branch active unless the owner disabled it (Step 3 toggle).
             dll_active = _combine_dll_enabled(session, combine)
 
+            # SCALE-OUT REALIZED on the STILL-OPEN book. A partial close books
+            # its slice onto trade.realized_pnl while the row stays status=open,
+            # so that P&L is in neither snap.balance (closed-trades only) nor
+            # `urpl` (which prices only the REMAINING contracts). Left out, a
+            # trader could scale 99% out of a deep loser and the locked-in loss
+            # would be invisible to this gate until the final close. Fold it in:
+            #   - MLL floor tests against snap.balance + open_realized
+            #   - the loss portion counts toward the day's DLL like any realized
+            #     loss (gains don't reduce it — the loss-only DLL convention).
+            open_realized = sum(float(t.realized_pnl or 0.0) for t in positions)
+            balance_base = snap.balance + open_realized
+            gate_snap = dataclasses.replace(
+                snap, dll_used=snap.dll_used + max(0.0, -open_realized)
+            )
+
             # DLL DAY-LOCK / PROFIT-LOCK FLATTEN (Topstep semantics: lock
             # engaged → flatten). Once the REALIZED day-loss alone exhausts
             # the blocking budget the combine is day-locked and
@@ -917,7 +993,7 @@ def _auto_liquidate(
                 session.commit()
                 continue
 
-            if not _breaches_floor(snap, snap.balance, urpl, dll_active):
+            if not _breaches_floor(gate_snap, balance_base, urpl, dll_active):
                 # No FIRM floor breach this tick — evaluate the PERSONAL
                 # (junior) triggers instead: the daily profit target and the
                 # alert / liquidate DLL override modes. The firm tier-default
@@ -931,7 +1007,7 @@ def _auto_liquidate(
 
             # The breach reason at pass start (MLL takes precedence — it's the
             # permanent floor). Tagged on every cut trade for a legible ledger.
-            mll_breach = (snap.balance + urpl) <= snap.mll
+            mll_breach = (balance_base + urpl) <= snap.mll
             reason_note = (
                 "MLL floor breached" if mll_breach else "daily loss limit exhausted"
             )
@@ -947,10 +1023,17 @@ def _auto_liquidate(
             # the still-OPEN loss against the pass-start realized day-loss, so
             # cutting the worst bleeder CAN bring open exposure back under the
             # daily budget while a net-winning remainder survives.
-            realized_base = snap.balance
+            #
+            # It starts at balance_base (= snap.balance + the open book's already-
+            # booked scale-out realized). Because that prior realized is already
+            # in the base, each close adds only its DELTA — the realized booked by
+            # THIS close of the remaining contracts — so a scale-out slice is
+            # never double-counted.
+            realized_base = balance_base
             remaining_urpl = urpl
             for t in ordered:
                 spot, unreal = marks[t.id]
+                prior_realized = float(t.realized_pnl or 0.0)
                 if not _book_close(session, t, spot, now, unrealized_for, "liquidation"):
                     # Closed concurrently — its URPL already left the open book;
                     # the concurrent booking isn't ours to count.
@@ -961,11 +1044,11 @@ def _auto_liquidate(
                     + f" · auto-liquidated worst-first ({reason_note})"
                 )
                 session.flush()
-                mirror_close(session, t)
+                mirror_close(session, t, final_slice_pnl=(t.realized_pnl or 0.0) - prior_realized)
                 liquidated += 1
-                realized_base += t.realized_pnl or 0.0
+                realized_base += float(t.realized_pnl or 0.0) - prior_realized
                 remaining_urpl -= unreal
-                if not _breaches_floor(snap, realized_base, remaining_urpl, dll_active):
+                if not _breaches_floor(gate_snap, realized_base, remaining_urpl, dll_active):
                     break
 
             from services.combine_state import record_event
@@ -976,7 +1059,7 @@ def _auto_liquidate(
             # CLEARED the breach (e.g. a DLL breach where a net-winning remainder
             # survives), the combine stays ACTIVE and keeps those positions open.
             still_breached = _breaches_floor(
-                snap, realized_base, remaining_urpl, dll_active
+                gate_snap, realized_base, remaining_urpl, dll_active
             )
             # passed → failed is a legal terminal transition: a FUNDED account
             # that liquidates through its floor is terminated, not immortal.
@@ -1288,31 +1371,53 @@ def _process_working_multi(
     for leg in legs:
         base = gcd(base, max(1, int(leg.get("contracts", 1) or 1)))
     base = max(1, base)
+    limit = float(trade.limit_price)
     net_1x = option_mark(trade, spot) / base
-    if net_1x > float(trade.limit_price):
+    if net_1x > limit:
         return None  # debit still too rich / credit still too thin
 
     quotes = fills.live_leg_quotes(trade.symbol, legs)
-    # Chain rows + rate resolved lazily — only when a leg has no live quote.
-    rows = None
-    rate = 0.0
-    rows_resolved = False
-    prices: list[float] = []
+    # Resolve the chain + rate up front — needed for each leg's MID (the
+    # frictionless model/chain mark, the same _leg_model_price option_mark uses
+    # for the trigger) so we can cap the booked net at the limit.
+    rows = _option_chain_rows(trade.symbol)
+    rate = _rate()
+    mids: list[float] = []       # frictionless per-leg mid (per share)
+    crossed: list[float] = []    # spread-crossed per-leg fill (per share)
+    sign_contracts: list[tuple[float, int]] = []
     for leg in legs:
         contracts = int(leg.get("contracts", 1) or 1)
+        sign = 1.0 if leg.get("action") == "buy" else -1.0
+        mid = max(0.01, float(_leg_model_price(rows, leg, spot, now, rate)))
         leg_q = fills.leg_quote(quotes, leg)
-        px = (
+        cx = (
             fills.pick_fill_price(leg_q, leg.get("action", "buy"), contracts)
             if leg_q is not None
             else 0.0
         )
-        if px <= 0:
-            if not rows_resolved:
-                rows = _option_chain_rows(trade.symbol)
-                rate = _rate()
-                rows_resolved = True
-            px = _leg_model_price(rows, leg, spot, now, rate)
-        prices.append(max(0.01, round(float(px), 4)))
+        cx = mid if cx <= 0 else float(cx)   # no live quote → fill at the mid
+        mids.append(mid)
+        crossed.append(max(0.01, cx))
+        sign_contracts.append((sign, contracts))
+
+    # CAP THE BOOKED NET AT THE LIMIT. Crossing the spread pushes each leg
+    # adversely (buys up, sells down), so the crossed net is always ≥ the mid
+    # net that triggered — and can exceed the limit, filling the trader THROUGH
+    # their own limit (a debit paid above limit / a credit collected below it).
+    # The single-leg path caps at min(crossed, trigger); the multi-leg analog is
+    # to land the booked net AT the limit: scale every leg's slippage back
+    # toward its mid by one factor k so Σ sign·contracts·price / base == limit.
+    def _net_1x(pl: list[float]) -> float:
+        return sum(s * c * p for (s, c), p in zip(sign_contracts, pl)) / base
+
+    crossed_net = _net_1x(crossed)
+    if crossed_net > limit:
+        mid_net = _net_1x(mids)          # ≤ limit (the trigger condition)
+        denom = crossed_net - mid_net
+        k = 0.0 if denom <= 1e-12 else max(0.0, min(1.0, (limit - mid_net) / denom))
+        prices = [max(0.01, round(m + k * (c - m), 4)) for m, c in zip(mids, crossed)]
+    else:
+        prices = [max(0.01, round(c, 4)) for c in crossed]
     return _commit_fill(session, trade, prices, spot, now)
 
 

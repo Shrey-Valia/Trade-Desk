@@ -45,7 +45,7 @@ class TradeLeg(BaseModel):
     action: LegAction
     strike: float = Field(gt=0)
     expiry: DateType
-    contracts: int = Field(gt=0, default=1)
+    contracts: int = Field(gt=0, le=1000, default=1)   # sane per-leg ceiling
     entry_price: float = Field(ge=0)        # per-contract premium
 
     @field_validator("strike")
@@ -194,6 +194,13 @@ class TradeOut(BaseModel):
     # Combine-tier introduction. Trades tagged with the tier they were
     # opened on; older rows (none exist post-wipe) default to "50K".
     tier: str = "50K"
+    # The combine instance this trade belongs to — lets the client scope live
+    # terminal state to the ACTIVE combine instead of guessing by tier (two
+    # combines can share a tier, e.g. a copy-trade follower pair).
+    combine_id: int | None = None
+    # Accounting provenance: "execution" (server-priced fill, moves combine
+    # equity) vs "manual" (hand-keyed journal record-keeping, does not).
+    origin: str = "execution"
     # Phase 2 enrichment.
     tags: list[str] = Field(default_factory=list)
     mistake_tags: list[str] = Field(default_factory=list)

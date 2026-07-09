@@ -58,6 +58,28 @@ def _reset_auth_rate_limiter():
     financial_limiter.max_attempts = prior_financial
 
 
+@pytest.fixture(autouse=True)
+def _no_live_option_quotes(monkeypatch):
+    """Default the live two-sided option-quote seam to empty so no test
+    silently reaches the Alpaca network. With no quotes, `close_friction`
+    returns 0 — the deterministic baseline the recompute tests assume.
+
+    Tests that exercise spread-crossing friction (test_fill_realism,
+    test_orders_api) monkeypatch this same seam themselves; because their
+    patch runs after this autouse fixture, theirs wins. Patched in BOTH
+    binding sites: services.fills (order_monitor's module-attr call +
+    close_friction) and routers.zerodte (which imports it under an alias)."""
+
+    def _empty(symbol, legs):
+        return {}
+
+    monkeypatch.setattr("services.fills.live_leg_quotes", _empty)
+    try:
+        monkeypatch.setattr("routers.zerodte._live_leg_quotes", _empty)
+    except AttributeError:  # router not imported in this test's graph
+        pass
+
+
 @pytest.fixture
 def db_engine():
     # Import models so they register on Base.metadata before create_all.

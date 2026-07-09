@@ -244,9 +244,35 @@ def test_scale_out_imbalanced_legs_guards_on_smallest_leg(client):
 
 
 def test_delete_removes_trade(client):
+    # A manual journal entry is record-keeping (no combine ledger weight) → deletable.
     tid = client.post("/api/journal/trades", json=_trade_payload()).json()["id"]
     assert client.delete(f"/api/journal/trades/{tid}").status_code == 204
     assert client.get(f"/api/journal/trades/{tid}").status_code == 404
+
+
+def test_delete_blocks_execution_ledger_trade(auth_client, session_factory):
+    """M2 regression: an EXECUTION trade that is closed is a permanent combine
+    ledger entry (its realized_pnl is summed into balance / DLL / MLL / payout).
+    Deleting it would erase a booked loss — heal a day-lock, un-fail an account,
+    inflate a payout — so DELETE must 409 and the row must survive."""
+    from models.trade import Trade
+
+    c = make_combine(auth_client, "50K")
+    s = session_factory()
+    t = Trade(
+        symbol="SPY", strategy="long_call",
+        entry_date=datetime.now(timezone.utc), entry_underlying_price=100.0,
+        net_debit_credit=0.0, status="closed", is_paper=True, tier="50K",
+        combine_id=c["id"], realized_pnl=-300.0,
+        exit_date=datetime.now(timezone.utc), exit_underlying_price=99.0,
+        legs_json="[]", origin="execution",
+    )
+    s.add(t)
+    s.commit()
+    tid = t.id
+    s.close()
+    assert auth_client.delete(f"/api/journal/trades/{tid}").status_code == 409
+    assert auth_client.get(f"/api/journal/trades/{tid}").status_code == 200
 
 
 def test_patch_edits_self_applied_tags(client):
@@ -587,14 +613,15 @@ def test_intraday_analytics_prices_each_leg_at_its_own_expiry(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Scaling cap — the manual-journal side door
+# Manual journal entries are RECORD-KEEPING — never combine risk
 # ---------------------------------------------------------------------------
 #
-# POST /api/journal/trades creates OPEN paper positions on the combine, so it
-# must clear the same aggregate open-contracts cap the execution path
-# (/api/zerodte/open) enforces — otherwise a trader hand-journals a 50-lot
-# straight past the scaling plan. 50K tier cap = 5 contracts, counted as the
-# SUM across all legs (per-contract-per-leg, matching the execution path).
+# POST /api/journal/trades hand-keys a trade from client-supplied entry_price /
+# timestamps / size that can't be server-verified. Every such row is tagged
+# origin='manual' and is EXCLUDED from combine equity, the DLL/MLL windows, the
+# scaling cap and payout eligibility — closing the manual-journal P&L
+# fabrication channel at the source. Real combine positions are opened through
+# the server-priced /api/zerodte/open* path, which owns the cap + risk gates.
 
 
 def _sized_legs(call_contracts: int, put_contracts: int) -> list[dict]:
@@ -606,61 +633,45 @@ def _sized_legs(call_contracts: int, put_contracts: int) -> list[dict]:
     ]
 
 
-def test_journal_create_over_cap_422(client):
-    # 4 + 2 = 6 contracts > the 50K cap of 5 — same error copy as /open.
+def test_journal_create_is_uncapped_and_tagged_manual(client):
+    # A hand-journaled entry way over any tier's scaling cap still succeeds —
+    # it bears no combine risk — and comes back tagged origin='manual'.
     res = client.post(
-        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(4, 2))
+        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(40, 20))
     )
-    assert res.status_code == 422
-    detail = res.json()["detail"]
-    assert "Scaling plan: max 5 contracts" in detail
-    assert "requested 6" in detail
+    assert res.status_code == 201, res.text
+    assert res.json()["origin"] == "manual"
 
 
-def test_journal_create_at_cap_ok_then_aggregate_blocks(client):
-    # 3 + 2 = 5 = exactly at the cap → allowed.
-    res = client.post(
-        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(3, 2))
-    )
-    assert res.status_code == 201
-    # The cap is an AGGREGATE across the combine's open book — even a
-    # 1-contract journal entry is blocked while 5 are already open.
-    one_lot = _trade_payload(
-        strategy="long_call",
-        legs=[{"side": "call", "action": "buy", "strike": 230,
-               "expiry": _future_expiry(), "contracts": 1, "entry_price": 6.20}],
-    )
-    res2 = client.post("/api/journal/trades", json=one_lot)
-    assert res2.status_code == 422
-    assert "already have 5 open and requested 1" in res2.json()["detail"]
-
-
-def test_journal_closed_entries_free_the_cap(client, mock_quote):
-    # Closed trades are record-keeping, not open risk: filling the cap, then
-    # closing, frees the full budget for the next journal entry.
+def test_manual_journal_pnl_excluded_from_combine_state(client, mock_quote):
+    # THE FABRICATION GUARD: open a deep-ITM leg at a fake $0.01 basis, close
+    # it, and confirm the (large, fabricated) realized P&L never reaches the
+    # combine balance / DLL — because manual rows are record-keeping.
     mock_quote(230.0)
-    tid = client.post(
-        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(3, 2))
-    ).json()["id"]
+    created = client.post(
+        "/api/journal/trades",
+        json=_trade_payload(
+            strategy="long_call",
+            legs=[{"side": "call", "action": "buy", "strike": 1,
+                   "expiry": _future_expiry(), "contracts": 5, "entry_price": 0.01}],
+        ),
+    ).json()
     close = client.patch(
-        f"/api/journal/trades/{tid}",
-        json={
-            "status": "closed",
-            "exit_date": datetime.now(timezone.utc).isoformat(),
-            "exit_underlying_price": 230.0,
-        },
+        f"/api/journal/trades/{created['id']}",
+        json={"status": "closed", "exit_underlying_price": 230.0},
     )
     assert close.status_code == 200
-    res = client.post(
-        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(3, 2))
-    )
-    assert res.status_code == 201
+    # The trade itself may show a big realized number (it's a record), but the
+    # combine's balance stays exactly at the tier start — no equity moved.
+    state = client.get("/api/account/state").json()
+    assert state["balance"] == 50_000
+    assert state["dll_used"] == 0
 
 
-def test_journal_non_paper_entry_uncapped(client):
-    # is_paper=False records OUTSIDE activity (pure journaling) — no cap.
-    res = client.post(
-        "/api/journal/trades",
-        json=_trade_payload(is_paper=False, legs=_sized_legs(30, 20)),
-    )
-    assert res.status_code == 201
+def test_manual_journal_entry_deletable(client):
+    # Record-keeping rows carry no ledger weight, so they stay freely deletable
+    # (unlike an execution open/closed trade — covered in the delete tests).
+    tid = client.post(
+        "/api/journal/trades", json=_trade_payload(legs=_sized_legs(1, 1))
+    ).json()["id"]
+    assert client.delete(f"/api/journal/trades/{tid}").status_code == 204

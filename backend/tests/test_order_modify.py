@@ -127,17 +127,45 @@ def test_modify_validation(auth_client, session_factory):
     assert auth_client.patch(
         f"/api/journal/trades/{tid}/order", json={"stop_price": 1.5}
     ).status_code == 400
-    # Prices validated like placement — must be positive.
+    # Single-leg prices validated like placement — must be positive. Now
+    # enforced in the handler (400 + readable string) rather than the pydantic
+    # bound, because multi-leg NET limits are legitimately signed (credit < 0).
     assert auth_client.patch(
         f"/api/journal/trades/{tid}/order", json={"limit_price": -1.0}
-    ).status_code == 422
+    ).status_code == 400
     assert auth_client.patch(
         f"/api/journal/trades/{tid}/order", json={"limit_price": 0}
-    ).status_code == 422
+    ).status_code == 400
     # Foreign/nonexistent trade → 404.
     assert auth_client.patch(
         "/api/journal/trades/999999/order", json={"limit_price": 1.0}
     ).status_code == 404
+
+
+def test_modify_multileg_credit_limit_preserves_sign(auth_client, session_factory):
+    """A multi-leg NET-premium credit order rests at a NEGATIVE limit. The
+    modify must let it be TIGHTENED to a more-negative credit, but REJECT a
+    positive value (which would flip credit→debit and fill at any price)."""
+    c = make_combine(auth_client, "50K")
+    legs = [
+        {"side": "call", "action": "sell", "strike": 100.0,
+         "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 2.0},
+        {"side": "call", "action": "buy", "strike": 105.0,
+         "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 0.5},
+    ]
+    tid = _seed(session_factory, c["id"], limit_price=-1.5, _legs=legs)
+    # Tighten the credit to −1.60 → allowed.
+    ok = auth_client.patch(
+        f"/api/journal/trades/{tid}/order", json={"limit_price": -1.6}
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["limit_price"] == -1.6
+    # Flip to a positive (debit) net → rejected (would fill at any credit).
+    flip = auth_client.patch(
+        f"/api/journal/trades/{tid}/order", json={"limit_price": 1.5}
+    )
+    assert flip.status_code == 400
+    assert "sign" in flip.json()["detail"].lower()
 
 
 def test_modify_cascades_to_working_follower_copies(auth_client, session_factory):
