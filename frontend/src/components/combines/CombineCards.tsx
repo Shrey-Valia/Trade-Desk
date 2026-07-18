@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { CopyRoleBadge, StageBadge } from "@/components/combines/CombineSwitcher";
+import { FundedAgreementModal } from "@/components/combines/FundedAgreementModal";
 import {
   useActivateAccount,
   useArchiveCombine,
@@ -8,6 +10,7 @@ import {
   useRenameCombine,
   useResetCombine,
 } from "@/hooks/useCombines";
+import { errorCode, fetchLegalStatus, LEGAL_STATUS_KEY } from "@/lib/legalApi";
 import { tierSpec } from "@/lib/tierSpecs";
 import type { CombineOut } from "@/types/combine";
 
@@ -79,6 +82,40 @@ function CombineCard({
   const [name, setName] = useState(combine.name);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const archived = combine.status === "archived";
+
+  // -- funded-agreement e-sign gate (workstream D2) --------------------------
+  // Activation requires a SIGNED funded-trader agreement (backend 403s
+  // "agreement_required: …" otherwise). Fetch the consent map only while an
+  // activation CTA is actually visible; react-query dedupes the shared key
+  // across cards. The 403 handler is the safety net for the edge where the
+  // status map looks current but the gate still refuses (e.g. an unsigned
+  // checkbox acceptance) — the modal opens instead of dead-ending.
+  const [agreementOpen, setAgreementOpen] = useState(false);
+  const showActivateCta =
+    !archived && combine.funded && combine.activation_required;
+  const { data: legalStatus } = useQuery({
+    queryKey: LEGAL_STATUS_KEY,
+    queryFn: fetchLegalStatus,
+    staleTime: 60_000,
+    enabled: showActivateCta,
+  });
+  const agreementSigned = legalStatus?.funded_agreement?.current === true;
+
+  const runActivation = () => {
+    activateAccount.mutate(combine.id, {
+      onSuccess: () => setAgreementOpen(false),
+      onError: (e) => {
+        if (errorCode(e) === "agreement_required") setAgreementOpen(true);
+      },
+    });
+  };
+
+  const startActivation = () => {
+    if (agreementSigned) runActivation();
+    else setAgreementOpen(true);
+  };
+  // -- end e-sign gate --------------------------------------------------------
+
   const failed = combine.outcome === "failed";
   const cushion = mllCushion(combine);
   const cushionLow = !archived && cushionAlarmed(combine);
@@ -209,7 +246,7 @@ function CombineCard({
             <button
               type="button"
               disabled={activateAccount.isPending}
-              onClick={() => activateAccount.mutate(combine.id)}
+              onClick={startActivation}
               title={
                 combine.activation_fee > 0
                   ? `Activate this funded account — a one-time $${combine.activation_fee} fee unlocks payouts (simulated).`
@@ -300,6 +337,15 @@ function CombineCard({
             )}
           </div>
         </div>
+      )}
+      {showActivateCta && (
+        <FundedAgreementModal
+          combine={combine}
+          open={agreementOpen}
+          onClose={() => setAgreementOpen(false)}
+          onSigned={runActivation}
+          activating={activateAccount.isPending}
+        />
       )}
     </div>
   );

@@ -197,6 +197,84 @@ class Settings(BaseSettings):
     auth_rate_limit_window_s: int = 60
 
     # ---------------------------------------------------------------------
+    # Operator back office (P0 wave, 2026-07). Emails auto-promoted to the
+    # admin role at signin — the bootstrap path for the first operator seat
+    # (afterwards admins can promote/demote via /api/admin).
+    admin_emails: tuple[str, ...] = ()
+
+    # ---------------------------------------------------------------------
+    # Payout adjudication. auto-approve preserves the simulated review desk
+    # for clean sim deployments: a 'requested' payout older than the window
+    # approves unattended. Flip PAYOUT_AUTO_APPROVE=0 to require a human on
+    # every request (the real-firm posture). The window is the legacy
+    # PAYOUT_REVIEW_WINDOW_H, now owned here.
+    payout_auto_approve: bool = True
+    payout_review_window_h: float = 1.0
+
+    # Payout-request prerequisites (each individually toggleable so tests and
+    # sim demos can relax them): KYC verified, a tax profile on file, and a
+    # default payout method on file.
+    payout_require_kyc: bool = True
+    payout_require_tax_profile: bool = True
+    payout_require_method: bool = True
+
+    # Simulated KYC provider: when True a submission auto-decides instantly
+    # (verified unless the declared country is blocked below); when False the
+    # submission parks at 'pending' for an admin decision.
+    kyc_auto_verify: bool = True
+    # ISO-3166 alpha-2 country codes refused at KYC (OFAC-comprehensive
+    # jurisdictions). Checked case-insensitively.
+    ofac_blocked_countries: tuple[str, ...] = ("CU", "IR", "KP", "SY", "RU", "BY")
+
+    # ---------------------------------------------------------------------
+    # Transactional email. "console" logs the rendered mail (dev default —
+    # nothing leaves the box); "smtp" sends via the server below. The outbox
+    # job retries a failed send up to mail_max_attempts times.
+    mail_provider: str = "console"
+    mail_from: str = "Trade Desk <no-reply@tradedesk.local>"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    mail_max_attempts: int = 5
+    # Base URL the frontend is served from — used to build links in emails
+    # (password reset, payout status).
+    frontend_base_url: str = "http://localhost:5173"
+    # Password-reset token lifetime (hours).
+    password_reset_ttl_h: float = 2.0
+
+    # ---------------------------------------------------------------------
+    # Backups. Nightly SQLite .backup into backup_dir, pruning files older
+    # than the retention window. No-op on non-SQLite databases.
+    backup_dir: str = str(PROJECT_ROOT / "data" / "backups")
+    backup_retention_days: int = 14
+    # Escape hatch for the pre-tier legacy wipe in database.py: by default a
+    # trades table MISSING the 'tier' column now refuses to boot (it is almost
+    # always a restored pre-tier backup, and the old behavior deleted every
+    # trade row). Set ALLOW_LEGACY_TRADE_WIPE=1 only for a genuine one-time
+    # adoption of a pre-tier database.
+    allow_legacy_trade_wipe: bool = False
+
+    # ---------------------------------------------------------------------
+    # Trading-universe + quote-quality enforcement on the OPEN path.
+    # enforce_tradeable_universe gates opens to zero_dte_universe (minus any
+    # platform_state symbol bans); the quote-quality gate refuses option legs
+    # whose NBBO is unusable (mid below the floor, or spread wider than the
+    # ratio × mid — a market no one actually quotes).
+    enforce_tradeable_universe: bool = True
+    min_option_mid: float = 0.05
+    max_option_spread_ratio: float = 1.0
+
+    # ---------------------------------------------------------------------
+    # Single-container deploy: when set to the built frontend's dist
+    # directory, the backend serves the SPA (static assets + index.html
+    # fallback for client routes). Empty (default) = API-only, frontend on
+    # the Vite dev server. Set SERVE_FRONTEND_DIR=/app/frontend/dist in the
+    # Docker image.
+    serve_frontend_dir: str = ""
+
+    # ---------------------------------------------------------------------
     # Per-USER throttle on the FINANCIAL endpoints (payout request, account
     # activation, combine purchase / Stripe checkout). Keyed by user_id +
     # endpoint scope (not IP) — these are authenticated actions, so the signed-in

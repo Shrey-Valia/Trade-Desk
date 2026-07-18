@@ -28,11 +28,15 @@ export default {
         // Semantic price
         bullish: colors.bullish,
         bearish: colors.bearish,
-        // Accents — amber = ACTIVE/SELECTED, cyan = quiet, warning = alert.
+        // Accents — amber token = the NAV/ACTIVE accent (now HUD cyan), cyan =
+        // quiet steel annotation, warning = risk-proximity caution amber.
         amber: colors.accentAmber,
         cyan: colors.accentCyan,
         warning: colors.warning,
-        // User position highlight (entry triangle, BE lines).
+        // Risk-terminal alarm — BREACH / DAY-LOCK / FAILED. Distinct from
+        // bearish so account-death out-shouts an ordinary losing trade.
+        breach: colors.accentBreach,
+        // User position highlight (entry triangle, BE lines) — the BEAM magenta.
         position: colors.positionMagenta,
         // Action affordance (BUY / SELL filled buttons).
         "action-buy": colors.actionBuy,
@@ -43,11 +47,17 @@ export default {
         "action-sell-active": colors.actionSellActive,
       },
       fontFamily: {
-        // IBM Plex Mono only. `sans` aliased to mono so default body font
-        // and any `font-sans` usage resolve identically; `mono` is the
-        // canonical name. No proportional stack — DESIGN.md mandates one
-        // typeface across the dashboard.
-        sans: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
+        // Bold-rebrand type trio:
+        //   display — Archivo: headings + statements. An industrial grotesque
+        //             with real character (not the AI-default). Opt in with
+        //             `font-display`; use 600/700 for big statements.
+        //   sans    — IBM Plex Sans: proportional UI labels/controls.
+        //   mono    — IBM Plex Mono: tabular data + the terminal voice (chain,
+        //             prices, ladder) where digit alignment matters.
+        // The global body default is still mono; the proportional-label
+        // migration lands with the structural terminal work.
+        display: ['"Archivo"', '"IBM Plex Sans"', "ui-sans-serif", "system-ui", "sans-serif"],
+        sans: ['"IBM Plex Sans"', "ui-sans-serif", "system-ui", "-apple-system", "sans-serif"],
         mono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
       fontSize: {

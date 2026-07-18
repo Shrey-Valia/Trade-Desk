@@ -224,18 +224,27 @@ def realized_by_trading_day(
 
 
 # Payout DEBIT event types. The REQUEST is the debit instant (funds are held
-# while the simulated review runs), and legacy terminal 'payout' rows keep
-# counting so historical data still debits. 'payout_approved' is deliberately
-# EXCLUDED — approval re-records the same amount and must not double-debit.
+# while the review runs), and legacy terminal 'payout' rows keep counting so
+# historical data still debits. 'payout_approved' is deliberately EXCLUDED —
+# approval re-records the same amount and must not double-debit.
 PAYOUT_DEBIT_TYPES: tuple[str, ...] = ("payout", "payout_requested")
+
+# Payout CREDIT event types. A DENIAL gives the held money back: the payout
+# desk (services/payout_desk.decide) writes a 'payout_denied' event carrying
+# the SAME amount as the request, so every consumer's effective debit is
+# sum(requests) − sum(denials). Approve / hold / mark_paid write no credit —
+# the debit stays booked from request time.
+PAYOUT_CREDIT_TYPES: tuple[str, ...] = ("payout_denied",)
 
 
 def payouts_booked(
     session: Session, combine_id: int, since: datetime | None = None
 ) -> float:
-    """Sum of payout amounts already booked on this combine. A booked
-    payout DEBITS the funded-stage balance (and with it the HWM basis and
-    the MLL fail test) — withdrawn money stops counting as equity.
+    """NET payout amount booked on this combine: requested (and legacy
+    'payout') debits minus 'payout_denied' re-credits. A booked payout
+    DEBITS the funded-stage balance (and with it the HWM basis and the MLL
+    fail test) — withdrawn money stops counting as equity; a DENIED request
+    stops debiting, as if it had never been made.
 
     `since` scopes the sum to the CURRENT funded epoch (funded_epoch_at). This
     is essential across a fail → reset → re-pass → re-activate cycle: the reset
@@ -244,15 +253,22 @@ def payouts_booked(
     the first flat-book read after paying to re-activate reads
     `start − prior_payouts` and instantly terminates the account through the
     MLL floor. Legacy pre-epoch payout rows count only when they postdate the
-    epoch, which the created_at filter gives for free."""
-    stmt = select(CombineEvent.amount).where(
+    epoch, which the created_at filter gives for free.
+
+    Clamped at ≥ 0: a denial normally lands in the same epoch as its request,
+    but if an epoch boundary (reset → re-activate) falls between the two, the
+    orphaned in-epoch credit must not INFLATE the new stint's balance."""
+    stmt = select(CombineEvent.type, CombineEvent.amount).where(
         CombineEvent.combine_id == combine_id,
-        CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
+        CombineEvent.type.in_(PAYOUT_DEBIT_TYPES + PAYOUT_CREDIT_TYPES),
     )
     if since is not None:
         stmt = stmt.where(CombineEvent.created_at >= since)
-    rows = session.execute(stmt).all()
-    return float(sum((r[0] or 0.0) for r in rows))
+    total = 0.0
+    for type_, amount in session.execute(stmt).all():
+        value = float(amount or 0.0)
+        total += value if type_ in PAYOUT_DEBIT_TYPES else -value
+    return max(0.0, total)
 
 
 def has_open_book(session: Session, combine_id: int) -> bool:

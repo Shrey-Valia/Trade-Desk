@@ -114,13 +114,23 @@ def init_db() -> None:
     # Import models so SQLAlchemy registers them before create_all.
     from models import (  # noqa: F401
         account_state,
+        admin_action,
+        agreement,
         alert,
         auth_session,
         combine,
         combine_event,
         historical_earnings_event,
+        job_run,
+        kyc,
+        notification,
         options_snapshot,
+        password_reset,
         payment,
+        payout_method,
+        payout_request,
+        platform_state,
+        support_ticket,
         ticker_selection,
         trade,
         user,
@@ -209,24 +219,42 @@ def _additive_migrate_trades() -> None:
     if not pending:
         return
     with engine.connect() as conn:
-        for name, ddl in pending:
-            conn.execute(text(f"ALTER TABLE trades ADD COLUMN {name} {ddl}"))
-        # Legacy $10K-paper-account rows pre-date the tier model and
-        # would otherwise pollute the 50K combine's history. Wipe them.
+        # Legacy $10K-paper-account rows pre-date the tier model and would
+        # otherwise pollute the 50K combine's history — the one-time tier
+        # adoption wipes them.
         #
-        # DANGER: this fires whenever `tier` is absent — which also happens if
-        # someone points the app at a PRE-tier backup. Log the row count LOUDLY
-        # before the irreversible delete so an accidental restore-then-boot is
-        # visible in the logs (and recoverable from the backup) instead of a
-        # silent history wipe.
+        # DANGER: the wipe branch fires whenever `tier` is absent — which ALSO
+        # happens if someone points the app at a RESTORED PRE-TIER BACKUP. That
+        # is almost never a genuine legacy adoption, so a populated table now
+        # REFUSES TO BOOT (before any ALTER runs — the DB is left byte-for-byte
+        # untouched) unless the explicit escape hatch is set. The refusal is
+        # checked FIRST so a mistaken restore is a loud, recoverable error
+        # instead of a silent, irreversible history wipe.
+        count = 0
         if needs_wipe:
             count = conn.execute(text("SELECT COUNT(*) FROM trades")).scalar() or 0
+            if count and not settings.allow_legacy_trade_wipe:
+                raise RuntimeError(
+                    "REFUSING TO BOOT: the 'trades' table is missing the 'tier' "
+                    f"column but contains {count} row(s). This almost certainly "
+                    "means DATABASE_URL points at a RESTORED PRE-TIER BACKUP — "
+                    "the legacy tier migration would irreversibly DELETE every "
+                    "trade row. Nothing has been modified. To recover: stop the "
+                    "app and point DATABASE_URL back at a current (post-tier) "
+                    "database, or restore a newer backup from "
+                    f"{settings.backup_dir!r}. If this truly is a one-time "
+                    "adoption of a pre-tier legacy database and its trade "
+                    "history is expendable, set ALLOW_LEGACY_TRADE_WIPE=1 for a "
+                    "single boot to proceed with the wipe, then unset it."
+                )
+        for name, ddl in pending:
+            conn.execute(text(f"ALTER TABLE trades ADD COLUMN {name} {ddl}"))
+        if needs_wipe:
             if count:
                 logging.getLogger(__name__).warning(
-                    "MIGRATION: 'tier' column absent — treating this as a "
-                    "pre-tier database and DELETING all %d existing trade "
-                    "row(s). If this is a restored backup, stop the app and "
-                    "recover before it boots again.",
+                    "MIGRATION: 'tier' column absent and "
+                    "ALLOW_LEGACY_TRADE_WIPE=1 — treating this as a pre-tier "
+                    "database and DELETING all %d existing trade row(s).",
                     count,
                 )
             conn.execute(text("DELETE FROM trades"))
@@ -289,6 +317,9 @@ _USER_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     ("profit_target_json", "TEXT NOT NULL DEFAULT 'null'"),
     # Free reset credits banked by monthly rebills (jobs/renew_combines).
     ("reset_credits", "INTEGER NOT NULL DEFAULT 0"),
+    # Operator back office: privilege tier + suspension stamp.
+    ("role", "VARCHAR(12) NOT NULL DEFAULT 'trader'"),
+    ("suspended_at", "DATETIME"),
 ]
 
 

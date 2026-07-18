@@ -180,6 +180,26 @@ def get_current_user(
     return user
 
 
+def require_admin(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> User:
+    """Admin gate for the /api/admin back office — 403 for everyone else.
+
+    Bootstrap path: an email listed in settings.admin_emails is promoted to
+    the admin role on first touch of an admin endpoint, so the first operator
+    seat never requires hand-written SQL. After that, admins promote/demote
+    through the admin API (audit-logged)."""
+    if user.role != "admin":
+        allowlist = {e.strip().lower() for e in settings.admin_emails if e.strip()}
+        if user.email in allowlist:
+            user.role = "admin"
+            db.commit()
+        else:
+            raise HTTPException(403, "admin access required")
+    return user
+
+
 def get_active_combine(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),

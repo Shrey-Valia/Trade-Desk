@@ -1,0 +1,71 @@
+# Trade Desk — single-container deployment. `docker compose up -d --build`.
+# Full runbook (env var reference, backup/restore): docs/DEPLOYMENT.md.
+#
+# ############################  DO NOT SCALE  ############################
+# NEVER run more than 1 replica of this service — no `--scale app=2`, no
+# Swarm/Kubernetes replicas, no second compose project on the same volume.
+# The backend runs APScheduler IN-PROCESS: a second instance double-fires
+# every scheduled job (billing renewals, combine settlement, payout
+# auto-approval, EOD settlement, the nightly backup), which double-charges
+# and corrupts money state. Scale reads with a cache/CDN in front, never
+# with more app processes.
+# ########################################################################
+
+services:
+  app:
+    build: .
+    image: trade-dashboard:latest
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      # SQLite DB + journal-screenshot uploads + nightly backups, all under
+      # /app/data (the DATABASE_URL / upload / backup defaults in the image).
+      - trade_data:/app/data
+    # Bare names pass the variable through from the host shell / a `.env`
+    # file next to this compose file; unset stays unset (image/config.py
+    # defaults apply). Values, formats, and which ones matter in prod:
+    # docs/DEPLOYMENT.md.
+    environment:
+      # market data
+      - ALPACA_API_KEY
+      - ALPACA_API_SECRET
+      - ALPACA_PAPER
+      - FINNHUB_API_KEY
+      - FRED_API_KEY
+      # deployment posture
+      - APP_ENV
+      - COOKIE_SECURE
+      - CORS_ALLOW_ORIGINS
+      - TRUST_PROXY
+      - FRONTEND_BASE_URL
+      - LOG_LEVEL
+      - LOG_JSON
+      # error tracking
+      - SENTRY_DSN
+      - SENTRY_ENVIRONMENT
+      # back office / payouts
+      - ADMIN_EMAILS
+      - PAYOUT_AUTO_APPROVE
+      # transactional mail
+      - MAIL_PROVIDER
+      - MAIL_FROM
+      - SMTP_HOST
+      - SMTP_PORT
+      - SMTP_USERNAME
+      - SMTP_PASSWORD
+      - SMTP_STARTTLS
+      # Stripe (opt-in; payments stay simulated while unset)
+      - STRIPE_SECRET_KEY
+      - STRIPE_WEBHOOK_SECRET
+      - STRIPE_PRICE_50K
+      - STRIPE_PRICE_100K
+      - STRIPE_PRICE_150K
+      # backups / migration escape hatch
+      - BACKUP_RETENTION_DAYS
+      - ALLOW_LEGACY_TRADE_WIPE
+      # Postgres opt-in (overrides the image's SQLite default)
+      - DATABASE_URL
+
+volumes:
+  trade_data:

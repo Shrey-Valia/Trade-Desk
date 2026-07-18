@@ -313,8 +313,17 @@ def _refund_payment(session: Session, payment: Payment, event_type: str) -> bool
             # Cancel resting orders so a refunded/archived combine leaves no
             # GTC zombie working orders (open positions settle at expiry).
             from services.combine_state import cancel_working_orders
+            from services.payout_desk import void_requests
 
             cancel_working_orders(session, combine.id)
+            # Void EVERY live payout request — including approved-unpaid: a
+            # refunded/charged-back account gets no re-credit (the account is
+            # dead) and must never be mark_paid later. 'cancelled' is
+            # terminal and writes no ledger event, so the auto-approve pass
+            # and the admin queue both stop seeing these rows.
+            void_requests(
+                session, combine.id, "chargeback_risk", include_approved=True
+            )
             combine.status = "archived"
             user = session.get(User, combine.user_id)
             if user is not None and user.active_combine_id == combine.id:

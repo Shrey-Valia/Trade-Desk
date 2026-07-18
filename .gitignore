@@ -25,8 +25,12 @@ frontend/vite.config.d.ts
 frontend/vite.config.js
 /package-lock.json
 
-# Data
+# Data — dev databases + backups never belong in the repo (they hold real
+# user/test PII: emails, password hashes, KYC/tax rows, session tokens).
 data/
+*.db
+*.db-wal
+*.db-shm
 
 # IDE
 .vscode/

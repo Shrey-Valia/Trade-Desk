@@ -74,14 +74,17 @@ export function AuthInput({
 export function AuthSubmit({
   label,
   pending,
+  disabled = false,
 }: {
   label: string;
   pending: boolean;
+  /** Extra gate beyond pending (e.g. signup's required consent checkbox). */
+  disabled?: boolean;
 }) {
   return (
     <button
       type="submit"
-      disabled={pending}
+      disabled={pending || disabled}
       className="h-9 w-full uppercase tracking-label-up border border-amber text-amber bg-tier-2 hover:bg-tier-3 disabled:opacity-50 disabled:cursor-not-allowed rounded-btn font-medium"
       style={{ fontSize: 12 }}
     >

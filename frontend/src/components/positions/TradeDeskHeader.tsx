@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQueries } from "@tanstack/react-query";
 import { AlertsBell } from "@/components/alerts/AlertsBell";
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
+import { NotificationsBell } from "@/components/notifications/NotificationsBell";
 import { SymbolSearchModal } from "@/components/positions/SymbolSearchModal";
+import { colors } from "@/lib/design";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useCachedChainTable } from "@/hooks/useChainTable";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
@@ -71,6 +73,7 @@ export function TradeDeskHeader({ symbol, onSymbolChange }: Props) {
       <PriceReadout symbol={symbol} />
       <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5 min-w-0">
         <AlertsBell symbol={symbol} />
+        <NotificationsBell />
         <MetricPills />
       </div>
       <SymbolSearchModal
@@ -290,21 +293,15 @@ function MetricPills() {
   const balTitle = `Balance = EOD ${formatDollar(eod)} + RPL ${formatSigned(
     rpl,
   )} + URPL ${formatSigned(upl)}`;
-  const trailing =
-    account?.tiers.find((t) => t.key === activeTier)?.trailing_distance ?? 1;
   // Combine engine verdict — floors tested CONTINUOUSLY against live net
-  // (realized + URPL). The MLL pill is the hero ("how close to blowing
-  // up"); FAILED is permanent, DAY-LOCK lifts at the 5pm-PT settlement.
+  // (realized + URPL). The CUSHION-to-MLL readout is the header HERO ("how
+  // close to blowing up"); FAILED is permanent, DAY-LOCK lifts at 5pm-PT.
   const combine = useCombineStatus();
   // Pre-liquidation early warnings: fires sticky toasts once per threshold
-  // crossing and returns the urgency flags that pulse the MLL/DLL pills.
+  // crossing and returns the urgency flags that pulse the cushion / DLL.
   const urgency = usePreLiquidationWarnings();
   const mll = combine.mllFloor;
   const cushion = combine.mllCushion;
-  const mllTone =
-    combine.status === "failed"
-      ? "text-bearish font-medium"
-      : mllToneClass(combine.balanceLive, combine.mllFloor, trailing);
 
   // DLL budget — the backend resolves the active combine's budget (the
   // user's per-tier Settings override clamped to the band, else the tier
@@ -316,214 +313,253 @@ function MetricPills() {
   // folds UPL on top of the realized-only balance.
   const dllUsed = Math.max(0, (account?.dll_used ?? 0) + Math.max(0, -upl));
   const dllDisabled = combine.dllDisabled;
-  const dllTone = dllDisabled ? "text-fg-tertiary-2" : dllToneClass(dllUsed, dllBudget);
   const dllHit = combine.dayLocked;
 
   return (
-    <>
-      <MetricPill label="BAL" value={formatDollar(bal)} title={balTitle} />
-      <MetricPill
-        label="MLL"
-        value={formatDollar(mll)}
-        valueClass={mllTone}
+    <div className="flex items-stretch gap-2.5">
+      <CushionHero
+        cushion={cushion}
+        proximity={combine.mllProximity}
+        floor={mll}
+        status={combine.status}
         pulse={urgency.mllNearFloor}
-        title={`Fixed-intraday MLL floor — how close to blowing up. Live cushion ${
-          cushion >= 0 ? "+" : "−"
-        }$${Math.round(Math.abs(cushion)).toLocaleString()} (balance incl. open URPL vs the floor). Re-baselines up only at the 5pm-PT settlement.`}
-      >
-        <span className="ml-1 tabular-nums text-fg-tertiary-2" style={{ fontSize: 11 }}>
-          {cushion >= 0
-            ? `+$${Math.round(cushion).toLocaleString()}`
-            : `−$${Math.round(-cushion).toLocaleString()}`}
-        </span>
-        {combine.status === "failed" ? (
-          <span
-            className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 11, height: 14 }}
-            title="MLL floor breached — combine FAILED (permanent)."
-          >
-            FAILED
-          </span>
-        ) : cushion < 0 ? (
-          <span
-            className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 11, height: 14 }}
-            title="Live balance (incl. URPL) is below the MLL floor."
-          >
-            BREACH
-          </span>
-        ) : null}
-      </MetricPill>
-      {/* Daily P&L in place of the old TGT tile: realized (today, 5pm-PT
-          window) + live unrealized across all open positions. BAL = EOD +
-          RPL + URPL, so these two plus the EOD baseline reconcile to BAL. */}
-      <MetricPill
-        label="RP&L"
-        value={formatSigned(rpl)}
-        signed={rpl}
-        className="hidden min-[1440px]:flex"
-        title="Realized P&L today — closed trades in the current 5pm-PT trading day."
       />
-      <MetricPill
-        label="UP&L"
-        value={formatSigned(upl)}
-        signed={upl}
-        className="hidden min-[1440px]:flex"
-        title="Unrealized P&L — live, summed across all open positions on this tier."
-      />
-      <MetricPill
-        label="DLL"
-        value={dllDisabled ? "off" : formatDllUsage(dllUsed, dllBudget)}
-        valueClass={dllTone}
-        pulse={!dllDisabled && urgency.dllNearLimit}
-        title={
-          dllDisabled
-            ? "Daily loss limit switched OFF for this tier (Settings → Risk). Only the MLL floor binds — matching Topstep, which dropped the DLL in 2024."
-            : dllHit
-              ? "Daily loss limit hit — DAY LOCK: no further trading today (account survives). Lifts at the 5pm-PT settlement."
-              : "Daily loss limit (live, incl. open URPL) — resets at the 5pm-PT settlement."
-        }
-      >
-        {dllDisabled ? (
-          <span
-            className="ml-1 inline-flex items-center px-1 border border-tier-3 text-fg-tertiary-2 uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 11, height: 14 }}
-            title="Daily loss limit disabled for this tier."
-          >
-            OFF
-          </span>
-        ) : dllHit ? (
-          <span
-            className="ml-1 inline-flex items-center px-1 border border-bearish text-bearish uppercase tracking-label-up rounded-btn"
-            style={{ fontSize: 11, height: 14 }}
-            title="Daily loss limit hit — DAY LOCK: no further trading today."
-          >
-            DAY LOCK
-          </span>
-        ) : null}
-      </MetricPill>
-      <MarketPill />
-    </>
+      <div className="flex items-center gap-3 pl-0.5">
+        <MiniStat label="Bal" value={formatDollar(bal)} title={balTitle} />
+        <MiniStat
+          label="RP&L"
+          value={formatSigned(rpl)}
+          valueClass={signedClass(rpl)}
+          title="Realized P&L today — closed trades in the current 5pm-PT trading day."
+        />
+        <MiniStat
+          label="UP&L"
+          value={formatSigned(upl)}
+          valueClass={signedClass(upl)}
+          title="Unrealized P&L — live, summed across all open positions on this tier."
+        />
+        <DllMini
+          used={dllUsed}
+          budget={dllBudget}
+          disabled={dllDisabled}
+          hit={dllHit}
+          pulse={!dllDisabled && urgency.dllNearLimit}
+        />
+        <MiniMarket />
+      </div>
+    </div>
   );
 }
 
-function mllToneClass(balance: number, mll: number, trailing: number): string {
-  if (balance < mll) return "text-bearish font-medium";
-  const cushion = balance - mll;
-  const ratio = trailing > 0 ? cushion / trailing : 1;
-  if (ratio < 0.1) return "text-bearish";
-  if (ratio < 0.25) return "text-warning";
-  return "text-fg-primary";
+function signedClass(v: number): string {
+  return v > 0 ? "text-bullish" : v < 0 ? "text-bearish" : "text-fg-primary";
 }
 
-/** DLL tone — used/budget thresholds: <50% normal, 50-90% warn, 90-100%
- * bear-red, >100% bright-bearish font-medium with the "DLL HIT" badge. */
-function dllToneClass(used: number, budget: number): string {
-  if (budget <= 0) return "text-fg-primary";
-  const ratio = used / budget;
-  if (ratio > 1) return "text-bearish font-medium";
-  if (ratio >= 0.9) return "text-bearish";
-  if (ratio >= 0.5) return "text-warning";
-  return "text-fg-primary";
+/**
+ * The HERO of the terminal header: cushion to the MLL floor — "how close to
+ * blowing up" — as a dominant number with a green→amber→red buffer gauge. In a
+ * trailing-max-loss product the distance to failure must be the loudest thing
+ * on screen, not tile #2 of six identical pills.
+ */
+function cushionTone(
+  status: string,
+  proximity: number,
+  cushion: number,
+): { text: string; bar: string } {
+  if (status === "failed" || cushion < 0)
+    return { text: "text-breach", bar: colors.accentBreach };
+  if (proximity < 0.1) return { text: "text-bearish", bar: colors.bearish };
+  if (proximity < 0.25) return { text: "text-warning", bar: colors.warning };
+  return { text: "text-bullish", bar: colors.bullish };
 }
 
-interface MetricPillProps {
-  label: string;
-  value: string;
-  signed?: number;
-  valueClass?: string;
-  title?: string;
-  /** Extra classes on the pill shell — used to priority-hide the
-   * derivable pills (RP&L/UP&L) at narrow widths. */
-  className?: string;
-  /** When true, the pill border pulses bearish-red — the pre-liquidation
-   * urgency state (MLL cushion <15% / DLL >80%). */
-  pulse?: boolean;
-  children?: React.ReactNode;
-}
-
-function MetricPill({
-  label,
-  value,
-  signed,
-  valueClass: valueClassOverride,
-  title,
-  className,
+function CushionHero({
+  cushion,
+  proximity,
+  floor,
+  status,
   pulse,
-  children,
-}: MetricPillProps) {
-  const valueClass =
-    valueClassOverride ??
-    (signed !== undefined
-      ? signed > 0
-        ? "text-bullish"
-        : signed < 0
-          ? "text-bearish"
-          : "text-fg-primary"
-      : "text-fg-primary");
+}: {
+  cushion: number;
+  proximity: number;
+  floor: number;
+  status: string;
+  pulse: boolean;
+}) {
+  const tone = cushionTone(status, proximity, cushion);
+  const failed = status === "failed";
+  const breach = cushion < 0;
+  const pct = Math.max(0, Math.min(1, proximity)) * 100;
+  const value =
+    cushion >= 0
+      ? `+$${Math.round(cushion).toLocaleString()}`
+      : `−$${Math.round(-cushion).toLocaleString()}`;
   return (
     <div
-      className={`bg-tier-2 border border-tier-3 rounded-btn px-2 py-1 flex-col leading-tight shrink-0 ${
-        pulse ? "td-pulse-warn" : ""
-      } ${className ?? "flex"}`}
+      className={`bg-tier-2 border rounded-btn px-3 py-1.5 flex flex-col justify-center shrink-0 ${
+        failed || breach ? "border-breach" : "border-tier-3"
+      } ${pulse ? "td-pulse-warn" : ""}`}
       style={
         pulse
-          ? // Drive the keyframe's border/shadow to bearish-red for danger.
-            ({ height: 44, minWidth: 72, ["--td-pulse-color" as string]: "#E5484D" } as React.CSSProperties)
-          : { height: 44, minWidth: 72 }
+          ? ({ minWidth: 176, ["--td-pulse-color" as string]: colors.accentBreach } as React.CSSProperties)
+          : { minWidth: 176 }
       }
-      title={title}
+      title={`Cushion to the MLL floor — how close to blowing up. Live balance (incl. open URPL) vs the fixed-intraday floor $${Math.round(
+        floor,
+      ).toLocaleString()}. Re-baselines up only at the 5pm-PT settlement.`}
     >
+      <div className="flex items-center justify-between gap-3">
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2 whitespace-nowrap"
+          style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        >
+          {failed ? "Account failed" : breach ? "Below floor" : "Cushion"}
+        </span>
+        <span className="text-fg-tertiary-2 tabular-nums whitespace-nowrap" style={{ fontSize: 10 }}>
+          MLL ${Math.round(floor).toLocaleString()}
+        </span>
+      </div>
+      <span
+        aria-live="polite"
+        aria-label={`Cushion to MLL floor ${value}`}
+        className={`font-display tabular-nums ${tone.text}`}
+        style={{ fontSize: 22, fontWeight: 600, lineHeight: 1.06, letterSpacing: "-0.01em", marginTop: 1 }}
+      >
+        {failed ? "FAILED" : value}
+      </span>
+      <div
+        className="mt-1 overflow-hidden"
+        style={{ height: 4, borderRadius: 2, background: colors.bgTier0 }}
+      >
+        <div
+          style={{
+            width: `${failed ? 0 : pct}%`,
+            height: "100%",
+            background: tone.bar,
+            transition: "width 200ms ease-out",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function MiniStat({
+  label,
+  value,
+  valueClass,
+  title,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+  title?: string;
+}) {
+  return (
+    <div className="flex flex-col leading-tight shrink-0" title={title}>
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 12, letterSpacing: "0.08em" }}
+        style={{ fontSize: 10, letterSpacing: "0.07em" }}
       >
         {label}
       </span>
       <span
-        // a11y (WS6): the live risk/P&L readouts update on the account poll;
-        // aria-live=polite so a screen reader announces a changed balance, MLL
-        // cushion, or P&L without stealing focus mid-task. The label is read
-        // alongside the value so "BAL $52,310" is announced, not a bare number.
         aria-live="polite"
         aria-label={`${label} ${value}`}
-        className={`tabular-nums font-medium whitespace-nowrap ${valueClass}`}
-        style={{ fontSize: 13, marginTop: 2 }}
+        className={`tabular-nums whitespace-nowrap ${valueClass ?? "text-fg-primary"}`}
+        style={{ fontSize: 12, marginTop: 2 }}
       >
         {value}
-        {children}
       </span>
     </div>
   );
 }
 
-function MarketPill() {
+function DllMini({
+  used,
+  budget,
+  disabled,
+  hit,
+  pulse,
+}: {
+  used: number;
+  budget: number;
+  disabled: boolean;
+  hit: boolean;
+  pulse: boolean;
+}) {
+  const ratio = budget > 0 ? Math.min(1, used / budget) : 0;
+  const tone = disabled
+    ? "text-fg-tertiary-2"
+    : hit
+      ? "text-breach"
+      : ratio >= 0.9
+        ? "text-bearish"
+        : ratio >= 0.5
+          ? "text-warning"
+          : "text-fg-primary";
+  const barColor = hit
+    ? colors.accentBreach
+    : ratio >= 0.9
+      ? colors.bearish
+      : ratio >= 0.5
+        ? colors.warning
+        : colors.bullish;
+  return (
+    <div
+      className={`flex flex-col leading-tight shrink-0 ${pulse ? "td-pulse-warn px-1 rounded-btn" : ""}`}
+      style={pulse ? ({ ["--td-pulse-color" as string]: colors.accentBreach } as React.CSSProperties) : undefined}
+      title={
+        disabled
+          ? "Daily loss limit switched OFF for this tier (Settings → Risk). Only the MLL floor binds — matching Topstep, which dropped the DLL in 2024."
+          : hit
+            ? "Daily loss limit hit — DAY LOCK: no further trading today (account survives). Lifts at the 5pm-PT settlement."
+            : "Daily loss limit (live, incl. open URPL) — resets at the 5pm-PT settlement."
+      }
+    >
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2"
+        style={{ fontSize: 10, letterSpacing: "0.07em" }}
+      >
+        DLL{hit && !disabled ? " · lock" : ""}
+      </span>
+      <span className={`tabular-nums whitespace-nowrap ${tone}`} style={{ fontSize: 12, marginTop: 2 }}>
+        {disabled ? "off" : formatDllUsage(used, budget)}
+      </span>
+      {!disabled && (
+        <div
+          className="mt-1 overflow-hidden"
+          style={{ height: 3, width: 56, borderRadius: 2, background: colors.bgTier0 }}
+        >
+          <div style={{ width: `${ratio * 100}%`, height: "100%", background: barColor }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniMarket() {
   const { data: status } = useMarketStatus();
   const isOpen = status?.status === "open";
   const earlyClose = status?.is_early_close === true;
+  const dotColor = isOpen
+    ? earlyClose
+      ? colors.warning
+      : colors.bullish
+    : colors.fgTertiary2;
   const detail = useMemo(() => {
     if (!status) return "—";
     if (isOpen) {
-      // On half days the close time IS the risk event — 0DTE settles at the
-      // early bell, so lead with it.
-      if (earlyClose && status.today_close) {
-        return `early close ${formatClockEt(status.today_close)} ET`;
-      }
-      if (status.next_close) {
-        return `until ${formatClockEt(status.next_close)} ET`;
-      }
+      if (earlyClose && status.today_close) return `early ${formatClockEt(status.today_close)}`;
+      if (status.next_close) return `to ${formatClockEt(status.next_close)}`;
       return status.label;
     }
-    if (status.next_open) {
-      return `until ${formatClockEt(status.next_open)} ET`;
-    }
+    if (status.next_open) return `opens ${formatClockEt(status.next_open)}`;
     return status.label;
   }, [status, isOpen, earlyClose]);
-  const tone = isOpen ? (earlyClose ? "text-warning" : "text-bullish") : "text-bearish";
   return (
     <div
-      className="bg-tier-2 border border-tier-3 rounded-btn px-2 py-1 flex flex-col leading-tight shrink-0"
-      style={{ height: 44 }}
+      className="flex flex-col leading-tight shrink-0"
       title={
         earlyClose && status?.today_close
           ? `Early close today — the session (and every 0DTE contract) ends at ${formatClockEt(status.today_close)} ET.`
@@ -532,17 +568,15 @@ function MarketPill() {
     >
       <span
         className="uppercase tracking-label-up text-fg-tertiary-2"
-        style={{ fontSize: 12, letterSpacing: "0.08em" }}
+        style={{ fontSize: 10, letterSpacing: "0.07em" }}
       >
-        {earlyClose ? "MKT ⚠" : "MKT"}
+        {earlyClose ? "Mkt ⚠" : "Mkt"}
       </span>
-      <span
-        className={`tabular-nums font-medium uppercase tracking-label-up whitespace-nowrap ${tone}`}
-        style={{ fontSize: 11, marginTop: 4 }}
-      >
-        {isOpen ? "OPEN" : "CLOSED"}
-        <span className="text-fg-tertiary-2 mx-1">·</span>
-        <span style={{ textTransform: "lowercase" }}>{detail}</span>
+      <span className="flex items-center gap-1.5 whitespace-nowrap" style={{ fontSize: 11, marginTop: 3 }}>
+        <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: dotColor }} />
+        <span className="tabular-nums text-fg-secondary" style={{ textTransform: "lowercase" }}>
+          {detail}
+        </span>
       </span>
     </div>
   );

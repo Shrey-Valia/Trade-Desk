@@ -1,9 +1,18 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useCombines, usePurchaseCombine, useRenameCombine } from "@/hooks/useCombines";
+import {
+  acceptDocuments,
+  errorCode,
+  fetchLegalStatus,
+  LEGAL_STATUS_KEY,
+  needsPurchaseConsent,
+} from "@/lib/legalApi";
+import { toast } from "@/stores/toast";
 import {
   activationFee,
   MAX_CONTRACTS,
@@ -269,6 +278,60 @@ function Configure({
   const monthly = monthlyPrice(tier, path, split);
   const fee = activationFee(path);
 
+  // -- purchase consent gate (workstream D2) --------------------------------
+  // The backend 403s ("consent_required: …") on purchase unless tos + risk
+  // are accepted at their CURRENT versions. Normally signup recorded that,
+  // so the checkbox never shows; it appears when a document version bumped
+  // (stale acceptance) or the signup-time accept never landed. `forceConsent`
+  // covers the race where the status query said current but the purchase
+  // still 403'd — never dead-end the buy flow.
+  const qc = useQueryClient();
+  const { data: legalStatus } = useQuery({
+    queryKey: LEGAL_STATUS_KEY,
+    queryFn: fetchLegalStatus,
+    staleTime: 60_000,
+  });
+  const [forceConsent, setForceConsent] = useState(false);
+  const [agreed, setAgreed] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  const needsConsent = forceConsent || needsPurchaseConsent(legalStatus);
+
+  const startPurchase = async () => {
+    if (needsConsent) {
+      if (!agreed) return; // button disabled; belt-and-suspenders
+      setAccepting(true);
+      try {
+        // Accept FIRST, then purchase — one click, two calls in order.
+        const refreshed = await acceptDocuments(["tos", "risk"]);
+        qc.setQueryData(LEGAL_STATUS_KEY, refreshed);
+        setForceConsent(false);
+      } catch (e) {
+        toast.error(
+          (e as Error)?.message || "Couldn't record your agreement.",
+        );
+        setAccepting(false);
+        return;
+      }
+      setAccepting(false);
+    }
+    purchase.mutate(
+      { tier, pricing_path: path, split },
+      {
+        onSuccess: (c) => onPurchased(c),
+        onError: (e) => {
+          // Server-side gate refused: surface the checkbox instead of
+          // stranding the user on an opaque 403.
+          if (errorCode(e) === "consent_required") {
+            setForceConsent(true);
+            setAgreed(false);
+            qc.invalidateQueries({ queryKey: LEGAL_STATUS_KEY });
+          }
+        },
+      },
+    );
+  };
+  // -- end consent gate ------------------------------------------------------
+
   return (
     <div className="border border-hairline-strong bg-tier-1 w-full" style={{ borderRadius: 6 }}>
       <div className="px-4 py-3 border-b border-hairline flex items-baseline justify-between">
@@ -333,19 +396,47 @@ function Configure({
           Simulated checkout — no card is charged. Your path &amp; split lock in
           at purchase.
         </div>
+        {needsConsent && (
+          <label className="flex items-start gap-2 cursor-pointer select-none px-0.5">
+            <input
+              type="checkbox"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-amber"
+              aria-required
+            />
+            <span className="text-tiny text-fg-tertiary-2 leading-4">
+              I agree to the{" "}
+              <Link
+                to="/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-amber hover:underline"
+              >
+                Terms of Service
+              </Link>{" "}
+              and{" "}
+              <Link
+                to="/risk-disclosure"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-amber hover:underline"
+              >
+                Risk Disclosure
+              </Link>
+            </span>
+          </label>
+        )}
         <button
           type="button"
-          disabled={purchase.isPending}
-          onClick={() =>
-            purchase.mutate(
-              { tier, pricing_path: path, split },
-              { onSuccess: (c) => onPurchased(c) },
-            )
-          }
+          disabled={purchase.isPending || accepting || (needsConsent && !agreed)}
+          onClick={startPurchase}
           className="h-10 w-full uppercase tracking-label-up bg-action-buy hover:bg-action-buy-hover text-white font-semibold rounded-btn disabled:opacity-50"
           style={{ fontSize: 12 }}
         >
-          {purchase.isPending ? "Processing…" : `Start combine — $${monthly}/mo`}
+          {purchase.isPending || accepting
+            ? "Processing…"
+            : `Start combine — $${monthly}/mo`}
         </button>
         {purchase.isError && (
           <div className="text-tiny text-bearish" role="alert">

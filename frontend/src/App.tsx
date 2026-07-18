@@ -45,6 +45,39 @@ const SignInPage = lazy(() =>
 const SignUpPage = lazy(() =>
   import("@/pages/SignUpPage").then((m) => ({ default: m.SignUpPage })),
 );
+// P0 wave (2026-07): legal surface, account recovery, support, admin console.
+const TermsPage = lazy(() =>
+  import("@/pages/legal/TermsPage").then((m) => ({ default: m.TermsPage })),
+);
+const PrivacyPage = lazy(() =>
+  import("@/pages/legal/PrivacyPage").then((m) => ({ default: m.PrivacyPage })),
+);
+const RefundPolicyPage = lazy(() =>
+  import("@/pages/legal/RefundPolicyPage").then((m) => ({
+    default: m.RefundPolicyPage,
+  })),
+);
+const RiskDisclosurePage = lazy(() =>
+  import("@/pages/legal/RiskDisclosurePage").then((m) => ({
+    default: m.RiskDisclosurePage,
+  })),
+);
+const ForgotPasswordPage = lazy(() =>
+  import("@/pages/ForgotPasswordPage").then((m) => ({
+    default: m.ForgotPasswordPage,
+  })),
+);
+const ResetPasswordPage = lazy(() =>
+  import("@/pages/ResetPasswordPage").then((m) => ({
+    default: m.ResetPasswordPage,
+  })),
+);
+const SupportPage = lazy(() =>
+  import("@/pages/SupportPage").then((m) => ({ default: m.SupportPage })),
+);
+const AdminPage = lazy(() =>
+  import("@/pages/admin/AdminPage").then((m) => ({ default: m.AdminPage })),
+);
 
 /**
  * Top-level routing — multi-user shell.
@@ -80,6 +113,14 @@ export default function App() {
                 <GuestOnly page={<SignUpPage />} authedTo="/combines/new" />
               }
             />
+            {/* Public legal surface — reachable without a session (landing
+                footer, checkout, payment-processor onboarding). */}
+            <Route path="/terms" element={<TermsPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
+            <Route path="/refund-policy" element={<RefundPolicyPage />} />
+            <Route path="/risk-disclosure" element={<RiskDisclosurePage />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route element={<RequireAuth />}>
               <Route element={<RailShell />}>
                 <Route path="/dashboard" element={<DashboardPage />} />
@@ -90,6 +131,8 @@ export default function App() {
                 <Route path="/journal" element={<JournalPage />} />
                 <Route path="/analytics" element={<AnalyticsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/support" element={<SupportPage />} />
+                <Route path="/admin" element={<AdminPage />} />
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

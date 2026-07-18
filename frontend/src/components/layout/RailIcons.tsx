@@ -117,6 +117,30 @@ export function ZeroDteIcon(props: IconProps) {
   );
 }
 
+export function SupportIcon(props: IconProps) {
+  // Life buoy — ring with four spokes; the universal "help desk" cue,
+  // distinct from the rail's question-mark Help (glossary) action.
+  return (
+    <svg {...BASE_PROPS} {...props}>
+      <circle cx="10" cy="10" r="7" />
+      <circle cx="10" cy="10" r="3" />
+      <path d="M7.9 7.9 5.1 5.1M12.1 7.9l2.8-2.8M12.1 12.1l2.8 2.8M7.9 12.1l-2.8 2.8" />
+    </svg>
+  );
+}
+
+export function AdminIcon(props: IconProps) {
+  // Shield with a key dot — the operator/back-office cue (admin-only rail
+  // entry; workstream D1).
+  return (
+    <svg {...BASE_PROPS} {...props}>
+      <path d="M10 2.5 16 5v5c0 4-2.7 6.4-6 7.5-3.3-1.1-6-3.5-6-7.5V5l6-2.5z" />
+      <circle cx="10" cy="8.5" r="1.6" />
+      <path d="M10 10.1v3" />
+    </svg>
+  );
+}
+
 export function SettingsIcon(props: IconProps) {
   // Gear — simplified six-tooth ring around a center circle.
   return (

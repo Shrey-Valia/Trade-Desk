@@ -4,6 +4,9 @@ export const UserOutSchema = z.object({
   id: z.number().int(),
   email: z.string(),
   display_name: z.string().nullable(),
+  // "trader" | "admin" — gates the /admin console. Defaulted so a cached
+  // pre-upgrade response still parses.
+  role: z.string().default("trader"),
 });
 export type UserOut = z.infer<typeof UserOutSchema>;
 

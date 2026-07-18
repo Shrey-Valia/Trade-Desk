@@ -4,74 +4,82 @@
  * Both `lib/design.ts` (TS API used at runtime) and `tailwind.config.js`
  * (build-time Tailwind theme) import from this file.
  *
- * Visual rework: shifted from the prior pure-black graphite surface to
- * a softer dark-navy ground. Tier-0 lifts to #131722; three lifted
- * tiers above it. Hairlines step up too — the prior #1F222A is too
- * faint against the new ground.
+ * ── Bold rebrand (2026-07) — "Steel & Gold: the private trading desk." ──
+ * The monochrome era is retired. The identity is a cool SLATE base with a
+ * muted, premium GOLD accent — understated and institutional, not flashy — and
+ * a disciplined five-role SEMANTIC color system where every hue means exactly
+ * one thing, never decoration:
  *
- * Color discipline carries forward unchanged: AMBER = active/selected
- * only. WARNING = advisories. BULLISH/BEARISH = price moves + P&L.
- * MAGENTA = user's position. The new BUY/SELL filled-button colors
- * are a distinct semantic axis (action affordance) and live as
- * `actionBuy` / `actionSell` so they don't get conflated with the
- * candle/P&L bullish/bearish hues.
+ *   MONEY        bullish/bearish — P&L and price moves (desaturated to survive
+ *                all-day 0DTE staring).
+ *   RISK         warning(caution, an ORANGE kept distinct from the gold accent)
+ *                → accentBreach — how close you are to the trailing-drawdown /
+ *                daily-loss floor. accentBreach is a HOTTER red than money-loss
+ *                on purpose, so "about to blow up" reads differently from
+ *                "lost $40".
+ *   POSITION     positionMagenta (BEAM) — YOUR position + breakeven on the
+ *                price axis. The product's signature; used for NOTHING else.
+ *   NAV / ACTIVE accentAmber (SIGNAL) — the one navigation accent: active tab,
+ *                selected combine, active timeframe, focus, selected chain row,
+ *                primary non-trade CTA fills. A muted GOLD. Token name kept as
+ *                `accentAmber` for stability across ~300 `*-amber` call sites;
+ *                only the value changed.
+ *   QUIET        accentCyan — muted steel for low-priority annotation.
+ *
+ * BUY/SELL fills are a separate action-affordance axis (actionBuy/Sell).
  */
 export const colors = {
-  // Surface elevation tiers — NEUTRAL charcoal (was dark navy). Not pure black,
-  // no blue tint: a gray-black ground so the brighter money colors read as
-  // electric without eye strain.
-  bgTier0: "#16181C",
-  bgTier1: "#1D2026",
-  bgTier2: "#24272F",
-  bgTier3: "#2C3038",
+  // Surface elevation tiers — deep near-black SLATE (Topstep-grade black +
+  // gold). Darkened from the first slate pass toward the cinematic near-black
+  // the reference prop firms use, while keeping a faint cool tint so the muted
+  // gold reads as premium and the elevation steps still separate cleanly.
+  bgTier0: "#0A0B0E", // near-black slate — page ground
+  bgTier1: "#0F1319", // deck — panel
+  bgTier2: "#161B23", // rail — raised panel / chip
+  bgTier3: "#1F252F", // highest elevation
 
-  // Foreground (text) tiers — five-stop ramp. Revamp: the two dimmest
-  // CONTENT tiers were lifted so any real text clears WCAG AA on the
-  // shipped #131722 ground (the old #5A5A52 tertiary was ~2.5:1 — a fail).
-  // fgDisabled stays dim: it is for decorative / disabled only, never words.
-  // WS6 a11y: fgTertiary lifted #83837A → #9A9A90 so it clears AA (≥4.5:1)
-  // even on the lifted tier-2 / tier-3 surfaces where it was ~3.85:1 (a fail
-  // for normal-size text). It is used as real label/placeholder text in 300+
-  // spots, so it must meet the normal-text bar, not just AA-large.
-  fgPrimary: "#E8E8E0",
-  fgSecondary: "#C4C4BC",
-  // Lifted #9B9B92/#9A9A90 → #ABABA2 so the smallest labels read a touch
-  // brighter (~7:1 on #16181C) while staying clearly below fgSecondary.
-  fgTertiary2: "#ABABA2",
-  fgTertiary: "#ABABA2",
-  fgDisabled: "#3F3F3A",
+  // Foreground (text) tiers — five-stop ramp on the slate ground. fgTertiary
+  // is real label/placeholder text in 300+ spots, so it clears WCAG AA on the
+  // deck/rail surfaces; fgDisabled stays dim (decorative only).
+  fgPrimary: "#E7EAF0",
+  fgSecondary: "#99A2B2",
+  fgTertiary2: "#79828F",
+  fgTertiary: "#79828F",
+  fgDisabled: "#3C4350",
 
-  // Borders — neutral charcoal steps (drop the blue tint).
-  borderHairline: "#2B2F37",
-  borderStrong: "#3A3F49",
+  // Borders — cool slate hairlines.
+  borderHairline: "#212734",
+  borderStrong: "#333A48",
 
-  // Price semantics — BRIGHTER money colors. These are the +/- price moves and
-  // P&L: they should feel electric against the charcoal ground. (Candle bullish/
-  // bearish is a SEPARATE, user-tunable token in userSettings — unchanged.)
-  bullish: "#22E584", // bright mint-green — winning P&L, up moves
-  bearish: "#FF5A6A", // bright red — losing P&L, down moves
+  // MONEY — desaturated so it reads clean over a full session (saturated pure
+  // green/red fatigues). Candle bullish/bearish is a SEPARATE, user-tunable
+  // token in userSettings — unchanged.
+  bullish: "#34D39A", // spearmint — winning P&L, up moves
+  bearish: "#FF5C72", // rose-red — losing P&L, down moves
 
-  // Accents. MONOCHROME — no accent color. The UI chrome is black & white:
-  // the "amber" token (active / selected state + indicator/EM chart lines) is
-  // now WHITE, and the neutral-marker token is a mid GRAY. The name `accentAmber`
-  // is kept for token stability (Tailwind `*-amber` classes + ~300 call sites);
-  // only the value changed. The ONLY colors that remain are the money semantics
-  // (bullish/bearish + BUY/SELL) and the rare risk-warning amber — a trader must
-  // read profit/loss and "approaching your limit" at a glance.
-  accentAmber: "#D8D8D2", // (soft off-white) active/selected UI + indicator/EM lines + CTA fills. Softened from pure white to cut glare — "monotone white".
-  accentCyan: "#808690",  // neutral / quiet annotation accent (mid gray)
-  warning: "#E8C84A",     // rare risk advisory (approaching MLL/DLL) — kept
+  // NAV / ACTIVE accent — muted GOLD. (Token name kept as accentAmber.)
+  accentAmber: "#D4A24C",
+  // QUIET annotation — muted steel (low-priority marks; copy-trade role dots).
+  accentCyan: "#6E7684",
+  // RISK proximity — caution ORANGE (approaching the DLL / MLL buffer). Kept
+  // deliberately more orange than the gold nav accent so a risk gauge never
+  // reads as "active/selected".
+  warning: "#F0862E",
+  // RISK terminal — alarm red for BREACH / DAY-LOCK / FAILED. Deliberately
+  // hotter + more saturated than `bearish` so account-death out-shouts an
+  // ordinary losing trade.
+  accentBreach: "#FF3B4E",
 
-  // User position highlight (entry triangle + breakeven lines) — soft off-white,
-  // the brightest thing on the chart because it's YOUR position.
-  positionMagenta: "#D8D8D2",
+  // POSITION — the BEAM. Real magenta: the entry triangle + breakeven lines,
+  // the brightest, most distinct thing on the chart because it is YOUR
+  // position. Used for nothing else.
+  positionMagenta: "#C264D8",
 
-  // Action affordance colors — BUY / SELL filled buttons. BRIGHT now (the
-  // product should feel alive, not muted). Dark text sits on these vivid fills.
-  actionBuy: "#1FC463",
-  actionBuyHover: "#2BDE74",
-  actionBuyActive: "#18A452",
-  actionSell: "#F03B4E",
-  actionSellHover: "#FF5063",
-  actionSellActive: "#CE2C3E",
+  // Action affordance — BUY / SELL filled buttons. Dark text sits on the fills.
+  actionBuy: "#1FB57A",
+  actionBuyHover: "#27C98A",
+  actionBuyActive: "#189A67",
+  actionSell: "#E24659",
+  actionSellHover: "#F0576A",
+  actionSellActive: "#C33547",
 };

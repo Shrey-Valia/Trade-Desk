@@ -53,7 +53,7 @@ from sqlalchemy import select, update
 from config import settings
 from models.trade import Trade
 from schemas.journal import compute_net_debit_credit
-from services import fills
+from services import fills, platform_state
 
 log = logging.getLogger(__name__)
 
@@ -1244,11 +1244,30 @@ def _combine_dll_enabled(session, combine) -> bool:
 def _process_working(session, trade: Trade, spot: float, now: datetime, option_mark) -> str | None:
     """Fill or cancel a working limit/stop order. Returns 'filled'|'cancelled'|None."""
     from models.combine import Combine
+    from models.user import User
     from services.combine_state import combine_snapshot
     from services.copy_trade import mirror_cancel
 
-    # Don't fill into a non-tradeable combine — cancel the resting order.
+    # OPERATOR KILL SWITCH (risk controls, B5) — a working ENTRY filling is new
+    # exposure, which both "halted" and "close_only" bar. SKIP the order rather
+    # than cancel it: a temporary platform halt shouldn't destroy the user's
+    # resting orders — they become fill-eligible again the moment the mode
+    # clears. Exits (brackets, trailing/premium stops), liquidations and expiry
+    # settlement never come through here, so they run in EVERY mode.
+    if platform_state.get_trading_mode(session) != "normal":
+        return None
+
     combine = session.get(Combine, trade.combine_id) if trade.combine_id else None
+
+    # A SUSPENDED owner's resting entries likewise sit tight — the monitor-side
+    # analog of the open endpoints' account_suspended 403 (skip, don't cancel:
+    # an unsuspension restores them untouched).
+    if combine is not None:
+        owner = session.get(User, combine.user_id)
+        if owner is not None and owner.suspended_at is not None:
+            return None
+
+    # Don't fill into a non-tradeable combine — cancel the resting order.
     if combine is not None:
         snap = combine_snapshot(session, combine)
         if snap.outcome == "failed" or snap.day_locked:

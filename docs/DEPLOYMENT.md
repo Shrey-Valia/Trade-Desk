@@ -1,0 +1,118 @@
+# Deployment Runbook
+
+Single-container deployment: the FastAPI backend serves the API **and** the
+built React SPA. Built by the multi-stage `Dockerfile` at the repo root,
+run via `docker-compose.yml`.
+
+## Quick start
+
+```bash
+cd "Trade Dashboard"
+# put secrets in a .env file next to docker-compose.yml (compose reads it)
+docker compose up -d --build
+# app + SPA on http://localhost:8000 ; health probe on /health
+docker compose logs -f app
+```
+
+The image bakes in `SERVE_FRONTEND_DIR=/app/frontend/dist`,
+`DATABASE_URL=sqlite:////app/data/dashboard.db`, and `APP_ENV=production`.
+Everything under `/app/data` (SQLite DB, journal-screenshot uploads,
+nightly backups) lives on the `trade_data` named volume.
+
+## THE single-replica constraint (do not skip)
+
+**Run exactly one container per database, with exactly one uvicorn worker.**
+APScheduler runs *in-process*: every scheduled job — billing renewals,
+combine settlement, payout auto-approval, EOD settlement, the nightly
+backup — fires from inside the app process. A second replica (or
+`uvicorn --workers 2`) runs a second scheduler and **double-fires billing
+and settlement**, corrupting money state. The Dockerfile's CMD is already a
+single worker with no `--reload`; never override it with more. Scale reads
+with a cache/CDN in front, not with more app processes.
+
+## Environment variables
+
+Compose passes these through from the host shell or a `.env` file beside
+`docker-compose.yml`. Unset = the default below.
+
+> **Format note:** list-valued settings (`CORS_ALLOW_ORIGINS`,
+> `ADMIN_EMAILS`) are parsed by pydantic-settings as **JSON arrays**, e.g.
+> `CORS_ALLOW_ORIGINS=["https://app.example.com"]`. Comma-separated strings
+> fail to parse and abort boot.
+
+| Variable | Default | Prod guidance |
+|---|---|---|
+| `APP_ENV` | `production` (image) | Leave as `production`; hardens cookie defaults. |
+| `COOKIE_SECURE` | follows `APP_ENV` (`true` in prod) | Set `0` only for plain-HTTP LAN testing — browsers will otherwise drop the session cookie off-localhost. |
+| `CORS_ALLOW_ORIGINS` | Vite dev origins | Only needed if the SPA is served from a *different* origin than the API. Same-origin (this image's default) needs nothing. JSON array. |
+| `TRUST_PROXY` | `false` | Set `1` **only** behind a reverse proxy that appends real client IPs to `X-Forwarded-For`; otherwise rate-limit keying is spoofable. |
+| `FRONTEND_BASE_URL` | `http://localhost:5173` | Public URL of the app — used to build links in emails (password reset, payout status). Set to your real origin. |
+| `DATABASE_URL` | `sqlite:////app/data/dashboard.db` | See "SQLite → Postgres" below. |
+| `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | empty / `development` | Empty = error tracking fully off. |
+| `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | `LOG_JSON=1` emits one JSON object per line for log aggregators. |
+| `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `ALPACA_PAPER` | empty / `true` | Required for live quotes, chains, fills. |
+| `FINNHUB_API_KEY`, `FRED_API_KEY` | empty | News / macro data. |
+| `ADMIN_EMAILS` | `[]` | JSON array; listed emails are auto-promoted to admin at signin — the bootstrap for the first operator seat. |
+| `PAYOUT_AUTO_APPROVE` | `true` | Set `0` to require a human on every payout (the real-firm posture). |
+| `MAIL_PROVIDER` | `console` | `console` logs mail to stdout; `smtp` sends via the `SMTP_*` settings. |
+| `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS` | see `backend/config.py` | Only used when `MAIL_PROVIDER=smtp`. |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_50K/100K/150K` | empty | Opt-in; payments stay simulated while unset. |
+| `BACKUP_RETENTION_DAYS` | `14` | Nightly-backup retention window. |
+| `ALLOW_LEGACY_TRADE_WIPE` | `false` | **Leave unset.** See "restored pre-tier backup" below. |
+
+Full list with inline docs: `backend/config.py`.
+
+## Backups & restore
+
+**Where they land.** A scheduler job (`backup_db`, 02:30 ET nightly) writes
+`dashboard-YYYYMMDD-HHMMSS.db` (UTC stamp) into `/app/data/backups` using
+sqlite3's online-backup API — safe against concurrent writers, always a
+consistent snapshot. Files older than `BACKUP_RETENTION_DAYS` are pruned on
+each run. Job outcomes are visible in the admin jobs-health view (`job_runs`).
+
+Copy backups off the box regularly — the volume is not offsite storage:
+
+```bash
+docker compose cp app:/app/data/backups ./offsite-backups
+```
+
+**Restore procedure** (SQLite):
+
+1. Stop the app: `docker compose stop app`
+2. Copy the chosen backup over the live DB (and clear stale WAL sidecars):
+   ```bash
+   docker compose run --rm --no-deps app sh -c \
+     'cp /app/data/backups/dashboard-YYYYMMDD-HHMMSS.db /app/data/dashboard.db \
+      && rm -f /app/data/dashboard.db-wal /app/data/dashboard.db-shm'
+   ```
+3. Start it again: `docker compose start app`
+
+**Boot refusal on a restored pre-tier backup.** If the restored `trades`
+table predates the `tier` column *and has rows*, the app **refuses to
+boot** with a loud `RuntimeError` instead of running the legacy migration
+(which would delete every trade row). That refusal almost always means you
+restored a much-too-old backup — restore a newer one. Only for a genuine
+one-time adoption of a pre-tier legacy database whose trade history is
+expendable, set `ALLOW_LEGACY_TRADE_WIPE=1` for a single boot, then unset it.
+
+## SQLite → Postgres
+
+Supported via configuration only — the image ships the psycopg driver:
+
+```bash
+DATABASE_URL=postgresql+psycopg://user:pass@host:5432/trade
+```
+
+`init_db()` creates the schema and runs the additive migrations on first
+boot (CI proves this against postgres:16 on every push). Pool knobs
+(`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_RECYCLE_S`) exist in
+`backend/config.py`; SQLite ignores them. The nightly `backup_db` job
+no-ops on Postgres — use `pg_dump` / managed snapshots instead. The
+single-replica constraint **still applies** on Postgres: it's the
+scheduler, not the database, that forbids replicas.
+
+## CI
+
+`.github/workflows/ci.yml` job `docker-image` builds this Dockerfile on
+every push (build only, no registry push — no credentials exist) so the
+deploy artifact can't silently rot.

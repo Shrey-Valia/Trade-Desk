@@ -12,92 +12,50 @@ only (realized P&L from closed trades + Black-Scholes); no network, so a
 short interval is cheap. It's idempotent — settlement is gated on the
 5pm-PT boundary and outcomes are terminal once set.
 
-The same pass also runs the simulated payout REVIEW desk: a
-'payout_requested' event older than PAYOUT_REVIEW_WINDOW_H auto-approves
-by recording a matching 'payout_approved'. The debit happened at REQUEST
-time (services/combine_state.PAYOUT_DEBIT_TYPES), so approval never moves
-money — it just closes the review.
+The same pass also runs the payout desk's AUTO-APPROVE fallback
+(services/payout_desk.auto_approve_pass): a payout_requests row still in
+state 'requested' after the review window approves unattended when
+settings.payout_auto_approve is on. Rows an operator pulled into review
+(under_review / held) are never auto-approved. The debit happened at
+REQUEST time (services/combine_state.PAYOUT_DEBIT_TYPES), so approval
+never moves money — it just closes the review.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
+
+from config import settings
 
 log = logging.getLogger(__name__)
 
-# Simulated payout review window (hours): a 'payout_requested' at least this
-# old is auto-approved on the next settle pass — request → hold → approve,
-# like a real payout desk. Env-overridable (PAYOUT_REVIEW_WINDOW_H).
-PAYOUT_REVIEW_WINDOW_H = float(os.environ.get("PAYOUT_REVIEW_WINDOW_H", "1.0"))
+# Payout review window (hours) — how old a still-'requested' payout must be
+# before the auto-approve fallback closes it. Owned by
+# settings.payout_review_window_h; the legacy PAYOUT_REVIEW_WINDOW_H env var
+# (and this module attribute, which tests monkeypatch) still win here for
+# backward compatibility.
+PAYOUT_REVIEW_WINDOW_H = float(
+    os.environ.get("PAYOUT_REVIEW_WINDOW_H", str(settings.payout_review_window_h))
+)
 
 
 def approve_pending_payouts(
     session, now: datetime | None = None, review_window_h: float | None = None
 ) -> int:
-    """Approve 'payout_requested' events older than the review window by
-    recording a 'payout_approved' with the same amount. Returns the count
-    approved.
+    """Auto-approve payout requests past the review window. Kept under its
+    legacy name for the job's call sites; the real logic now lives in
+    services/payout_desk.auto_approve_pass, operating ONLY on payout_requests
+    workflow rows — legacy event-pair history (pre-PayoutRequest bookkeeping)
+    is left untouched. Returns the count approved (0 when
+    settings.payout_auto_approve is off)."""
+    from services.payout_desk import auto_approve_pass
 
-    There is no schema link between the two rows, so matching is POSITIONAL
-    per combine: the N oldest requests are covered by the N existing
-    approvals; anything beyond that and past the window gets approved
-    (requests are paced to one per 24h, so position matching is unambiguous
-    in practice). Legacy terminal 'payout' events need no approval.
-    Idempotent — a re-run sees its own approvals in the counts and no-ops."""
-    from models.combine_event import CombineEvent
-
-    if now is None:
-        now = datetime.now(timezone.utc)
     window_h = PAYOUT_REVIEW_WINDOW_H if review_window_h is None else review_window_h
-    cutoff = now - timedelta(hours=window_h)
-
-    requests = (
-        session.execute(
-            select(CombineEvent)
-            .where(CombineEvent.type == "payout_requested")
-            .order_by(
-                CombineEvent.combine_id, CombineEvent.created_at, CombineEvent.id
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if not requests:
-        return 0
-    approved_counts = dict(
-        session.execute(
-            select(CombineEvent.combine_id, func.count())
-            .where(CombineEvent.type == "payout_approved")
-            .group_by(CombineEvent.combine_id)
-        ).all()
-    )
-    approved = 0
-    position: dict[int, int] = {}
-    for req in requests:
-        idx = position.get(req.combine_id, 0)
-        position[req.combine_id] = idx + 1
-        if idx < approved_counts.get(req.combine_id, 0):
-            continue  # already approved (oldest-first position match)
-        if req.created_at > cutoff:
-            continue  # still under review
-        amount = float(req.amount or 0.0)
-        session.add(
-            CombineEvent(
-                user_id=req.user_id,
-                combine_id=req.combine_id,
-                type="payout_approved",
-                message=f"Payout approved — ${amount:,.2f}.",
-                amount=req.amount,
-            )
-        )
-        approved += 1
-    if approved:
-        session.commit()
-    return approved
+    return auto_approve_pass(session, now=now, review_window_h=window_h)
 
 
 def settle_combines(session_factory=None) -> dict:

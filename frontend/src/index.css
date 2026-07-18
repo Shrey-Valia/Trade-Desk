@@ -11,29 +11,28 @@ body,
 body {
   @apply text-fg-primary font-mono antialiased;
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  background-color: #16181C;
+  font-variant-numeric: tabular-nums lining-nums;
+  background-color: #0A0B0E;
 }
 
-/* Subtle radial gradient — slightly lifted in the center, darker at
- * the edges. Toggled via html[data-bg-gradient] from the userSettings
- * store. Defaults to "on" in the absence of the attribute so first
- * paint matches the new aesthetic. */
+/* Subtle radial gradient — the slate ground lifts slightly in the center,
+ * deepens at the edges. Toggled via html[data-bg-gradient] from the
+ * userSettings store. Defaults to "on" so first paint matches the aesthetic. */
 html:not([data-bg-gradient="off"]) body {
   background-image: radial-gradient(
     circle at 50% 38%,
-    #1B1E24 0%,
-    #16181C 55%,
-    #101216 100%
+    #0F1319 0%,
+    #0A0B0E 55%,
+    #08090C 100%
   );
   background-attachment: fixed;
 }
 
-/* Global keyboard focus ring — white (the monochrome active-state accent).
- * Hex hardcoded because CSS can't read the JS palette; matches
- * colors.accentAmber in src/lib/palette.js (which now renders white). */
+/* Global keyboard focus ring — the muted-gold nav/active accent. Hex hardcoded
+ * because CSS can't read the JS palette; matches colors.accentAmber in
+ * src/lib/palette.js (the active-state accent, now gold). */
 *:focus-visible {
-  outline: 2px solid #D8D8D2;
+  outline: 2px solid #D4A24C;
   outline-offset: 1px;
   border-radius: 2px;
 }
@@ -134,8 +133,8 @@ html:not([data-bg-gradient="off"]) body {
 }
 @keyframes td-quick-flash {
   0% {
-    background-color: rgba(216, 216, 210, 0.22);
-    box-shadow: inset 0 0 0 1px rgba(216, 216, 210, 0.8);
+    background-color: rgba(212, 162, 76, 0.18);
+    box-shadow: inset 0 0 0 1px rgba(212, 162, 76, 0.8);
   }
   100% {
     background-color: transparent;
@@ -145,14 +144,14 @@ html:not([data-bg-gradient="off"]) body {
 
 /* Theta-decay scrubber — the centerpiece of the Trade Desk demo gets a
  * dedicated style block. Native <input type=range> is themed across
- * WebKit + Firefox to use our amber-on-hairline tokens. Magenta thumb
- * matches the on-chart breakeven color so the eye associates "this
- * slider drives THAT line." */
+ * WebKit + Firefox on the void hairline track. The BEAM-magenta thumb
+ * matches the on-chart breakeven color so the eye associates "this slider
+ * drives THAT line." */
 .theta-scrubber {
   -webkit-appearance: none;
   appearance: none;
   height: 4px;
-  background: #2B2F37;
+  background: #212734;
   outline: none;
   cursor: pointer;
   margin: 0;
@@ -160,13 +159,13 @@ html:not([data-bg-gradient="off"]) body {
 }
 .theta-scrubber::-webkit-slider-runnable-track {
   height: 4px;
-  background: #2B2F37;
-  border: 1px solid #3A3F49;
+  background: #212734;
+  border: 1px solid #333A48;
 }
 .theta-scrubber::-moz-range-track {
   height: 4px;
-  background: #2B2F37;
-  border: 1px solid #3A3F49;
+  background: #212734;
+  border: 1px solid #333A48;
 }
 .theta-scrubber::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -174,15 +173,15 @@ html:not([data-bg-gradient="off"]) body {
   width: 12px;
   height: 12px;
   margin-top: -5px;
-  background: #D8D8D2;
-  border: 1px solid #16181C;
+  background: #C264D8;
+  border: 1px solid #0A0B0E;
   cursor: grab;
 }
 .theta-scrubber::-moz-range-thumb {
   width: 12px;
   height: 12px;
-  background: #D8D8D2;
-  border: 1px solid #16181C;
+  background: #C264D8;
+  border: 1px solid #0A0B0E;
   cursor: grab;
 }
 .theta-scrubber:active::-webkit-slider-thumb { cursor: grabbing; }
@@ -196,22 +195,22 @@ html:not([data-bg-gradient="off"]) body {
  * standardized scrollbar-* properties. */
 .news-scroll {
   scrollbar-width: thin;
-  scrollbar-color: #2C3038 #16181C;
+  scrollbar-color: #262C38 #0A0B0E;
 }
 .news-scroll::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 .news-scroll::-webkit-scrollbar-track {
-  background: #16181C;
+  background: #0A0B0E;
 }
 .news-scroll::-webkit-scrollbar-thumb {
-  background: #2C3038;
-  border: 2px solid #16181C;
+  background: #262C38;
+  border: 2px solid #0A0B0E;
   border-radius: 0;
 }
 .news-scroll::-webkit-scrollbar-thumb:hover {
-  background: #3A3F49;
+  background: #333A48;
 }
 
 /* Pre-liquidation urgency pulse — applied to the header MLL / DLL pills
@@ -226,12 +225,12 @@ html:not([data-bg-gradient="off"]) body {
 
 @keyframes td-pulse-warn {
   0%, 100% {
-    border-color: var(--td-pulse-color, #E8C84A);
-    box-shadow: 0 0 0 0 rgba(232, 200, 74, 0);
+    border-color: var(--td-pulse-color, #F0862E);
+    box-shadow: 0 0 0 0 rgba(240, 134, 46, 0);
   }
   50% {
-    border-color: var(--td-pulse-color, #E8C84A);
-    box-shadow: 0 0 0 2px rgba(232, 200, 74, 0.35);
+    border-color: var(--td-pulse-color, #F0862E);
+    box-shadow: 0 0 0 2px rgba(240, 134, 46, 0.35);
   }
 }
 

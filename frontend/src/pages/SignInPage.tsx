@@ -43,6 +43,14 @@ export function SignInPage() {
           onChange={setPassword}
           autoComplete="current-password"
         />
+        <div className="flex justify-end -mt-1">
+          <Link
+            to="/forgot-password"
+            className="text-tiny text-fg-tertiary-2 hover:text-amber"
+          >
+            Forgot password?
+          </Link>
+        </div>
         <AuthError
           message={signin.isError ? (signin.error as Error).message : null}
         />

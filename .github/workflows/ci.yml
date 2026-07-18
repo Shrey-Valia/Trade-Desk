@@ -197,3 +197,26 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # B4 (P0 wave 2026-07): prove the deploy image builds — the multi-stage
+  # Dockerfile is otherwise dead code until someone deploys. Build only, NO
+  # registry push (no credentials exist; a green build is the whole gate).
+  # The GHA layer cache keeps this cheap: the multi-GB python-deps layer
+  # only rebuilds when backend/uv.lock changes.
+  docker-image:
+    name: Docker image (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

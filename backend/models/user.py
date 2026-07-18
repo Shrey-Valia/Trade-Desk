@@ -70,6 +70,15 @@ class User(Base):
     # before charging the reset fee.
     reset_credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Privilege tier: "trader" (default) | "admin". Admins pass
+    # services.auth.require_admin and reach the /api/admin back office.
+    # Bootstrap: emails in settings.admin_emails are auto-promoted at signin.
+    role: Mapped[str] = mapped_column(String(12), nullable=False, default="trader")
+    # Operator suspension stamp. Suspended users can still sign in and read,
+    # but every trading open and financial action (purchase, payout,
+    # activation) is refused while set. NULL = not suspended.
+    suspended_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
     # Per-tier Daily Loss Limit overrides as JSON {tier: dollars}. Empty {}
     # means use each tier's default DLL. Enforced server-side in
     # combine_state (clamped to the 1-10%-of-starting-balance band).

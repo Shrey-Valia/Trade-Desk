@@ -1,0 +1,49 @@
+# Build-context excludes. The image only COPYies backend/ and frontend/,
+# but excluding the heavyweights keeps `docker build` context transfer
+# fast and guarantees no secrets or local data bake into layers.
+
+# Secrets — NEVER in the image (config.py would happily read a copied .env).
+.env
+.env.*
+
+# VCS / tooling
+.git
+.github
+.gitignore
+.claude
+.gstack
+.DS_Store
+.vscode
+.idea
+
+# Runtime data: live DB, uploads, nightly backups (repo root) and the stray
+# legacy DB under backend/data. Docker volumes own this in deployment.
+data
+backend/data
+# Any SQLite file anywhere — belt for a stray DB (e.g. backend/dashboard.db
+# from a relative-path run) that the directory rules above would miss. A
+# baked-in DB layer would ship every user's PII in the distributable image.
+*.db
+*.db-wal
+*.db-shm
+**/*.db
+
+# Python build/test artifacts
+**/__pycache__
+**/*.pyc
+**/.venv
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/*.egg-info
+
+# Node — npm ci and Vite run inside the build stages
+frontend/node_modules
+frontend/dist
+**/.vite
+
+# Docs / assets that never ship in the image
+docs
+screenshots
+README.md
+DESIGN.md

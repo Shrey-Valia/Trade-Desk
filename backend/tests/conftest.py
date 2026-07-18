@@ -22,6 +22,41 @@ from database import Base, get_session
 from main import app
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_gates: run with the production compliance gates ON "
+        "(suspended/KYC/tax/method/consent/e-sign) — skips the default "
+        "_relax_compliance_gates fixture",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _relax_compliance_gates(request, monkeypatch):
+    """The P0 compliance gates on the money endpoints (payout: KYC + tax +
+    payout method; purchase/reset: ToS + risk consent; activation: signed
+    funded-trader agreement) default ON in production. Left on, every
+    pre-gate test that purchases a combine or requests a payout would 403
+    before reaching its actual subject — so, exactly like the LIFTED
+    financial-limiter budget above, they are relaxed here BY DEFAULT at the
+    router binding site (routers.combines), leaving the service-level gate
+    tests (test_legal / test_verification) on the real functions.
+
+    Dedicated gate tests opt back in with @pytest.mark.real_gates and drive
+    the production defaults end-to-end (tests/test_payout_desk.py)."""
+    if request.node.get_closest_marker("real_gates"):
+        yield
+        return
+    monkeypatch.setattr(
+        "routers.combines.assert_payout_eligible", lambda db, user: None
+    )
+    monkeypatch.setattr("routers.combines.assert_consented", lambda db, user: None)
+    monkeypatch.setattr(
+        "routers.combines.assert_funded_agreement_signed", lambda db, user: None
+    )
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _fast_bcrypt():
     prior = settings.bcrypt_rounds
@@ -181,3 +216,65 @@ def make_combine(client: TestClient, tier: str = "50K", name: str | None = None)
     res = client.post("/api/combines/purchase", json=payload)
     assert res.status_code == 201, res.text
     return res.json()
+
+
+def accept_legal(client: TestClient, doc_keys: tuple[str, ...] = ("tos", "risk")) -> None:
+    """Checkbox-accept legal documents at their current versions — satisfies
+    the purchase/reset consent gate (ToS + risk by default)."""
+    res = client.post("/api/legal/accept", json={"doc_keys": list(doc_keys)})
+    assert res.status_code == 200, res.text
+
+
+def sign_funded_agreement(client: TestClient, typed_name: str = "Test Trader") -> None:
+    """Typed-name e-sign of the funded-trader agreement — satisfies the
+    activation gate."""
+    res = client.post(
+        "/api/legal/sign-funded-agreement", json={"typed_name": typed_name}
+    )
+    assert res.status_code == 200, res.text
+
+
+def satisfy_payout_prereqs(client: TestClient) -> None:
+    """Walk the signed-in user through EVERY production compliance gate on
+    the money path: consent (tos+risk), the funded-agreement e-sign, a
+    verified US KYC identity, a W-9 tax profile, and an ACH payout method —
+    all via the real endpoints. For @pytest.mark.real_gates tests."""
+    accept_legal(client)
+    sign_funded_agreement(client)
+    res = client.post(
+        "/api/verification/kyc/submit",
+        json={
+            "legal_name": "Test Trader",
+            "dob": "1990-01-15",
+            "country": "US",
+            "document_type": "passport",
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "verified", res.text
+    res = client.post(
+        "/api/verification/tax/submit",
+        json={
+            "form_type": "W9",
+            "legal_name": "Test Trader",
+            "country": "US",
+            "address": {
+                "line1": "1 Test St",
+                "city": "Testville",
+                "region": "CA",
+                "postal": "94000",
+                "country": "US",
+            },
+            "tin_last4": "1234",
+        },
+    )
+    assert res.status_code == 200, res.text
+    res = client.post(
+        "/api/verification/methods",
+        json={
+            "type": "ach",
+            "label": "Test Checking",
+            "details": {"routing_number": "021000021", "account_last4": "6789"},
+        },
+    )
+    assert res.status_code == 201, res.text

@@ -15,11 +15,31 @@ import {
   resumeCombine,
   updateCopyConfig,
 } from "@/lib/api";
+import { errorCode, errorMessage } from "@/lib/legalApi";
 import { useActivePosition } from "@/stores/activePosition";
 import { toast } from "@/stores/toast";
 import type { CopyConfigInput, PurchaseInput } from "@/types/combine";
 
-const errMsg = (e: unknown) => (e as Error)?.message || "Something went wrong";
+// Backend gate errors arrive as "snake_case_code: human message" — strip the
+// machine code before it reaches a toast (errorMessage does exactly that).
+const errMsg = (e: unknown) => errorMessage(e) || "Something went wrong";
+
+// Gate codes the calling UI already routes on (opening the KYC step, the
+// funded-agreement modal, the consent checkbox). The hook-level toast would
+// duplicate that recovery UI with a raw error — skip it for these codes.
+const UI_ROUTED_CODES = new Set([
+  "kyc_required",
+  "tax_profile_required",
+  "payout_method_required",
+  "agreement_required",
+  "consent_required",
+]);
+
+const toastUnlessRouted = (e: unknown) => {
+  const code = errorCode(e);
+  if (code && UI_ROUTED_CODES.has(code)) return;
+  toast.error(errMsg(e));
+};
 
 export const COMBINES_KEY = ["combines"] as const;
 export const COMBINE_EVENTS_KEY = ["combines", "events"] as const;
@@ -55,7 +75,8 @@ export function usePurchaseCombine() {
       qc.invalidateQueries({ queryKey: ACCOUNT_STATE_KEY });
       toast.success(`${combine.name} is ready to trade.`);
     },
-    onError: (e) => toast.error(errMsg(e)),
+    // consent_required routes to the inline checkbox on NewCombinePage.
+    onError: toastUnlessRouted,
   });
 }
 
@@ -100,7 +121,8 @@ export function useResetCombine() {
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
       toast.success("Evaluation reset — fresh start.");
     },
-    onError: (e) => toast.error(errMsg(e)),
+    // consent_required (ToS version bump) routes to the consent UI.
+    onError: toastUnlessRouted,
   });
 }
 
@@ -118,7 +140,8 @@ export function useRequestPayout() {
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
       toast.success(`Payout requested — $${payout.amount.toLocaleString()}.`);
     },
-    onError: (e) => toast.error(errMsg(e)),
+    // kyc/tax/method gate codes route to the readiness steps on PayoutsPage.
+    onError: toastUnlessRouted,
   });
 }
 
@@ -186,7 +209,8 @@ export function useActivateAccount() {
       qc.invalidateQueries({ queryKey: COMBINE_EVENTS_KEY });
       toast.success(`${combine.name} activated — payouts unlocked.`);
     },
-    onError: (e) => toast.error(errMsg(e)),
+    // agreement_required routes to the FundedAgreementModal.
+    onError: toastUnlessRouted,
   });
 }
 

@@ -20,6 +20,7 @@ export const colors: {
   readonly accentAmber: string;
   readonly accentCyan: string;
   readonly warning: string;
+  readonly accentBreach: string;
   readonly positionMagenta: string;
   readonly actionBuy: string;
   readonly actionBuyHover: string;

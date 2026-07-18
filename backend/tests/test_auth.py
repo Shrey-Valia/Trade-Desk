@@ -273,3 +273,181 @@ def test_change_password_throttled_429(auth_client, monkeypatch):
     res = _change(auth_client, "wrong-wrong", "newpassword456")  # 3rd → blocked
     assert res.status_code == 429
     assert "Retry-After" in res.headers
+
+
+# -- forgot / reset (account recovery — workstream B3) -------------------------
+
+def _forgot(client, email: str):
+    return client.post("/api/auth/forgot", json={"email": email})
+
+
+def _reset(client, token: str, new_password: str = "resetpass789"):
+    return client.post(
+        "/api/auth/reset", json={"token": token, "new_password": new_password}
+    )
+
+
+def _latest_reset_token(session_factory) -> str:
+    """Pull the raw token back out of the queued reset email's link."""
+    import re
+
+    from models.notification import EmailOutbox
+
+    with session_factory() as s:
+        row = (
+            s.query(EmailOutbox)
+            .filter(EmailOutbox.template == "password_reset")
+            .order_by(EmailOutbox.id.desc())
+            .first()
+        )
+        assert row is not None, "no password_reset email queued"
+        m = re.search(r"reset-password\?token=([A-Za-z0-9_\-]+)", row.body)
+        assert m, row.body
+        return m.group(1)
+
+
+def test_forgot_unknown_email_204_writes_nothing(client, session_factory):
+    from models.notification import EmailOutbox
+    from models.password_reset import PasswordResetToken
+
+    res = _forgot(client, "ghost@test.local")
+    assert res.status_code == 204
+    with session_factory() as s:
+        assert s.query(PasswordResetToken).count() == 0
+        assert s.query(EmailOutbox).count() == 0
+
+
+def test_forgot_known_email_204_queues_email_and_token(
+    auth_client, session_factory
+):
+    from models.notification import EmailOutbox
+    from models.password_reset import PasswordResetToken
+
+    assert _forgot(auth_client, "trader@test.local").status_code == 204
+    with session_factory() as s:
+        token_row = s.query(PasswordResetToken).one()
+        assert token_row.used_at is None
+        assert token_row.expires_at > datetime.now(timezone.utc)
+        mail = s.query(EmailOutbox).one()
+        assert mail.to_email == "trader@test.local"
+        assert mail.template == "password_reset"
+        assert mail.status == "queued"
+        # The DB stores the sha256, never the raw token from the link.
+        raw = _latest_reset_token(session_factory)
+        assert raw not in token_row.token_hash
+
+
+def test_forgot_reset_roundtrip_revokes_all_sessions(
+    auth_client, session_factory
+):
+    # A second live session for the same account — reset must kill it too.
+    other = TestClient(app)
+    assert (
+        other.post(
+            "/api/auth/signin",
+            json={"email": "trader@test.local", "password": "password123"},
+        ).status_code
+        == 200
+    )
+
+    assert _forgot(auth_client, "trader@test.local").status_code == 204
+    token = _latest_reset_token(session_factory)
+    assert _reset(auth_client, token).status_code == 204
+
+    # EVERY session is revoked — both cookies now 401.
+    assert auth_client.get("/api/auth/me").status_code == 401
+    assert other.get("/api/auth/me").status_code == 401
+    with session_factory() as s:
+        assert s.query(AuthSession).count() == 0
+
+    # Old password dead, new password works.
+    assert (
+        auth_client.post(
+            "/api/auth/signin",
+            json={"email": "trader@test.local", "password": "password123"},
+        ).status_code
+        == 401
+    )
+    assert (
+        auth_client.post(
+            "/api/auth/signin",
+            json={"email": "trader@test.local", "password": "resetpass789"},
+        ).status_code
+        == 200
+    )
+
+
+def test_reset_token_is_single_use(auth_client, session_factory):
+    assert _forgot(auth_client, "trader@test.local").status_code == 204
+    token = _latest_reset_token(session_factory)
+    assert _reset(auth_client, token).status_code == 204
+    replay = _reset(auth_client, token, "anotherpass000")
+    assert replay.status_code == 400
+    assert "invalid_token" in replay.json()["detail"]
+    # The replay changed nothing — the first reset's password still works.
+    assert (
+        auth_client.post(
+            "/api/auth/signin",
+            json={"email": "trader@test.local", "password": "resetpass789"},
+        ).status_code
+        == 200
+    )
+
+
+def test_reset_expired_token_400(auth_client, session_factory):
+    assert _forgot(auth_client, "trader@test.local").status_code == 204
+    token = _latest_reset_token(session_factory)
+    from models.password_reset import PasswordResetToken
+
+    with session_factory() as s:
+        row = s.query(PasswordResetToken).one()
+        row.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        s.commit()
+    res = _reset(auth_client, token)
+    assert res.status_code == 400
+    assert "invalid_token" in res.json()["detail"]
+    # Session untouched by a failed reset.
+    assert auth_client.get("/api/auth/me").status_code == 200
+
+
+def test_reset_garbage_token_400(client):
+    res = _reset(client, "not-a-real-token-at-all")
+    assert res.status_code == 400
+    assert "invalid_token" in res.json()["detail"]
+
+
+def test_new_forgot_invalidates_prior_unused_token(auth_client, session_factory):
+    from models.password_reset import PasswordResetToken
+
+    assert _forgot(auth_client, "trader@test.local").status_code == 204
+    first_token = _latest_reset_token(session_factory)
+    assert _forgot(auth_client, "trader@test.local").status_code == 204
+    second_token = _latest_reset_token(session_factory)
+    assert first_token != second_token
+    with session_factory() as s:
+        assert s.query(PasswordResetToken).count() == 1  # prior one deleted
+
+    assert _reset(auth_client, first_token).status_code == 400
+    assert _reset(auth_client, second_token).status_code == 204
+
+
+def test_forgot_rejects_short_new_password_on_reset(auth_client, session_factory):
+    assert _forgot(auth_client, "trader@test.local").status_code == 204
+    token = _latest_reset_token(session_factory)
+    res = auth_client.post(
+        "/api/auth/reset", json={"token": token, "new_password": "short"}
+    )
+    assert res.status_code == 422  # shared Password policy (min 8 chars)
+    # Policy rejection didn't burn the token.
+    assert _reset(auth_client, token).status_code == 204
+
+
+def test_forgot_throttled_429(client, monkeypatch):
+    from services.rate_limit import auth_limiter
+
+    monkeypatch.setattr(auth_limiter, "max_attempts", 2)
+    assert _forgot(client, "a@test.local").status_code == 204
+    assert _forgot(client, "b@test.local").status_code == 204
+    res = _forgot(client, "c@test.local")
+    assert res.status_code == 429
+    assert "Retry-After" in res.headers

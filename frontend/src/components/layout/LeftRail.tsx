@@ -1,16 +1,19 @@
 import { NavLink } from "react-router-dom";
 
 import { TradeDeskMark } from "@/components/branding/TradeDeskMark";
+import { useMe } from "@/hooks/useAuth";
 import { useOnboarding } from "@/stores/onboarding";
 
 import {
   AccountsIcon,
+  AdminIcon,
   AnalyticsIcon,
   ChartIcon,
   DashboardIcon,
   JournalIcon,
   PayoutsIcon,
   SettingsIcon,
+  SupportIcon,
 } from "./RailIcons";
 
 export interface RailItem {
@@ -33,8 +36,14 @@ export const TOP_ITEMS: RailItem[] = [
 ];
 
 export const BOTTOM_ITEMS: RailItem[] = [
+  { to: "/support", label: "Support", icon: SupportIcon },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
+
+// Admin-only entry (P0 wave, workstream D1). Deliberately NOT in the
+// exported arrays: the mobile bottom nav mirrors those for every user,
+// while the operator console is a desktop tool shown only to admins.
+const ADMIN_ITEM: RailItem = { to: "/admin", label: "Admin", icon: AdminIcon };
 
 /**
  * Persistent left navigation rail.
@@ -50,6 +59,10 @@ export const BOTTOM_ITEMS: RailItem[] = [
  * Rail is app-level chrome — rendered by RailShell, not per-route.
  */
 export function LeftRail() {
+  // Role probe rides the cached /me query — no extra request. The entry is
+  // UX-only visibility; the backend gates every /api/admin call regardless.
+  const me = useMe();
+  const isAdmin = me.isSuccess && me.data.role === "admin";
   return (
     <nav
       aria-label="Primary"
@@ -70,6 +83,7 @@ export function LeftRail() {
           <li>
             <HelpEntry />
           </li>
+          {isAdmin && <RailEntry item={ADMIN_ITEM} />}
           {BOTTOM_ITEMS.map((item) => (
             <RailEntry key={item.to} item={item} />
           ))}

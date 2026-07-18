@@ -16,7 +16,7 @@ real get_live_option_quotes binding is exercised elsewhere.
 from __future__ import annotations
 
 import types
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 
 import pytest
 
@@ -86,6 +86,10 @@ def _run(session_factory, **kw):
         spot_for=lambda sym: 100.0,
         option_mark=lambda t, s: 1.0,
         unrealized_for=lambda t, s: 0.0,
+        # Pin the monitor clock to MID-SESSION on the seeded legs' expiry
+        # date — after the 16:00 ET close the wall clock turns every seeded
+        # 0DTE leg into an expired-contract cancel (see test_order_monitor).
+        now=datetime.combine(_TODAY, dt_time(17, 0), tzinfo=timezone.utc),
     )
     params.update(kw)
     return run_order_monitor(session_factory=session_factory, **params)

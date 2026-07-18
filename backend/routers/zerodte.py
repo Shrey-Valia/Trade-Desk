@@ -38,7 +38,9 @@ from config import settings
 from database import get_session
 from models.combine import Combine
 from models.trade import Trade
+from models.user import User
 from schemas.journal import TradeLeg, TradeOut, compute_net_debit_credit
+from services import platform_state
 from services.alpaca_client import get_chain_snapshot, get_quotes
 from services.auth import get_active_combine
 from services.combine_state import combine_snapshot
@@ -562,6 +564,98 @@ def _require_market_open() -> None:
         )
 
 
+def _require_symbol_tradeable(session: Session, symbol: str) -> None:
+    """Universe enforcement on the OPEN path (risk controls, B5).
+
+    When settings.enforce_tradeable_universe is on, a symbol outside
+    settings.zero_dte_universe — or on the operator's DB-backed ban list
+    (platform_state) — cannot be OPENED. Closes are deliberately never
+    symbol-gated: an existing position in a just-banned symbol must stay
+    exitable. No market-data dependency (a set lookup + one DB get), so the
+    gate works exactly when the data feed is the thing that broke."""
+    if not settings.enforce_tradeable_universe:
+        return
+    sym = symbol.upper().strip()
+    universe = {s.upper() for s in settings.zero_dte_universe}
+    if sym not in universe or sym in platform_state.get_banned_symbols(session):
+        raise HTTPException(
+            status_code=422,
+            detail=f"symbol_not_tradeable: {sym} is not in the tradeable universe",
+        )
+
+
+def _require_quote_quality(
+    sym: str, labeled_quotes: list[tuple[str, object, str]]
+) -> None:
+    """Refuse an OPEN against an unusable option market (risk controls, B5).
+
+    The gate is ACTION-AWARE, because the risk differs by side:
+
+      * SELL legs (writing premium) get the FULL check — a genuine two-sided
+        NBBO, mid ≥ settings.min_option_mid, and relative spread ≤
+        settings.max_option_spread_ratio. Selling into a one-sided / fantasy
+        market is the exploit the gate exists to stop: the fill machinery
+        would synthesize a price for a contract nobody actually bids, letting
+        a trader "collect" premium the firm could never hedge.
+
+      * BUY legs (paying premium) only need a real ASK to lift. A protective
+        long wing of a defined-risk structure (credit spread, iron condor) is
+        NORMALLY a cheap, wide, zero-bid far-OTM contract — legitimately so.
+        Applying the sell-side checks to it (as the first cut did) blocked
+        every defined-risk structure while leaving the NAKED short body
+        openable — inverting the gate's own purpose. Paying up for a wide buy
+        is not an exploit, so a buy leg passes on ask > 0 alone.
+
+    OPENS ONLY — closes and liquidations must never be blocked by quote
+    quality (an exit is always allowed, whatever the market looks like).
+    Working-order placements are not gated either: they fill later through
+    the monitor at the user's own limit, not against this quote. Fill math
+    is untouched — this is a yes/no door, not a pricing change."""
+    for label, q, action in labeled_quotes:
+        raw_bid = getattr(q, "bid", None)
+        raw_ask = getattr(q, "ask", None)
+        bid = float(raw_bid) if raw_bid and raw_bid > 0 else 0.0
+        ask = float(raw_ask) if raw_ask and raw_ask > 0 else 0.0
+        if action == "buy":
+            # A buy fills at the ask — it only needs a real offer to cross to.
+            if ask <= 0.0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"quote_quality: {sym} {label} leg has no offer to buy "
+                        f"(ask ${ask:.2f})"
+                    ),
+                )
+            continue
+        # SELL leg — the full anti-fantasy-market check.
+        if bid <= 0.0 or ask <= 0.0:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"quote_quality: {sym} {label} leg has an unusable market "
+                    f"(one-sided quote — bid ${bid:.2f} / ask ${ask:.2f})"
+                ),
+            )
+        mid = (bid + ask) / 2.0  # > 0: both sides positive above (no div-by-zero)
+        if mid < settings.min_option_mid:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"quote_quality: {sym} {label} leg has an unusable market "
+                    f"(mid ${mid:.2f} is below the ${settings.min_option_mid:.2f} minimum)"
+                ),
+            )
+        spread_ratio = (ask - bid) / mid
+        if spread_ratio > settings.max_option_spread_ratio:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"quote_quality: {sym} {label} leg has an unusable market "
+                    f"(mid ${mid:.2f}, spread {spread_ratio * 100.0:.0f}%)"
+                ),
+            )
+
+
 def _open_contracts_for_combine(session: Session, combine_id: int) -> int:
     """Total contracts across the combine's currently-OPEN and WORKING
     positions. The scaling cap limits simultaneous open size, so a new order
@@ -652,7 +746,10 @@ def _live_combine_urpl(session: Session, combine: Combine) -> float:
 
 
 def _require_tradeable(
-    session: Session, combine: Combine, contracts: int | None = None
+    session: Session,
+    combine: Combine,
+    contracts: int | None = None,
+    symbol: str | None = None,
 ) -> None:
     """Enforce the combine's standing rules on the OPEN path — the rule
     actually binds server-side, not just via the trade-ticket soft-gate.
@@ -662,7 +759,36 @@ def _require_tradeable(
     When `contracts` is given, also enforces the SCALING PLAN: the
     requested size can't exceed the max allowed at the current built
     equity (fixed intraday; re-evaluates at the 5pm-PT settlement).
-    Computing the snapshot here also persists any pending settlement."""
+    Computing the snapshot here also persists any pending settlement.
+
+    Every OPEN path comes through here — straddle, single-leg, multi-leg
+    and /reverse re-opens (copy-trade mirrors transitively: mirror_open
+    only runs after the lead's open passes this gate, and monitor-side
+    fills of mirrored working orders are gated in order_monitor). Closes
+    never call it, so the platform-mode checks can hard-refuse."""
+    # ── Operator kill switch + account state (risk controls, B5) ────────────
+    # Cheapest first: two DB gets (user + platform mode) and a set lookup, no
+    # market data, before any snapshot/settlement math below.
+    user = session.get(User, combine.user_id)
+    if user is not None and user.suspended_at is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="account_suspended: your account is suspended — contact support",
+        )
+    mode = platform_state.get_trading_mode(session)
+    if mode == "halted":
+        raise HTTPException(
+            status_code=503,
+            detail="trading_halted: trading is temporarily halted",
+        )
+    if mode == "close_only":
+        raise HTTPException(
+            status_code=409,
+            detail="close_only: only closing orders are being accepted right now",
+        )
+    if symbol is not None:
+        _require_symbol_tradeable(session, symbol)
+
     snap = combine_snapshot(session, combine)
     if snap.outcome == "failed":
         raise HTTPException(
@@ -829,11 +955,22 @@ def open_zerodte_straddle(
     # total-contract cap. Gate and clamp on that effective total, then back out
     # the per-leg size. (Defense-in-depth: _require_tradeable already 422s an
     # over-cap request; the clamp guards a snapshot shift under us.)
-    _require_tradeable(session, combine, contracts=payload.contracts * 2)
+    _require_tradeable(
+        session, combine, contracts=payload.contracts * 2, symbol=payload.symbol
+    )
     allowed_total = _clamp_contracts_to_cap(session, combine, payload.contracts * 2)
     contracts = max(1, allowed_total // 2)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
     _require_today_expiry(expiry)
+    # Quote-quality gate — an immediate market fill needs a usable two-sided
+    # NBBO on BOTH legs (opens only; closes are never quote-gated).
+    _require_quote_quality(
+        sym,
+        [
+            (f"call {atm:g}", call_q, payload.action),
+            (f"put {atm:g}", put_q, payload.action),
+        ],
+    )
 
     action = payload.action
     call_price = _pick_fill_price(call_q, action, contracts)
@@ -919,7 +1056,9 @@ def open_zerodte_leg(
     _validate_premium_mults(
         payload.action == "sell", payload.tp_premium_mult, payload.sl_premium_mult
     )
-    _require_tradeable(session, combine, contracts=payload.contracts)
+    _require_tradeable(
+        session, combine, contracts=payload.contracts, symbol=payload.symbol
+    )
     # WS5: defense-in-depth — clamp the persisted size to the scaling cap.
     contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
     sym, spot, target_expiry, by_key = _resolve_same_day_quotes(payload.symbol)
@@ -948,6 +1087,12 @@ def open_zerodte_leg(
             raise HTTPException(
                 422, f"No {side} at strike {payload.strike:g} for {sym} 0DTE today."
             )
+        # Quote-quality gate — an immediate market fill needs a usable
+        # two-sided NBBO (opens only; working orders fill later through the
+        # monitor at the user's own limit, and closes are never quote-gated).
+        _require_quote_quality(
+            sym, [(f"{side} {payload.strike:g}", contract_row, payload.action)]
+        )
         q = _LegQuote(
             symbol=f"{sym} {side}",
             strike=payload.strike,
@@ -1164,7 +1309,9 @@ def open_zerodte_multi_leg(
     # 4 contracts; a butterfly 1-2-1 is 4). Gate AND clamp on that effective
     # total, then back out the base size.
     sum_ratio = sum(int(spec.ratio) for spec in payload.legs)
-    _require_tradeable(session, combine, contracts=payload.contracts * sum_ratio)
+    _require_tradeable(
+        session, combine, contracts=payload.contracts * sum_ratio, symbol=payload.symbol
+    )
     effective = _clamp_contracts_to_cap(session, combine, payload.contracts * sum_ratio)
     base_contracts = max(1, effective // sum_ratio)
 
@@ -1196,6 +1343,12 @@ def open_zerodte_multi_leg(
             mid, _src = _quote_price(contract_row)
             price = float(mid) if mid is not None and mid > 0 else 0.0
         else:
+            # Quote-quality gate — every leg of an immediate market fill needs
+            # a usable two-sided NBBO (opens only). Raising here is safe: the
+            # Trade row is only persisted after the whole loop.
+            _require_quote_quality(
+                sym, [(f"{spec.side} {spec.strike:g}", contract_row, spec.action)]
+            )
             price = _pick_fill_price(q, spec.action, leg_qty)
             if price == 0:
                 raise HTTPException(
@@ -1548,6 +1701,13 @@ def reverse_positions(
     _require_tradeable(session, combine)
     now = datetime.now(UTC)
     positions = _open_positions_for_combine(session, combine.id)
+    # Reversing re-OPENS the opposite side of every held position, so each
+    # held symbol must still be open-eligible (universe + ban list). Checked
+    # UP FRONT — before any close books — so a banned symbol refuses the whole
+    # action atomically instead of flattening half the book. Plain closes are
+    # never symbol-gated: /flatten remains the exit for a banned symbol.
+    for held_symbol in sorted({t.symbol for t in positions}):
+        _require_symbol_tradeable(session, held_symbol)
     closed: list[int] = []
     opened: list[int] = []
     total = 0.0

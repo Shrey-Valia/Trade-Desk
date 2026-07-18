@@ -21,26 +21,31 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from database import get_session
 from models.combine import Combine
 from models.combine_event import CombineEvent
 from models.payment import Payment
+from models.payout_request import PayoutRequest
 from models.user import User
-from services import payments, pricing
+from services import payments, payout_desk, pricing
 from services.account_tiers import TIERS
 from services.auth import get_current_user
 from services.combine_provision import MAX_COMBINES, provision_combine
 from services.combine_state import (
+    PAYOUT_CREDIT_TYPES,
     PAYOUT_DEBIT_TYPES,
     combine_snapshot,
     has_open_book,
     realized_by_trading_day,
     record_event,
 )
+from services.legal import assert_consented, assert_funded_agreement_signed
+from services.payout_desk import REASON_LABELS
 from services.rate_limit import enforce_user, financial_limiter
+from services.verification import assert_payout_eligible
 
 router = APIRouter(prefix="/api/combines", tags=["combines"])
 
@@ -191,31 +196,58 @@ class CombineEventOut(BaseModel):
     type: str = Field(
         ...,
         description="funded | failed | settled | reset | payout_requested | "
-        "payout_approved | activation | renewal | sub_cancel | sub_resume | "
-        "sub_ended (legacy data may carry plain 'payout')",
+        "payout_approved | payout_denied | activation | renewal | sub_cancel | "
+        "sub_resume | sub_ended (legacy data may carry plain 'payout')",
     )
     message: str
     amount: float | None
     created_at: datetime
 
 
+class PayoutRequestOut(BaseModel):
+    """One payout-request workflow row, as the trader sees it — the
+    adjudication surface behind the PayoutsPage (state machine in
+    services/payout_desk; the money ledger stays in combine events)."""
+
+    id: int
+    amount: float
+    state: str = Field(
+        ..., description="requested | under_review | approved | denied | held | paid"
+    )
+    reason_code: str | None = Field(
+        None, description="Denial reason code (payout_desk.DENIAL_REASONS key)."
+    )
+    reason_label: str | None = Field(
+        None, description="Human label for reason_code."
+    )
+    note: str | None = Field(None, description="Reviewer note shown to the trader.")
+    requested_at: datetime
+    decided_at: datetime | None
+
+
 def _payouts_requested(
     session: Session, combine_id: int, since: datetime | None = None
 ) -> float:
-    """Sum of payout amounts already requested on this combine — the debit
-    events only (PAYOUT_DEBIT_TYPES), never the approvals that echo them.
+    """NET payout amount outstanding on this combine — the request-time debit
+    events (PAYOUT_DEBIT_TYPES) minus 'payout_denied' re-credits, never the
+    approvals that echo them. A denied request stops counting entirely, so
+    its amount becomes requestable again (mirrors payouts_booked's netting
+    on the balance).
 
     `since` scopes to the current funded epoch so a reset-and-re-passed account
     starts with a clean `available` — prior-stint withdrawals don't suppress
     new-stint payouts (mirrors payouts_booked's epoch scoping on the balance)."""
-    stmt = select(CombineEvent.amount).where(
+    stmt = select(CombineEvent.type, CombineEvent.amount).where(
         CombineEvent.combine_id == combine_id,
-        CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
+        CombineEvent.type.in_(PAYOUT_DEBIT_TYPES + PAYOUT_CREDIT_TYPES),
     )
     if since is not None:
         stmt = stmt.where(CombineEvent.created_at >= since)
-    rows = session.execute(stmt).all()
-    return float(sum((r[0] or 0.0) for r in rows))
+    total = 0.0
+    for type_, amount in session.execute(stmt).all():
+        value = float(amount or 0.0)
+        total += value if type_ in PAYOUT_DEBIT_TYPES else -value
+    return max(0.0, total)
 
 
 def _payouts_requested_by_combine(
@@ -234,21 +266,30 @@ def _payouts_requested_by_combine(
     # The epoch lives on the combine row, so JOIN and filter in SQL — this stays
     # ONE grouped query (no N+1). A NULL epoch (eval / funded-but-unactivated)
     # counts every debit; otherwise only debits at/after the epoch count.
+    # Denials NET OUT in the same statement: a 'payout_denied' row (the payout
+    # desk's re-credit, always the same amount as its request) sums with a
+    # negative sign, so a denied request stops counting entirely.
     epoch = func.coalesce(Combine.funded_epoch_at, Combine.funded_activated_at)
+    signed_amount = case(
+        (CombineEvent.type.in_(PAYOUT_DEBIT_TYPES), CombineEvent.amount),
+        else_=0 - CombineEvent.amount,
+    )
     rows = session.execute(
         select(
             CombineEvent.combine_id,
-            func.coalesce(func.sum(CombineEvent.amount), 0),
+            func.coalesce(func.sum(signed_amount), 0),
         )
         .join(Combine, Combine.id == CombineEvent.combine_id)
         .where(
             CombineEvent.combine_id.in_(combine_ids),
-            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES),
+            CombineEvent.type.in_(PAYOUT_DEBIT_TYPES + PAYOUT_CREDIT_TYPES),
             (epoch.is_(None)) | (CombineEvent.created_at >= epoch),
         )
         .group_by(CombineEvent.combine_id)
     ).all()
-    return {cid: float(total or 0.0) for cid, total in rows}
+    # Clamp like _payouts_requested: an epoch boundary between a request and
+    # its denial must never let the orphaned credit inflate the new stint.
+    return {cid: max(0.0, float(total or 0.0)) for cid, total in rows}
 
 
 def _to_out(
@@ -303,6 +344,16 @@ def _to_out(
         copy_take_profit=combine.copy_take_profit,
         created_at=combine.created_at,
     )
+
+
+def _require_not_suspended(user: User) -> None:
+    """Suspension gate on every money-moving endpoint (purchase / reset /
+    payout / activation) — an operator-suspended account can still read its
+    state but can't transact. Mirrors the zerodte open-path gate."""
+    if user.suspended_at is not None:
+        raise HTTPException(
+            403, "account_suspended: your account is suspended — contact support"
+        )
 
 
 def _owned_combine(session: Session, user: User, combine_id: int) -> Combine:
@@ -427,6 +478,7 @@ def purchase_combine(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> CombineOut:
+    _require_not_suspended(user)
     # Paywall: with Stripe configured, checkout is the ONLY purchase path —
     # this endpoint would otherwise provision a combine for free. Checked
     # before the throttle (like checkout's Stripe-off short-circuit) so a
@@ -439,6 +491,9 @@ def purchase_combine(
     # Per-user throttle: provisioning a combine writes a payment + a combine row;
     # a double-click or scripted loop shouldn't be able to spin up many at once.
     enforce_user(financial_limiter, user.id, "purchase")
+    # Consent gate: ToS + risk disclosure accepted at their CURRENT versions
+    # before any purchase — 403 consent_required otherwise (services/legal).
+    assert_consented(session, user)
     # Simulated paid purchase: no real money moves, but the recorded amount
     # is the real matrix monthly price (provision_combine fills it from the
     # chosen path + split). When Stripe is on the frontend routes through
@@ -534,9 +589,13 @@ def reset_combine(
     outcome — the trade history is preserved. Requires a FLAT book: an open
     position's eventual P&L would escape eval accounting entirely (only
     entry_date >= eval_reset_at counts)."""
+    _require_not_suspended(user)
     # Per-user throttle: a reset books a fee payment — same budget as the
     # other financial endpoints (purchase / payout / activation).
     enforce_user(financial_limiter, user.id, "reset")
+    # A reset is a purchase (it books a fee, or spends a credit) — the same
+    # consent gate as the purchase endpoint applies.
+    assert_consented(session, user)
     combine = _owned_combine(session, user, combine_id)
     if combine.status == "archived":
         # An archived combine is terminal — it can never trade again. Resetting
@@ -577,6 +636,12 @@ def reset_combine(
             status=status,
         )
     )
+    # Void every live payout request BEFORE the epoch clears: the reset
+    # discards their debits from the new stint's window, so a later denial
+    # of a surviving row would book an orphaned re-credit that inflates the
+    # new epoch's balance (a double-payout hole). 'cancelled' is terminal
+    # and writes NO ledger event.
+    payout_desk.void_requests(session, combine.id, "account_reset")
     combine.outcome = "active"
     combine.funded_at = None
     # A terminated funded account resets back to the EVAL stage: clear the
@@ -666,13 +731,21 @@ def request_payout(
     session: Session = Depends(get_session),
 ) -> PayoutOut:
     """Request a payout on a FUNDED, ACTIVATED account: the trader's split
-    (80/20 or 50/50) of FUNDED-STAGE realized profit, net of prior requests.
+    (80/20 or 50/50) of FUNDED-STAGE realized profit, net of prior requests
+    (denied requests net back out — the money returned to the account).
     Body is optional JSON {amount?: number}; absent → the full available
     amount. Simulated — records a 'payout_requested' event but moves no
     money. The booked amount DEBITS the funded balance at REQUEST time
-    (services/combine_state — funds are held while the simulated review
-    runs); the settle pass approves it after the review window by recording
-    a matching 'payout_approved' (jobs/settle_combines).
+    (services/combine_state — funds are held while the review runs), and a
+    PayoutRequest workflow row lands in the SAME transaction for the review
+    desk (services/payout_desk): a human approves/denies/holds it via the
+    admin queue, or the settle pass auto-approves a still-'requested' row
+    after the review window when settings.payout_auto_approve is on.
+
+    Compliance gates (403 with a machine-readable code prefix): a suspended
+    account can't transact (account_suspended), and every enabled payout
+    prerequisite must be met — KYC verified / tax profile / payout method
+    (services/verification.assert_payout_eligible).
 
     Policy gates (each a distinct 409): the PAYOUT_* minimums above — at
     least $125, within the available balance, 5 funded-stage winning days
@@ -696,6 +769,11 @@ def request_payout(
          within PAYOUT_IDEMPOTENCY_WINDOW_S seconds (double-click / retry / two
          tabs), turning it into a clean 409 rather than a second event.
     """
+    _require_not_suspended(user)
+    # KYC / tax / payout-method prerequisites (each toggleable via settings)
+    # — checked before anything is read or booked so an ineligible trader
+    # gets routed to verification, not into the eligibility math.
+    assert_payout_eligible(session, user)
     # Per-user throttle — a second belt over the idempotency window below: caps
     # how often one user can fire payout requests regardless of which combine, so
     # a scripted loop can't hammer the booking path across many accounts.
@@ -704,6 +782,13 @@ def request_payout(
     # which would release any lock we held, so we compute the gating booleans +
     # the gross eligible amount here, then re-lock for the booking below.
     combine = _owned_combine(session, user, combine_id)
+    # An archived combine (refund, chargeback, subscription end) is terminal —
+    # _owned_combine deliberately returns archived rows for history reads, so
+    # the money path needs its own guard.
+    if combine.status == "archived":
+        raise HTTPException(
+            409, "combine_archived: an archived combine cannot request payouts"
+        )
     snap = combine_snapshot(session, combine)
     if not snap.funded:
         raise HTTPException(409, "account is not funded")
@@ -739,6 +824,25 @@ def request_payout(
     ).scalar_one_or_none()
     if locked is None:
         raise HTTPException(404, f"combine {combine_id} not found")
+
+    # Acquire a REAL write lock before the read-decide-write below.
+    # with_for_update() is a documented NO-OP on SQLite (the shipped default
+    # deploy — the Dockerfile sets a sqlite:// DATABASE_URL), so on SQLite the
+    # SELECT above does NOT serialize this section: two concurrent requests
+    # (a double-click dispatched across the FastAPI threadpool) would each read
+    # the same `available` and both book — double-debiting the balance and,
+    # with auto-approve on, double-paying. An explicit UPDATE travels the write
+    # path that DOES take the lock: on SQLite the second request's UPDATE waits
+    # on busy_timeout until the first commits; on Postgres it takes the row
+    # lock (equivalent to FOR UPDATE). Writing settled_hwm to itself changes
+    # nothing but still acquires the lock, held until this transaction commits —
+    # so every read below (idempotency, pacing, `available`) sees a fully
+    # serialized view and the loser observes the winner's booked event.
+    session.execute(
+        update(Combine)
+        .where(Combine.id == combine.id)
+        .values(settled_hwm=Combine.settled_hwm)
+    )
 
     now = datetime.now(timezone.utc)
 
@@ -803,15 +907,50 @@ def request_payout(
             "payout would drop the balance to the Maximum Loss Limit — "
             "reduce the amount",
         )
-    record_event(
-        session,
-        locked,
-        "payout_requested",
-        f"Payout requested — ${amount:,.2f} (pending review).",
-        amount=amount,
-    )
+    # Book the debit event AND the PayoutRequest workflow row atomically —
+    # one commit lands both, so the money ledger and the review queue can
+    # never disagree (services/payout_desk.create_request).
+    payout_desk.create_request(session, user, locked, amount)
     session.commit()
     return PayoutOut(combine_id=combine.id, amount=amount, requested_at=now)
+
+
+@router.get("/{combine_id}/payout-requests", response_model=list[PayoutRequestOut])
+def list_payout_requests(
+    combine_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[PayoutRequestOut]:
+    """The combine's payout-request workflow rows, newest first — what the
+    PayoutsPage shows the trader: where each request stands (requested /
+    under_review / approved / denied / held / paid) and, on a denial, the
+    reason + reviewer note. Owner-scoped: someone else's combine is a 404
+    (existence isn't leaked), same as every other combine endpoint. Legacy
+    pre-desk payouts (bare event pairs) have no row here — the events feed
+    still carries that history."""
+    combine = _owned_combine(session, user, combine_id)
+    rows = (
+        session.execute(
+            select(PayoutRequest)
+            .where(PayoutRequest.combine_id == combine.id)
+            .order_by(PayoutRequest.requested_at.desc(), PayoutRequest.id.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        PayoutRequestOut(
+            id=r.id,
+            amount=float(r.amount),
+            state=r.state,
+            reason_code=r.reason_code,
+            reason_label=REASON_LABELS.get(r.reason_code) if r.reason_code else None,
+            note=r.note,
+            requested_at=r.requested_at,
+            decided_at=r.decided_at,
+        )
+        for r in rows
+    ]
 
 
 @router.post("/{combine_id}/activate-account", response_model=CombineOut)
@@ -828,6 +967,7 @@ def activate_account(
     the balance restarts at the tier start (realized-since-activation minus
     booked payouts), the HWM/MLL re-seed, and payout eligibility starts at
     0 — the profit used to PASS stays with the firm."""
+    _require_not_suspended(user)
     # Per-user throttle: activation charges a fee + writes a payment row.
     enforce_user(financial_limiter, user.id, "activation")
     combine = _owned_combine(session, user, combine_id)
@@ -843,6 +983,10 @@ def activate_account(
             409,
             "close all open positions and cancel working orders before activating",
         )
+    # E-sign gate, checked immediately BEFORE any charge: the funded-trader
+    # agreement must carry a typed signature at its current version — 403
+    # agreement_required otherwise (services/legal).
+    assert_funded_agreement_signed(session, user)
     fee = pricing.activation_fee(combine.pricing_path)
     now = datetime.now(timezone.utc)
     tier = TIERS[combine.tier]

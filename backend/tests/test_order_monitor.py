@@ -6,7 +6,7 @@ unrealized_for / market_open. Trades are seeded straight into the DB.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 
 import pytest
 
@@ -73,6 +73,15 @@ def _run(session_factory, **kw):
         spot_for=lambda sym: 100.0,
         option_mark=lambda t, s: 1.0,
         unrealized_for=lambda t, s: 0.0,
+        # Pin the monitor clock to MID-SESSION on the seeded legs' expiry
+        # date (17:00 UTC = 12/13:00 ET). Left at wall-clock, every one of
+        # these tests flips to "cancelled · expired contract" when the suite
+        # runs after the 16:00 ET close — the 0DTE legs seeded for _TODAY
+        # are already dead. Tests that need a specific clock still pass
+        # their own now= (params.update overrides this).
+        now=datetime.combine(
+            _TODAY, dt_time(17, 0), tzinfo=timezone.utc
+        ),
     )
     params.update(kw)
     return run_order_monitor(session_factory=session_factory, **params)
@@ -561,6 +570,10 @@ def test_market_closed_is_a_noop(auth_client, session_factory):
         market_open=lambda: False,
         spot_for=lambda sym: 100.0,
         option_mark=lambda t, s: 0.1,
+        # Mid-session clock (same rationale as _run): the closed-market pass
+        # still zombie-cancels EXPIRED contracts by design, so a wall clock
+        # past 16:00 ET would cancel the 0DTE order this test wants untouched.
+        now=datetime.combine(_TODAY, dt_time(17, 0), tzinfo=timezone.utc),
     )
     assert summary.get("skipped") == "market_closed"
     s = session_factory()

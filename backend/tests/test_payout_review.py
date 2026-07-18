@@ -1,12 +1,16 @@
-"""Payout review states — request → simulated review → approval.
+"""Payout review states — request → review window → auto-approval.
 
-`request_payout` books a 'payout_requested' event; the DEBIT happens at
-REQUEST time (funds are held — combine_state.PAYOUT_DEBIT_TYPES), so the
-balance, HWM basis, and eligibility all move immediately. The settle pass
-(jobs/settle_combines.approve_pending_payouts) then approves requests older
-than the review window by recording a 'payout_approved' with the same
-amount — bookkeeping only, never a second debit. Legacy terminal 'payout'
-events (old data) still count as debits and need no approval.
+`request_payout` books a 'payout_requested' event plus a PayoutRequest
+workflow row (same transaction); the DEBIT happens at REQUEST time (funds
+are held — combine_state.PAYOUT_DEBIT_TYPES), so the balance, HWM basis,
+and eligibility all move immediately. The settle pass
+(jobs/settle_combines.approve_pending_payouts → payout_desk.auto_approve_pass)
+then approves rows still in state 'requested' after the review window by
+recording a 'payout_approved' with the same amount — bookkeeping only,
+never a second debit. Legacy terminal 'payout' events (old data) still
+count as debits, have no workflow row, and need no approval. The full
+adjudication state machine (deny/hold/paid + the denied re-credit) is
+covered in tests/test_payout_desk.py.
 """
 
 from __future__ import annotations

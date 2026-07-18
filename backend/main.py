@@ -6,6 +6,7 @@ import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -17,16 +18,21 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from database import init_db
+from services.job_runs import run_logged
 from services.rate_limit import _client_ip, global_limiter
+from jobs.backup_db import backup_db, backup_db_if_stale
 from jobs.collect_options_chain import collect_options_chain
+from jobs.notify_events import notify_events
 from jobs.prewarm_hot_tickers import prewarm_hot_tickers
 from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
+from jobs.send_outbox import send_outbox
 from jobs.monitor_orders import monitor_orders
 from jobs.renew_combines import renew_combines
 from jobs.settle_combines import settle_combines
 from routers.ticker import MarketDataDegraded
 from routers import account as account_router
+from routers import admin as admin_router
 from routers import alerts as alerts_router
 from routers import analytics as analytics_router
 from routers import auth as auth_router
@@ -34,12 +40,16 @@ from routers import combines as combines_router
 from routers import calendar as calendar_router
 from routers import journal as journal_router
 from routers import journal_media as journal_media_router
+from routers import legal as legal_router
 from routers import market as market_router
 from routers import news as news_router
+from routers import notifications as notifications_router
 from routers import payments as payments_router
+from routers import support as support_router
 from routers import ticker as ticker_router
 from routers import ticker_search as ticker_search_router
 from routers import user_browse as user_browse_router
+from routers import verification as verification_router
 from routers import watchlist as watchlist_router
 from routers import zerodte as zerodte_router
 
@@ -183,7 +193,7 @@ async def lifespan(app: FastAPI):
 
     scheduler = BackgroundScheduler(timezone="America/New_York")
     scheduler.add_job(
-        refresh_watchlist,
+        run_logged("refresh_watchlist", refresh_watchlist),
         trigger=IntervalTrigger(seconds=60),
         id="refresh_watchlist",
         max_instances=1,
@@ -198,7 +208,7 @@ async def lifespan(app: FastAPI):
     # whole cadence so the two jobs interleave instead of overlapping.
     _PREWARM_OFFSET_S = 25
     scheduler.add_job(
-        prewarm_hot_tickers,
+        run_logged("prewarm_hot_tickers", prewarm_hot_tickers),
         trigger=IntervalTrigger(
             seconds=60,
             start_date=datetime.now(_SCHED_TZ) + timedelta(seconds=_PREWARM_OFFSET_S),
@@ -209,7 +219,7 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=_SCHED_GRACE,
     )
     scheduler.add_job(
-        collect_options_chain,
+        run_logged("collect_options_chain", collect_options_chain),
         trigger=CronTrigger(
             day_of_week="mon-fri",
             hour=16,
@@ -225,7 +235,7 @@ async def lifespan(app: FastAPI):
     # rules fire on a clock, not only when account state is read. DB+CPU
     # only (no network), so the short interval is cheap; idempotent.
     scheduler.add_job(
-        settle_combines,
+        run_logged("settle_combines", settle_combines),
         trigger=IntervalTrigger(minutes=5),
         id="settle_combines",
         max_instances=1,
@@ -237,7 +247,7 @@ async def lifespan(app: FastAPI):
     # at period end. Idempotent + multi-period-aware, so a missed day
     # self-heals on the next run.
     scheduler.add_job(
-        renew_combines,
+        run_logged("renew_combines", renew_combines),
         trigger=CronTrigger(hour=0, minute=15, timezone="America/New_York"),
         id="renew_combines",
         max_instances=1,
@@ -247,7 +257,7 @@ async def lifespan(app: FastAPI):
     # Order monitor — fill working limit/stop orders + auto-close SL/TP
     # brackets every 20s during market hours. No-ops out of session.
     scheduler.add_job(
-        monitor_orders,
+        run_logged("monitor_orders", monitor_orders),
         trigger=IntervalTrigger(seconds=20),
         id="monitor_orders",
         max_instances=1,
@@ -260,6 +270,33 @@ async def lifespan(app: FastAPI):
         _sweep_cache,
         trigger=IntervalTrigger(hours=1),
         id="sweep_cache",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    # P0 wave (2026-07): transactional-email outbox drain (30s), lifecycle
+    # notifier tailing combine_events (60s), nightly DB backup with retention
+    # (02:30 ET, off trading hours and clear of the 00:15 billing run).
+    scheduler.add_job(
+        run_logged("send_outbox", send_outbox),
+        trigger=IntervalTrigger(seconds=30),
+        id="send_outbox",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    scheduler.add_job(
+        run_logged("notify_events", notify_events),
+        trigger=IntervalTrigger(seconds=60),
+        id="notify_events",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    scheduler.add_job(
+        run_logged("backup_db", backup_db),
+        trigger=CronTrigger(hour=2, minute=30, timezone="America/New_York"),
+        id="backup_db",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,
@@ -283,6 +320,15 @@ async def lifespan(app: FastAPI):
             await asyncio.to_thread(renew_combines)
         except Exception:  # noqa: BLE001
             log.exception("startup billing catch-up (renew_combines) failed")
+        # Backup CATCH-UP on boot — same in-memory-jobstore gap as billing:
+        # the 02:30 ET backup cron is dropped on a host that is down at that
+        # instant, so a non-24/7 box would never back up (and never prune the
+        # JobRun table). Staleness-gated, so a 24/7 host that already ran the
+        # cron overnight no-ops instead of writing a redundant boot backup.
+        try:
+            await asyncio.to_thread(run_logged("backup_db", backup_db_if_stale))
+        except Exception:  # noqa: BLE001
+            log.exception("startup backup catch-up (backup_db_if_stale) failed")
         try:
             await asyncio.to_thread(refresh_watchlist, force=True)
         except Exception:  # noqa: BLE001
@@ -470,6 +516,13 @@ app.include_router(ticker_search_router.router)
 app.include_router(user_browse_router.router_user)
 app.include_router(user_browse_router.router_ticker)
 app.include_router(alerts_router.router)  # WS6: price/earnings/fill alerts
+# P0 wave (2026-07): operator back office, legal consent, payout
+# prerequisites (KYC/tax/methods), support tickets, notification center.
+app.include_router(admin_router.router)
+app.include_router(legal_router.router)
+app.include_router(verification_router.router)
+app.include_router(support_router.router)
+app.include_router(notifications_router.router)
 
 
 @app.get("/health")
@@ -495,3 +548,67 @@ def health() -> JSONResponse:
         "database": "up" if db_ok else "down",
     }
     return JSONResponse(status_code=200 if db_ok else 503, content=body)
+
+
+def _safe_spa_file(dist: "Path", spa_path: str):
+    """Resolve a SPA request path to a real file INSIDE `dist`, or None.
+
+    SECURITY: the returned file is guaranteed to sit within `dist`. A naive
+    `".." not in spa_path` substring check is insufficient — a percent-encoded
+    leading slash (`GET /%2Fetc%2Fpasswd`) arrives as an ABSOLUTE path with no
+    "..", and `dist / "/abs"` discards the base in pathlib, which would turn
+    the SPA fallback into an unauthenticated arbitrary-file read (the prod DB
+    lives at /app/data/dashboard.db in the container). resolve() + a
+    containment check closes both the absolute-path and the traversal vectors.
+    Returns None for anything not a contained real file → caller serves
+    index.html (the client-route fallback)."""
+    if not spa_path:
+        return None
+    dist_resolved = dist.resolve()
+    candidate = (dist / spa_path).resolve()
+    if candidate.is_file() and (
+        candidate == dist_resolved or dist_resolved in candidate.parents
+    ):
+        return candidate
+    return None
+
+
+# Single-container deploy: serve the built SPA from the backend process.
+# Assets mount under /assets (hashed filenames, cache-friendly); every
+# non-API path falls back to index.html so client-side routes deep-link.
+# Registered LAST — Starlette matches routes in registration order, so the
+# catch-all must come after every API route and /health. No-op in dev
+# (SERVE_FRONTEND_DIR unset → Vite serves the frontend).
+if settings.serve_frontend_dir:
+    from pathlib import Path as _Path
+
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    _dist = _Path(settings.serve_frontend_dir)
+    _index = _dist / "index.html"
+    if _index.is_file():
+        if (_dist / "assets").is_dir():
+            app.mount(
+                "/assets", StaticFiles(directory=_dist / "assets"), name="assets"
+            )
+
+        @app.get("/{spa_path:path}", include_in_schema=False)
+        def _spa(spa_path: str):
+            # An unknown /api/* path is a genuine 404 — NOT a client route.
+            # Falling it back to index.html (200 text/html) would mask dead or
+            # typo'd endpoints as healthy and break client error handling,
+            # caches, and monitoring. The real API routes are registered
+            # earlier and always win; only unmatched /api/* reaches here.
+            if spa_path == "api" or spa_path.startswith("api/"):
+                return JSONResponse(status_code=404, content={"detail": "not found"})
+            # Real files at the dist root (favicon.svg, robots.txt) serve
+            # directly; anything else (client route, or a traversal attempt)
+            # falls back to index.html. Containment enforced in _safe_spa_file.
+            safe = _safe_spa_file(_dist, spa_path)
+            return FileResponse(safe if safe is not None else _index)
+    else:
+        log.warning(
+            "SERVE_FRONTEND_DIR=%s has no index.html; SPA serving disabled",
+            settings.serve_frontend_dir,
+        )
