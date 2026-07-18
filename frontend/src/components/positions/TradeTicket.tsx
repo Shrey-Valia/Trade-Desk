@@ -131,6 +131,84 @@ export function TradeTicket() {
   // before react has rendered the disabled state.
   const submittingRef = useRef(false);
 
+  // ── Fat-finger rails ───────────────────────────────────────────────────
+  // Soft pre-trade checks that ARM instead of block: the first BUY/SELL
+  // press surfaces the warnings and relabels the button CONFIRM; a second
+  // press within 5s fires anyway (a scalper can click through in <1s, but
+  // nothing fat-fingered goes out silently). Three rails:
+  //   price-away  — a limit/stop trigger >25% from the indicative price
+  //   notional    — debit above the remaining DLL budget (buys), or any
+  //                 order whose premium notional exceeds $2,500
+  //   duplicate   — the identical order fired within the last 10s
+  const { data: ffAccount } = useAccountState();
+  const [armedWarnings, setArmedWarnings] = useState<{
+    action: "buy" | "sell";
+    msgs: string[];
+  } | null>(null);
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFiredRef = useRef<{ sig: string; ts: number } | null>(null);
+
+  const orderSignature = (action: "buy" | "sell") =>
+    [
+      selection?.symbol,
+      selection?.kind,
+      selection?.strike,
+      selection?.kind === "leg" ? selection?.side : "straddle",
+      action,
+      effectiveOrderType,
+      contracts,
+    ].join("|");
+
+  const preTradeWarnings = (action: "buy" | "sell"): string[] => {
+    if (!selection) return [];
+    const msgs: string[] = [];
+    const indicative = selection.price;
+    // Price-away: every trigger the working order rests on, vs the live
+    // indicative premium. Catches 1.50 typed as 15.0 (and 0.15).
+    if (indicative > 0) {
+      const triggers: Array<[string, number | null]> = [];
+      if (needsLimit) triggers.push(["limit", limitPrice]);
+      if (needsStop) triggers.push(["stop", stopPrice]);
+      for (const [label, trig] of triggers) {
+        if (trig == null || trig <= 0) continue;
+        const away = Math.abs(trig - indicative) / indicative;
+        if (away > 0.25) {
+          msgs.push(
+            `${label} $${trig.toFixed(2)} is ${Math.round(away * 100)}% away ` +
+              `from the market ($${indicative.toFixed(2)})`,
+          );
+        }
+      }
+    }
+    // Notional sanity: worst-case debit vs today's remaining loss budget
+    // (buys — a short's max loss isn't the premium, so no false comfort),
+    // plus an absolute large-order check both ways.
+    const cost = indicative * 100 * contracts;
+    if (action === "buy" && ffAccount) {
+      const dllBudget = ffAccount.dll_budget ?? 0;
+      const dllRemaining = Math.max(0, dllBudget - (ffAccount.dll_used ?? 0));
+      if (dllBudget > 0 && cost > dllRemaining) {
+        msgs.push(
+          `debit $${cost.toFixed(0)} exceeds the remaining daily loss ` +
+            `budget ($${dllRemaining.toFixed(0)})`,
+        );
+      }
+    }
+    if (cost > 2500) {
+      msgs.push(`large order — $${cost.toFixed(0)} premium notional`);
+    }
+    // Duplicate: the same contract/side/size/type fired moments ago.
+    const last = lastFiredRef.current;
+    if (last && last.sig === orderSignature(action)) {
+      const secs = (Date.now() - last.ts) / 1000;
+      if (secs < 10) {
+        msgs.push(`identical order fired ${Math.max(1, Math.round(secs))}s ago`);
+      }
+    }
+    return msgs;
+  };
+  // ── end fat-finger rails ───────────────────────────────────────────────
+
   // ── WS5: collapsible TOOLS tab (builder / sizer / Monte-Carlo). null = closed.
   const [activeTool, setActiveTool] = useState<ToolTab | null>(null);
   // The tools only need a SYMBOL, not a chain selection — bind them to the
@@ -166,6 +244,21 @@ export function TradeTicket() {
 
   const fire = (action: "buy" | "sell") => {
     if (submittingRef.current || !canFire || !selection) return;
+    // Fat-finger rails: warnings ARM on the first press (button relabels to
+    // CONFIRM); the second press within the arm window fires through them.
+    const armed = armedWarnings != null && armedWarnings.action === action;
+    if (!armed) {
+      const msgs = preTradeWarnings(action);
+      if (msgs.length > 0) {
+        setArmedWarnings({ action, msgs });
+        if (armTimerRef.current) clearTimeout(armTimerRef.current);
+        armTimerRef.current = setTimeout(() => setArmedWarnings(null), 5000);
+        return;
+      }
+    }
+    if (armTimerRef.current) clearTimeout(armTimerRef.current);
+    setArmedWarnings(null);
+    lastFiredRef.current = { sig: orderSignature(action), ts: Date.now() };
     submittingRef.current = true;
     const onSettled = () => {
       submittingRef.current = false;
@@ -282,12 +375,29 @@ export function TradeTicket() {
           multi-leg, extend `riskPreviewFor()` rather than inlining here. */}
       <RiskPreview selection={selection} contracts={contracts} />
       {/* ── WS6 RISK PREVIEW (END) ───────────────────────────────────────── */}
+      {armedWarnings && (
+        <div
+          className="mx-3 mb-1 px-2 py-1 border border-warning/60 bg-tier-1"
+          role="alert"
+        >
+          {armedWarnings.msgs.map((m) => (
+            <div key={m} className="text-warning tabular-nums" style={{ fontSize: 11 }}>
+              ⚠ {m}
+            </div>
+          ))}
+          <div className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
+            press {armedWarnings.action === "buy" ? "BUY" : "SELL"} again to
+            confirm · expires in 5s
+          </div>
+        </div>
+      )}
       <Actions
         selection={selection}
         contracts={contracts}
         disabled={!canFire}
         pending={pending}
         marketOpen={marketOpen}
+        armedAction={armedWarnings?.action ?? null}
         onBuy={() => fire("buy")}
         onSell={() => fire("sell")}
         buyRef={buyBtnRef}
@@ -1160,6 +1270,7 @@ function Actions({
   disabled,
   pending,
   marketOpen,
+  armedAction = null,
   onBuy,
   onSell,
   buyRef,
@@ -1170,6 +1281,8 @@ function Actions({
   disabled: boolean;
   pending: boolean;
   marketOpen: boolean;
+  /** Fat-finger rails: which side is ARMED awaiting a confirming press. */
+  armedAction?: "buy" | "sell" | null;
   onBuy: () => void;
   onSell: () => void;
   buyRef?: React.Ref<HTMLButtonElement>;
@@ -1202,16 +1315,16 @@ function Actions({
     <div className="grid grid-cols-2 gap-2 px-3 pb-2 mt-auto" style={{ height: 56 }}>
       <ActionButton
         intent="buy"
-        label={`BUY +${contracts}`}
-        sub={buySub}
+        label={armedAction === "buy" ? `CONFIRM +${contracts}` : `BUY +${contracts}`}
+        sub={armedAction === "buy" ? "press again to place" : buySub}
         disabled={disabled}
         onClick={onBuy}
         buttonRef={buyRef}
       />
       <ActionButton
         intent="sell"
-        label={`SELL -${contracts}`}
-        sub={sellSub}
+        label={armedAction === "sell" ? `CONFIRM -${contracts}` : `SELL -${contracts}`}
+        sub={armedAction === "sell" ? "press again to place" : sellSub}
         disabled={disabled}
         onClick={onSell}
         buttonRef={sellRef}

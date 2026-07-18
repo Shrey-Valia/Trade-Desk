@@ -153,6 +153,11 @@ class ChainStrikeRow(BaseModel):
     call_theta: float = 0.0
     put_delta: float = 0.0
     put_theta: float = 0.0
+    # PER-CONTRACT implied vol, back-solved from the live quote mid (the
+    # smile the flat ATM iv_used can't show). None on BS-fallback sides —
+    # they'd only echo iv_used back.
+    call_iv: float | None = None
+    put_iv: float | None = None
 
 
 class ChainTableOut(BaseModel):
@@ -383,6 +388,19 @@ def get_chain_table(
         cg = greeks_intraday(spot, k, t_close, rate, iv_used, "call")
         pg = greeks_intraday(spot, k, t_close, rate, iv_used, "put")
 
+        # Per-contract IV from the quote mid (smile/skew visibility). Only
+        # for quote-sourced sides — a BS-priced side would just echo iv_used.
+        call_iv = (
+            iv_intraday(float(call_px), spot, k, t_close, rate, "call")
+            if call_source == "quote"
+            else None
+        )
+        put_iv = (
+            iv_intraday(float(put_px), spot, k, t_close, rate, "put")
+            if put_source == "quote"
+            else None
+        )
+
         rows.append(
             ChainStrikeRow(
                 strike=k,
@@ -403,6 +421,8 @@ def get_chain_table(
                 call_theta=round(cg["theta"], 4),
                 put_delta=round(pg["delta"], 4),
                 put_theta=round(pg["theta"], 4),
+                call_iv=round(call_iv, 4) if call_iv is not None else None,
+                put_iv=round(put_iv, 4) if put_iv is not None else None,
             )
         )
 
@@ -1509,8 +1529,15 @@ class ContractPreviewOut(BaseModel):
     payoff_expiration: list[float]
     breakevens: list[float]
     max_profit: float | None           # null = unbounded
-    max_loss: float
+    max_loss: float | None             # null = unbounded (multi-leg net short calls)
     greeks: PreviewGreeks
+    # Closed-form model probabilities (risk-neutral lognormal, ATM IV):
+    # prob_itm — the contract finishes ITM at expiry (null for a straddle);
+    # pop_long / pop_short — probability of profit at expiry for each
+    # direction of the shown structure (short = 1 − long).
+    prob_itm: float | None = None
+    pop_long: float | None = None
+    pop_short: float | None = None
 
 
 @router.post("/preview", response_model=ContractPreviewOut)
@@ -1564,6 +1591,20 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         spot=spot, rate=rate, iv=iv, t_now=t_close, legs=legs
     )
 
+    # Closed-form probabilities at expiry (risk-neutral, ATM IV) — prob-ITM
+    # off the strike, POP off the structure's breakevens. The short side is
+    # the exact complement of the long side at expiry.
+    from calculations.probability import pop_long as _pop_long
+    from calculations.probability import prob_itm as _prob_itm
+
+    itm = (
+        _prob_itm(spot, payload.strike, t_close, rate, iv, side_out)
+        if side_out in ("call", "put")
+        else None
+    )
+    pop_l = _pop_long(spot, preview.breakevens, t_close, rate, iv, side_out)
+    pop_s = None if pop_l is None else max(0.0, min(1.0, 1.0 - pop_l))
+
     return ContractPreviewOut(
         symbol=sym,
         kind=payload.kind,
@@ -1584,6 +1625,114 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         max_profit=preview.max_profit,
         max_loss=preview.max_loss,
         greeks=PreviewGreeks(**preview.greeks),
+        prob_itm=None if itm is None else round(itm, 4),
+        pop_long=None if pop_l is None else round(pop_l, 4),
+        pop_short=None if pop_s is None else round(pop_s, 4),
+    )
+
+
+class PreviewMultiRequest(BaseModel):
+    """Pre-trade preview for an arbitrary 2–6 leg structure AS SUBMITTED
+    (buys and sells at their stated ratios) — the builder's risk graph."""
+
+    symbol: str = Field(min_length=1, max_length=16, default="SPY")
+    contracts: int = Field(gt=0, le=100, default=1)
+    legs: list[MultiLegSpec] = Field(min_length=2, max_length=6)
+
+
+@router.post("/preview-multi", response_model=ContractPreviewOut)
+def preview_multi(payload: PreviewMultiRequest) -> ContractPreviewOut:
+    """Payoff / greeks / breakevens / POP for a hypothetical multi-leg
+    structure, priced off the same chain table as the ladder. Unlike
+    /preview (long-only single/straddle), this evaluates the structure AS
+    SUBMITTED — short legs negative — so credit spreads, condors and ratio
+    structures preview honestly. Max profit/loss are taken at the payoff's
+    critical points (S→0, each strike, and past the top strike), with the
+    unbounded sides flagged via net call exposure."""
+    from calculations.probability import pop_from_curve
+
+    sym = payload.symbol.upper().strip()
+    table = get_chain_table(symbol=sym, strikes=40)
+    spot = table.spot
+    iv = table.iv_used
+    t_close = table.t_years_to_close
+    try:
+        rate = latest_dgs3mo_rate()
+    except Exception:  # noqa: BLE001
+        rate = DEFAULT_RATE_FALLBACK
+
+    def _indicative(side: str, strike: float) -> float:
+        row = next((r for r in table.rows if r.strike == strike), None)
+        if row is not None:
+            px = row.call_price if side == "call" else row.put_price
+            if px and px > 0:
+                return float(px)
+        return float(bs_intraday(spot, strike, t_close, rate, iv, side))
+
+    legs = [
+        {
+            "side": spec.side,
+            "action": spec.action,
+            "strike": spec.strike,
+            "contracts": spec.ratio * payload.contracts,
+            "entry_price": _indicative(spec.side, spec.strike),
+        }
+        for spec in payload.legs
+    ]
+    preview = compute_contract_preview(
+        spot=spot, rate=rate, iv=iv, t_now=t_close, legs=legs
+    )
+
+    # Expiry payoff at a price — signed intrinsic minus the net entry, in $.
+    def _sign(leg: dict) -> int:
+        return 1 if leg["action"] == "buy" else -1
+
+    cb_ps = sum(_sign(l) * l["contracts"] * l["entry_price"] for l in legs)
+
+    def _payoff_at(s: float) -> float:
+        intrinsic = sum(
+            _sign(l)
+            * l["contracts"]
+            * (max(s - l["strike"], 0.0) if l["side"] == "call" else max(l["strike"] - s, 0.0))
+            for l in legs
+        )
+        return (intrinsic - cb_ps) * 100.0
+
+    # Bounded extremes live at the payoff's critical points: S→0, each
+    # strike, and anywhere past the top strike (the tail is flat unless net
+    # call exposure makes it unbounded).
+    net_calls = sum(_sign(l) * l["contracts"] for l in legs if l["side"] == "call")
+    strikes = sorted({float(l["strike"]) for l in legs})
+    critical = [0.0, *strikes, strikes[-1] * 1.5 + 1.0]
+    values = [_payoff_at(s) for s in critical]
+    max_profit = None if net_calls > 0 else round(max(values), 2)
+    max_loss = None if net_calls < 0 else round(min(values), 2)
+
+    pop = pop_from_curve(spot, preview.breakevens, t_close, rate, iv, _payoff_at)
+
+    return ContractPreviewOut(
+        symbol=sym,
+        kind="multi",
+        side=None,
+        strike=strikes[0],
+        contracts=payload.contracts,
+        spot=spot,
+        iv=iv,
+        expiry=table.expiry,
+        dte_label="0DTE",
+        entry_price=preview.entry_price,
+        cost=preview.cost,
+        open_interest=None,
+        prices=preview.prices,
+        payoff_today=preview.payoff_today,
+        payoff_expiration=preview.payoff_expiration,
+        breakevens=preview.breakevens,
+        max_profit=max_profit,
+        max_loss=max_loss,
+        greeks=PreviewGreeks(**preview.greeks),
+        prob_itm=None,
+        pop_long=round(pop, 4),
+        pop_short=round(max(0.0, min(1.0, 1.0 - pop)), 4),
     )
 
 

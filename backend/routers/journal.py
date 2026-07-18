@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, time, timezone
+from math import gcd
 from typing import Literal
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -53,6 +55,7 @@ from schemas.journal import (
     BracketsUpdate,
     EXPECTED_LEG_COUNT,
     MISTAKE_TAG_VOCABULARY,
+    PortfolioGreeksOut,
     ScaleOutRequest,
     TradeAnalyticsOut,
     TradeIn,
@@ -530,6 +533,254 @@ def set_brackets(
     session.commit()
     session.refresh(trade)
     return _to_out(trade)
+
+
+@router.get("/portfolio/greeks", response_model=PortfolioGreeksOut)
+def portfolio_greeks(
+    user: User = Depends(get_current_user),
+    combine: Combine = Depends(get_active_combine),
+    session: Session = Depends(get_session),
+) -> PortfolioGreeksOut:
+    """Net Greek exposure across every OPEN execution position on the active
+    combine, plus the SPY-beta-weighted delta — the top-line book numbers a
+    multi-position options trader steers by. Live-priced per request off the
+    same intraday analytics engine the per-position panel uses; manual journal
+    rows are excluded (they carry no combine risk)."""
+    from calculations.portfolio_greeks import aggregate_portfolio_greeks
+
+    trades = (
+        session.execute(
+            select(Trade).where(
+                Trade.combine_id == combine.id,
+                Trade.status == "open",
+                Trade.origin == "execution",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    empty = PortfolioGreeksOut(
+        positions=0,
+        net=AnalyticsGreeks(delta=0.0, gamma=0.0, theta=0.0, vega=0.0),
+    )
+    if not trades:
+        return empty
+
+    symbols = sorted({t.symbol for t in trades} | {"SPY"})
+    try:
+        quotes = get_quotes(symbols)
+    except Exception as exc:  # noqa: BLE001 — feed cold → typed degrade
+        raise HTTPException(
+            503, "market data unavailable — portfolio greeks need live quotes"
+        ) from exc
+    try:
+        rate = latest_dgs3mo_rate()
+    except Exception:  # noqa: BLE001
+        rate = DEFAULT_RATE_FALLBACK
+
+    now = datetime.now(timezone.utc)
+    rows: list[dict] = []
+    for t in trades:
+        q = quotes.get(t.symbol)
+        if q is None:
+            continue  # cold symbol — skip rather than fabricate exposure
+        entry = t.entry_date or now
+        if entry.tzinfo is None:
+            entry = entry.replace(tzinfo=timezone.utc)
+        elapsed_hours = max(0.0, (now - entry).total_seconds() / 3600.0)
+        try:
+            resp = _intraday_analytics(
+                trade=t, spot=float(q.price), rate=rate, elapsed_hours=elapsed_hours
+            )
+        except HTTPException:
+            continue  # malformed stored legs — never poison the whole book
+        rows.append(
+            {
+                "symbol": t.symbol,
+                "spot": float(q.price),
+                "delta": resp.greeks.delta,
+                "gamma": resp.greeks.gamma,
+                "theta": resp.greeks.theta,
+                "vega": resp.greeks.vega,
+            }
+        )
+    if not rows:
+        return empty
+
+    spy_q = quotes.get("SPY")
+    agg = aggregate_portfolio_greeks(rows, float(spy_q.price) if spy_q else None)
+    return PortfolioGreeksOut(**agg)
+
+
+class CloseOrderRequest(BaseModel):
+    """POST body for placing/replacing a resting CLOSE-LIMIT on an open
+    position. `limit_price` is the SIGNED net premium per 1× structure —
+    the same convention as the multi-leg entry limit (debit positive /
+    credit negative): a long structure names the value to sell at (> 0);
+    a short structure names the buy-back cost as a negative (-0.30 =
+    'pay at most 0.30'). Sign/direction is validated in the handler."""
+
+    limit_price: float
+
+
+def _entry_net_1x(trade: Trade) -> tuple[float, int]:
+    """(signed net ENTRY premium per 1× structure, base size). Base = gcd of
+    the leg quantities — the same reduction the order monitor uses, so the
+    limit and the live trigger share one unit."""
+    base = 0
+    net = 0.0
+    for leg in trade.legs:
+        contracts = max(1, int(leg.get("contracts", 1) or 1))
+        base = gcd(base, contracts)
+        sign = 1.0 if leg.get("action") == "buy" else -1.0
+        net += sign * contracts * float(leg.get("entry_price", 0.0) or 0.0)
+    base = max(1, base)
+    return net / base, base
+
+
+@router.post("/trades/{trade_id}/close-order", response_model=TradeOut)
+def set_close_order(
+    trade_id: int,
+    payload: CloseOrderRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Place (or replace) a resting close-limit on an OPEN position. The order
+    monitor fills it AT the limit — no spread friction, commission both sides —
+    when the live net mark reaches it (net_1x ≥ limit). The limit must be
+    NON-marketable at placement: an immediately-fillable close belongs to the
+    market CLOSE button, and booking a marketable limit at its own price would
+    fill the trader worse than the market they could have hit."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "open":
+        raise HTTPException(409, "a close order can only rest on an open position")
+
+    limit = float(payload.limit_price)
+    entry_net_1x, _base = _entry_net_1x(trade)
+    if entry_net_1x == 0.0:
+        raise HTTPException(422, "zero-net-premium structure: no close-limit scale")
+    if entry_net_1x > 0 and limit <= 0:
+        raise HTTPException(
+            422,
+            "this position was opened for a net debit — the close limit is the "
+            "value to sell it at and must be positive",
+        )
+    if entry_net_1x < 0 and limit >= 0:
+        raise HTTPException(
+            422,
+            "this position was opened for a net credit — the close limit is the "
+            "buy-back cost as a NEGATIVE net (e.g. -0.30 = pay at most 0.30)",
+        )
+
+    # Marketability guard on the live mid-based net (best-effort: a cold feed
+    # skips the check rather than blocking the placement).
+    try:
+        from services.order_monitor import _default_option_mark
+
+        q = get_quotes([trade.symbol]).get(trade.symbol)
+        if q is not None:
+            now = datetime.now(timezone.utc)
+            net_1x = _default_option_mark(trade, float(q.price), now) / _base
+            if net_1x >= limit:
+                raise HTTPException(
+                    422,
+                    f"close limit {limit:g} is already marketable (net mark "
+                    f"{net_1x:.2f}) — use the market close, or set the limit "
+                    "beyond the current mark",
+                )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 — feed cold → accept without the guard
+        log.debug("close-order: marketability check skipped for %s", trade.symbol)
+
+    trade.close_limit_price = round(limit, 4)
+    session.commit()
+    session.refresh(trade)
+    return _to_out(trade)
+
+
+@router.delete("/trades/{trade_id}/close-order", response_model=TradeOut)
+def clear_close_order(
+    trade_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Pull the resting close-limit off an open position. No-op-safe on a
+    position without one (the field is simply already NULL); 409 once the
+    position is no longer open (nothing is resting anymore)."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "open":
+        raise HTTPException(409, "no resting close order — the position is not open")
+    # RACE GUARD: clear only while still open, so a monitor fill that already
+    # booked the close (and its P&L at the limit) isn't half-unwound.
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id == trade.id, Trade.status == "open")
+        .values(close_limit_price=None)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        session.rollback()
+        raise HTTPException(409, "position closed concurrently — nothing to pull")
+    trade.close_limit_price = None
+    session.commit()
+    session.refresh(trade)
+    return _to_out(trade)
+
+
+class OcoLinkRequest(BaseModel):
+    """Link 2–4 WORKING orders as an OCO group (one fill cancels the rest).
+    The monitor already honors oco_group on fills and bracket closes — this
+    endpoint is the missing user-facing way to create the pairing."""
+
+    trade_ids: list[int] = Field(min_length=2, max_length=4)
+
+
+@router.post("/orders/oco-link", response_model=TradesResponse)
+def oco_link(
+    payload: OcoLinkRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradesResponse:
+    """Group the given WORKING orders under one fresh oco_group. 409 when any
+    is no longer working (a filled/cancelled order can't be a sibling); an
+    order already in a group is re-homed to the new one (last link wins)."""
+    if len(set(payload.trade_ids)) != len(payload.trade_ids):
+        raise HTTPException(422, "duplicate trade ids in the OCO link")
+    trades = [_owned_trade(session, user, tid) for tid in payload.trade_ids]
+    not_working = [t.id for t in trades if t.status != "working"]
+    if not_working:
+        raise HTTPException(
+            409,
+            f"only working orders can be OCO-linked — trade(s) {not_working} "
+            "are no longer working",
+        )
+    group = str(uuid4())
+    for t in trades:
+        t.oco_group = group
+        t.notes = (t.notes or "") + " · OCO linked"
+    session.commit()
+    for t in trades:
+        session.refresh(t)
+    return TradesResponse(trades=[_to_out(t) for t in trades])
+
+
+@router.post("/orders/oco-unlink", response_model=TradesResponse)
+def oco_unlink(
+    payload: OcoLinkRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradesResponse:
+    """Dissolve the OCO pairing on the given orders (clears oco_group).
+    Tolerant of already-filled/cancelled members — unlinking is cleanup,
+    not risk-bearing."""
+    trades = [_owned_trade(session, user, tid) for tid in payload.trade_ids]
+    for t in trades:
+        t.oco_group = None
+    session.commit()
+    for t in trades:
+        session.refresh(t)
+    return TradesResponse(trades=[_to_out(t) for t in trades])
 
 
 @router.post("/trades/{trade_id}/cancel", response_model=TradeOut)
@@ -1222,6 +1473,7 @@ def _to_out(trade: Trade) -> TradeOut:
         take_profit=trade.take_profit,
         tp_premium_mult=trade.tp_premium_mult,
         sl_premium_mult=trade.sl_premium_mult,
+        close_limit_price=trade.close_limit_price,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
         time_in_force=trade.time_in_force,  # type: ignore[arg-type]
         combine_id=trade.combine_id,

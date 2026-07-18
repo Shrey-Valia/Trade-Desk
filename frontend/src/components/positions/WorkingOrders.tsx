@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useCancelOrder, useTrades } from "@/hooks/useTrades";
-import { updateWorkingOrder } from "@/lib/api";
+import { linkOcoOrders, unlinkOcoOrders, updateWorkingOrder } from "@/lib/api";
 import type { Trade, WorkingOrderPatch } from "@/types/journal";
 
 /**
@@ -16,8 +16,39 @@ import type { Trade, WorkingOrderPatch } from "@/types/journal";
 export function WorkingOrders() {
   const { data } = useTrades({ status: "working" }, { refetchInterval: 8_000 });
   const cancel = useCancelOrder();
+  const queryClient = useQueryClient();
   const orders = data?.trades ?? [];
+
+  // OCO linking: "link OCO" enters select mode; clicking rows toggles them;
+  // LINK fires. The monitor already cancels siblings when one fills — this
+  // is the missing UI to create the pairing.
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<number[]>([]);
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+  const link = useMutation({
+    mutationFn: () => linkOcoOrders(selected),
+    onSuccess: () => {
+      invalidate();
+      setSelecting(false);
+      setSelected([]);
+    },
+    onError: invalidate, // 409 → a member filled underneath; reconcile
+  });
+  const unlink = useMutation({
+    mutationFn: (ids: number[]) => unlinkOcoOrders(ids),
+    onSuccess: invalidate,
+  });
   if (orders.length === 0) return null;
+
+  const toggle = (id: number) =>
+    setSelected((prev) =>
+      prev.includes(id)
+        ? prev.filter((x) => x !== id)
+        : prev.length < 4
+          ? [...prev, id]
+          : prev,
+    );
 
   return (
     <section
@@ -29,11 +60,48 @@ export function WorkingOrders() {
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber animate-pulse" />
           Pending orders
         </span>
-        <span
-          className="uppercase tracking-label-up text-amber"
-          style={{ fontSize: 11 }}
-        >
-          {orders.length} working · awaiting fill
+        <span className="flex items-center gap-2">
+          {orders.length > 1 && !selecting && (
+            <button
+              type="button"
+              onClick={() => setSelecting(true)}
+              className="uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber"
+              style={{ fontSize: 10 }}
+              title="Pick 2–4 working orders to pair: when one fills, the others are cancelled (one-cancels-the-other)"
+            >
+              link OCO
+            </button>
+          )}
+          {selecting && (
+            <>
+              <button
+                type="button"
+                onClick={() => link.mutate()}
+                disabled={selected.length < 2 || link.isPending}
+                className="uppercase tracking-label-up text-amber border border-amber px-1 disabled:opacity-40"
+                style={{ fontSize: 10 }}
+              >
+                link {selected.length}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelecting(false);
+                  setSelected([]);
+                }}
+                className="uppercase tracking-label-up text-fg-tertiary-2 hover:text-fg-secondary"
+                style={{ fontSize: 10 }}
+              >
+                cancel
+              </button>
+            </>
+          )}
+          <span
+            className="uppercase tracking-label-up text-amber"
+            style={{ fontSize: 11 }}
+          >
+            {orders.length} working · awaiting fill
+          </span>
         </span>
       </div>
       <div className="flex flex-col px-3 py-1 gap-1">
@@ -43,6 +111,14 @@ export function WorkingOrders() {
             order={o}
             onCancel={() => cancel.mutate(o.id)}
             cancelling={cancel.isPending}
+            selecting={selecting}
+            selected={selected.includes(o.id)}
+            onToggleSelect={() => toggle(o.id)}
+            onUnlinkGroup={(group) =>
+              unlink.mutate(
+                orders.filter((x) => x.oco_group === group).map((x) => x.id),
+              )
+            }
           />
         ))}
       </div>
@@ -77,10 +153,19 @@ function WorkingRow({
   order,
   onCancel,
   cancelling,
+  selecting = false,
+  selected = false,
+  onToggleSelect,
+  onUnlinkGroup,
 }: {
   order: Trade;
   onCancel: () => void;
   cancelling: boolean;
+  /** OCO select mode: rows become click-to-toggle targets. */
+  selecting?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
+  onUnlinkGroup?: (group: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   // A multi-leg structure's trigger is the NET premium (debit +, credit −);
@@ -102,7 +187,26 @@ function WorkingRow({
   const mults = describePremiumMults(order);
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2 tabular-nums" style={{ fontSize: 11 }}>
+      <div
+        className={[
+          "flex items-center gap-2 tabular-nums",
+          selecting ? "cursor-pointer" : "",
+          selected ? "bg-tier-2 outline outline-1 outline-amber" : "",
+        ].join(" ")}
+        style={{ fontSize: 11 }}
+        onClick={selecting ? onToggleSelect : undefined}
+        role={selecting ? "checkbox" : undefined}
+        aria-checked={selecting ? selected : undefined}
+      >
+        {selecting && (
+          <span
+            className={selected ? "text-amber" : "text-fg-tertiary"}
+            style={{ fontSize: 10 }}
+            aria-hidden
+          >
+            {selected ? "☑" : "☐"}
+          </span>
+        )}
         <span
           className="uppercase tracking-label-up text-amber border border-amber px-1 leading-none"
           style={{ fontSize: 10, paddingBlock: 1 }}
@@ -110,6 +214,20 @@ function WorkingRow({
         >
           {multiLeg ? `net ${order.order_type}` : order.order_type}
         </span>
+        {order.oco_group && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onUnlinkGroup?.(order.oco_group as string);
+            }}
+            className="uppercase tracking-label-up text-cyan border border-cyan/60 px-1 leading-none hover:text-bearish hover:border-bearish"
+            style={{ fontSize: 10, paddingBlock: 1 }}
+            title="OCO-linked: when a sibling fills, this order is cancelled. Click to unlink the group."
+          >
+            oco
+          </button>
+        )}
         <span className="text-fg-primary">{order.symbol}</span>
         <span className="text-fg-tertiary-2">
           {multiLeg

@@ -653,6 +653,34 @@ function StatusChip({
       </span>
     );
   }
+  if (status === "closed" && closeReason === "expiry_closeout") {
+    return (
+      <span
+        className="text-fg-tertiary"
+        title="Closed by the expiration-day policy — 0DTE books are flattened shortly before the bell instead of riding into assignment/pin risk."
+      >
+        CLOSED
+        <span className="text-amber" style={{ fontSize: 10 }}>
+          {" "}
+          · exp
+        </span>
+      </span>
+    );
+  }
+  if (status === "closed" && closeReason === "limit") {
+    return (
+      <span
+        className="text-fg-tertiary"
+        title="Closed by a resting close-limit — filled at the trader's named price."
+      >
+        CLOSED
+        <span className="text-amber" style={{ fontSize: 10 }}>
+          {" "}
+          · lmt
+        </span>
+      </span>
+    );
+  }
   if (status === "closed" && closeReason === "copy") {
     return (
       <span

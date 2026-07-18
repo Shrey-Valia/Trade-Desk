@@ -15,8 +15,10 @@ import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import {
   cancelOrder,
+  clearCloseOrder,
   fetchTradeAnalytics,
   scaleOutTrade,
+  setCloseOrder,
   updateTrade,
 } from "@/lib/api";
 import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
@@ -218,6 +220,12 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
       value: `${m.iv_rank.toFixed(0)}`,
       tooltip: LEVEL_TOOLTIP.IV,
     });
+  if (m?.pc_ratio != null)
+    items.push({
+      label: "P/C",
+      value: m.pc_ratio.toFixed(2),
+      tooltip: LEVEL_TOOLTIP["P/C"],
+    });
 
   return (
     <div
@@ -309,6 +317,7 @@ const LEVEL_TOOLTIP = {
   MP: TOOLTIPS.max_pain + VOL_PROXY_NOTE,
   GF: TOOLTIPS.gamma_flip + VOL_PROXY_NOTE,
   IV: TOOLTIPS.iv_rank,
+  "P/C": TOOLTIPS.pc_ratio,
 } as const;
 
 /**
@@ -616,6 +625,14 @@ function OpenPositionCol({
             {held > 1 && (
               <QtyStepper qty={closeQty} max={held} onChange={setCloseQty} />
             )}
+            <CloseLimitRow trade={trade} liveAnalytics={liveAnalytics} />
+            <div
+              className="text-fg-tertiary"
+              style={{ fontSize: 10 }}
+              title="Expiration-day policy: rather than model OCC assignment, the desk force-flattens 0DTE books shortly before the bell (half-day aware). Working orders on dying contracts are pulled at the same cutoff."
+            >
+              0DTE policy · auto-close ~10 min before the bell
+            </div>
             <CloseButton
               disabled={close.isPending || scaleOut.isPending}
               upl={isPartial ? sliceRealized : liveUpl}
@@ -991,6 +1008,167 @@ function QtyStepper({
           +
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Base size of the structure = gcd of the leg quantities — the unit the
+ *  backend's close_limit_price is quoted in (signed net premium per 1×). */
+function structureBase(trade: Trade): number {
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  let base = 0;
+  for (const leg of trade.legs) base = gcd(base, Math.max(1, leg.contracts ?? 1));
+  return Math.max(1, base);
+}
+
+/** Signed net ENTRY premium per 1× structure (debit positive / credit
+ *  negative) — decides which way the close-limit points. */
+function entryNet1x(trade: Trade): number {
+  let net = 0;
+  for (const leg of trade.legs) {
+    const sign = leg.action === "buy" ? 1 : -1;
+    net += sign * (leg.contracts ?? 1) * (leg.entry_price ?? 0);
+  }
+  return net / structureBase(trade);
+}
+
+/**
+ * Resting close-limit — the take-profit half of the order lifecycle. A
+ * net-debit position names the value to SELL at; a net-credit position
+ * names the buy-back cost. The user always types a positive premium; the
+ * sign convention (credit = negative net) is applied before the API call.
+ * While one rests, the row collapses to a working chip with a cancel ✕.
+ */
+function CloseLimitRow({
+  trade,
+  liveAnalytics,
+}: {
+  trade: Trade;
+  liveAnalytics: TradeAnalytics | null;
+}) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [raw, setRaw] = useState("");
+
+  const isCredit = entryNet1x(trade) < 0;
+  const base = structureBase(trade);
+  // Live per-1× net premium magnitude — the natural seed for the input.
+  const liveNet1x =
+    liveAnalytics != null
+      ? Math.abs(liveAnalytics.current_value) / 100 / base
+      : null;
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+  };
+  const place = useMutation({
+    mutationFn: async (limit1x: number) =>
+      setCloseOrder(trade.id, isCredit ? -Math.abs(limit1x) : Math.abs(limit1x)),
+    onSuccess: () => {
+      invalidate();
+      setEditing(false);
+      setRaw("");
+    },
+    onError: (e) =>
+      toast.error((e as Error)?.message || "Could not place close limit"),
+  });
+  const pull = useMutation({
+    mutationFn: async () => clearCloseOrder(trade.id),
+    onSuccess: invalidate,
+    onError: (e) => {
+      invalidate(); // 409 → filled/closed underneath; reconcile
+      toast.error((e as Error)?.message || "Could not cancel close limit");
+    },
+  });
+
+  const resting = trade.close_limit_price;
+  if (resting != null) {
+    return (
+      <div
+        className="flex items-center justify-between gap-2 px-1.5 py-1 border border-amber/50 bg-tier-2 text-tiny tabular-nums"
+        style={{ borderRadius: 0 }}
+      >
+        <span className="text-amber uppercase" style={{ fontSize: 11 }}>
+          {isCredit ? "Buy back ≤" : "Close ≥"} ${Math.abs(resting).toFixed(2)}{" "}
+          · working
+        </span>
+        <button
+          type="button"
+          onClick={() => pull.mutate()}
+          disabled={pull.isPending}
+          className="text-fg-tertiary-2 hover:text-bearish disabled:opacity-40 px-1"
+          aria-label="cancel resting close limit"
+          title="Cancel the resting close limit"
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setEditing(true);
+          if (liveNet1x != null && liveNet1x > 0) setRaw(liveNet1x.toFixed(2));
+        }}
+        className="w-full h-6 border border-hairline text-fg-tertiary-2 hover:text-fg-secondary hover:bg-tier-2 uppercase tracking-label-up"
+        style={{ fontSize: 11, borderRadius: 0 }}
+        title={
+          isCredit
+            ? "Rest a buy-back limit: closes when the premium decays to your price"
+            : "Rest a closing limit: closes at your price when the mark reaches it"
+        }
+      >
+        + close at limit
+      </button>
+    );
+  }
+
+  const parsed = Number.parseFloat(raw);
+  const valid = Number.isFinite(parsed) && parsed > 0;
+  return (
+    <div className="flex items-center gap-1 text-tiny tabular-nums">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2 shrink-0"
+        style={{ fontSize: 11 }}
+      >
+        {isCredit ? "Buy back ≤" : "Close ≥"}
+      </span>
+      <input
+        value={raw}
+        onChange={(e) => setRaw(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && valid && !place.isPending) place.mutate(parsed);
+          if (e.key === "Escape") setEditing(false);
+        }}
+        inputMode="decimal"
+        placeholder={liveNet1x != null ? liveNet1x.toFixed(2) : "0.00"}
+        className="w-full min-w-0 h-6 px-1 bg-tier-1 border border-hairline text-fg-primary"
+        style={{ fontSize: 12, borderRadius: 0 }}
+        autoFocus
+        aria-label="close limit net premium per 1x structure"
+      />
+      <button
+        type="button"
+        onClick={() => place.mutate(parsed)}
+        disabled={!valid || place.isPending}
+        className="h-6 px-2 border border-amber/60 text-amber hover:bg-tier-2 disabled:opacity-40 uppercase"
+        style={{ fontSize: 11, borderRadius: 0 }}
+      >
+        rest
+      </button>
+      <button
+        type="button"
+        onClick={() => setEditing(false)}
+        className="h-6 px-1 text-fg-tertiary-2 hover:text-fg-secondary"
+        style={{ fontSize: 12 }}
+        aria-label="cancel editing close limit"
+      >
+        ✕
+      </button>
     </div>
   );
 }
@@ -1395,6 +1573,11 @@ function KeyLevelsCol({ symbol }: { symbol: string | null }) {
               : `${m.iv_rank.toFixed(0)}${m.iv_rank_status ? ` · ${m.iv_rank_status}` : ""}`
           }
           tooltip={LEVEL_TOOLTIP.IV}
+        />
+        <LevelRow
+          label="P/C"
+          value={m?.pc_ratio == null ? "—" : m.pc_ratio.toFixed(2)}
+          tooltip={LEVEL_TOOLTIP["P/C"]}
         />
         {allEmpty && (
           <span

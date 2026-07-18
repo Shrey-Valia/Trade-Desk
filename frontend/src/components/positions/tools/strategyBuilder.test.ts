@@ -47,6 +47,20 @@ describe("presetLegs (WS5 builder presets)", () => {
     expect(body?.ratio).toBe(2);
     expect(legs.filter((l) => l.action === "buy")).toHaveLength(2);
   });
+
+  it("put_spread = bull put credit spread (sell OTM put, buy the wing below)", () => {
+    const legs = presetLegs("put_spread", 100, 5);
+    expect(legs).toHaveLength(2);
+    expect(legs[0]).toMatchObject({ side: "put", action: "sell", strike: 95 });
+    expect(legs[1]).toMatchObject({ side: "put", action: "buy", strike: 90 });
+  });
+
+  it("strangle = long OTM call + long OTM put", () => {
+    const legs = presetLegs("strangle", 100, 5);
+    expect(legs).toHaveLength(2);
+    expect(legs[0]).toMatchObject({ side: "call", action: "buy", strike: 105 });
+    expect(legs[1]).toMatchObject({ side: "put", action: "buy", strike: 95 });
+  });
 });
 
 describe("netPremiumPerShare (premium-exit direction)", () => {

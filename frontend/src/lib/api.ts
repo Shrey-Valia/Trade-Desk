@@ -32,13 +32,16 @@ import {
   type ContractPreviewInput,
   type MonteCarloInput,
   type MonteCarloResult,
+  type MultiLegSpec,
   type OpenMultiLegInput,
   type ZeroDteChain,
 } from "@/types/zerodte";
 import {
+  PortfolioGreeksSchema,
   TradeAnalyticsSchema,
   TradeOutSchema,
   TradesResponseSchema,
+  type PortfolioGreeks,
   type Trade,
   type TradeAnalytics,
   type TradeInput,
@@ -609,6 +612,38 @@ export const setBrackets = (
 export const cancelOrder = (id: number): Promise<Trade> =>
   mutate(`/api/journal/trades/${id}/cancel`, TradeOutSchema, { method: "POST" });
 
+/** Place (or replace) a resting CLOSE-LIMIT on an open position. The limit is
+ *  the SIGNED net premium per 1× structure — positive = value to sell a
+ *  net-debit position at; negative = buy-back cost for a net-credit position
+ *  (-0.30 = pay at most 0.30). 422 when the sign doesn't match the position's
+ *  direction or the limit is already marketable (use the market close then). */
+export const setCloseOrder = (id: number, limitPrice: number): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/close-order`, TradeOutSchema, {
+    method: "POST",
+    body: JSON.stringify({ limit_price: limitPrice }),
+  });
+
+/** Pull the resting close-limit off an open position. */
+export const clearCloseOrder = (id: number): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/close-order`, TradeOutSchema, {
+    method: "DELETE",
+  });
+
+/** Link 2–4 WORKING orders as an OCO group — when one fills, the monitor
+ *  cancels the rest. 409 when any is no longer working. */
+export const linkOcoOrders = (tradeIds: number[]): Promise<TradesResponse> =>
+  mutate("/api/journal/orders/oco-link", TradesResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ trade_ids: tradeIds }),
+  });
+
+/** Dissolve the OCO pairing on the given orders. */
+export const unlinkOcoOrders = (tradeIds: number[]): Promise<TradesResponse> =>
+  mutate("/api/journal/orders/oco-unlink", TradesResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ trade_ids: tradeIds }),
+  });
+
 /** Modify a WORKING (unfilled) order in place — trigger price(s) and/or TIF.
  *  409 when the order is no longer working (filled/cancelled underneath the
  *  form); the backend's detail is surfaced verbatim on the thrown error. */
@@ -651,6 +686,11 @@ export interface AnalyticsParams {
    * is not 0DTE — safe to always pass when present. */
   elapsedHours?: number | null;
 }
+
+/** Net Greek exposure across every OPEN execution position on the active
+ *  combine + SPY-beta-weighted delta. 503 while the quote feed is cold. */
+export const fetchPortfolioGreeks = (): Promise<PortfolioGreeks> =>
+  request("/api/journal/portfolio/greeks", PortfolioGreeksSchema);
 
 export const fetchTradeAnalytics = (
   id: number,
@@ -704,6 +744,18 @@ export const fetchContractPreview = (
   input: ContractPreviewInput,
 ): Promise<ContractPreview> =>
   mutate("/api/zerodte/preview", ContractPreviewSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+/** Pre-trade payoff/POP for an arbitrary 2–6 leg structure AS SUBMITTED
+ *  (short legs negative) — the strategy builder's risk graph. */
+export const fetchMultiLegPreview = (input: {
+  symbol: string;
+  contracts: number;
+  legs: MultiLegSpec[];
+}): Promise<ContractPreview> =>
+  mutate("/api/zerodte/preview-multi", ContractPreviewSchema, {
     method: "POST",
     body: JSON.stringify(input),
   });

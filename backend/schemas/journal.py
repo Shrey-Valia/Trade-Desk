@@ -17,7 +17,16 @@ from calculations.strategies import STRATEGY_TYPES
 TradeStatus = Literal["working", "open", "closed", "cancelled"]
 OrderType = Literal["market", "limit", "stop", "stop_limit"]
 TimeInForce = Literal["day", "gtc"]
-CloseReason = Literal["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"]
+CloseReason = Literal[
+    "manual",
+    "stop_loss",
+    "take_profit",
+    "expiry",
+    "liquidation",
+    "copy",
+    "limit",
+    "expiry_closeout",
+]
 LegSide = Literal["call", "put"]
 LegAction = Literal["buy", "sell"]
 
@@ -185,6 +194,9 @@ class TradeOut(BaseModel):
     # credit (0 < tp < 1), sl the cut multiple (> 1).
     tp_premium_mult: float | None = None
     sl_premium_mult: float | None = None
+    # Resting close-limit on an open position: signed net premium per 1×
+    # structure (debit positive / credit negative). None = no resting close.
+    close_limit_price: float | None = None
     # OCO group id pairing sibling working orders (one fill cancels the other).
     oco_group: str | None = None
     close_reason: CloseReason | None = None
@@ -224,6 +236,32 @@ class AnalyticsGreeks(BaseModel):
     gamma: float
     theta: float
     vega: float
+
+
+class PortfolioSymbolGreeks(BaseModel):
+    """Per-symbol slice of the portfolio Greek book. delta/gamma are
+    share-equivalents; theta/vega are position dollars. beta_weighted_delta
+    restates delta in SPY-share equivalents (None when SPY spot is cold)."""
+
+    symbol: str
+    beta: float
+    spot: float
+    delta: float
+    gamma: float
+    theta: float
+    vega: float
+    beta_weighted_delta: float | None = None
+
+
+class PortfolioGreeksOut(BaseModel):
+    """Net Greek exposure across every OPEN execution position on the active
+    combine — the ThinkorSwim-Analyze / Tastytrade top-line numbers."""
+
+    positions: int
+    net: AnalyticsGreeks
+    beta_weighted_delta: float | None = None
+    spy_spot: float | None = None
+    by_symbol: list[PortfolioSymbolGreeks] = []
 
 
 class TradeAnalyticsOut(BaseModel):

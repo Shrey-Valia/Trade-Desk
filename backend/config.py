@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     # isn't at. 300s tolerates normal indicative-feed lag.
     max_spot_staleness_s: float = 300.0
 
+    # EXPIRATION-DAY CLOSE-OUT — the prop-firm answer to assignment/pin risk
+    # on physically-settled ETF options: the monitor force-flattens any open
+    # position whose last leg expires TODAY once the clock is within this many
+    # minutes of that session's close (half-day aware), and cancels working
+    # orders on those dying contracts. Real desks (Topstep et al.) close 0DTE
+    # books ~10 minutes before the bell rather than model OCC assignment.
+    # 0 disables the policy (positions ride to expiry settlement instead).
+    expiry_closeout_minutes: float = 10.0
+
     # ---------------------------------------------------------------------
     # Deployment environment. "development" (default) keeps the dev-friendly
     # behaviours (e.g. the session cookie is allowed over plain HTTP); set

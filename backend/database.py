@@ -191,6 +191,10 @@ _TRADE_COLUMN_ADDITIONS: list[tuple[str, str]] = [
     # net-debit vs net-credit semantics). Nullable — unset for legacy rows.
     ("tp_premium_mult", "FLOAT"),
     ("sl_premium_mult", "FLOAT"),
+    # Resting close-limit on an open position: signed net premium per 1×
+    # structure (debit positive / credit negative); monitor closes when the
+    # live net mark reaches it. Nullable — unset for legacy rows.
+    ("close_limit_price", "FLOAT"),
     # OCO grouping: one fill/close cancels still-working siblings in the group.
     ("oco_group", "VARCHAR(36)"),
     ("close_reason", "VARCHAR(16)"),

@@ -77,6 +77,16 @@ export function ContractDetailPanel() {
             <Row label={dir === "long" ? "Cost" : "Credit"} value={formatDollar(v.premium)} />
             <Row label="Max loss" value={maxLabel(v.maxLoss)} tone="bearish" />
             <Row label="Max profit" value={maxLabel(v.maxProfit)} tone="bullish" />
+            <Row
+              label="POP"
+              value={popLabel(dir === "long" ? data.pop_long : data.pop_short)}
+              title="Probability of profit at expiry for this direction — risk-neutral Black-Scholes at the ATM IV, evaluated at the breakeven(s). A model number, not a forecast."
+            />
+            <Row
+              label="Prob ITM"
+              value={popLabel(data.prob_itm)}
+              title="Probability the contract finishes in the money at expiry (N(d2) at the strike) — direction-independent."
+            />
           </div>
 
           <div className="px-3 pb-2 text-fg-tertiary" style={{ fontSize: 11 }}>
@@ -127,7 +137,7 @@ function viewFor(d: ContractPreview, dir: Direction): PreviewView {
       vega: -d.greeks.vega,
     },
     // Short max profit = the premium collected (− long max loss).
-    maxProfit: -d.max_loss,
+    maxProfit: d.max_loss == null ? null : -d.max_loss,
     // Short max loss = − long max profit (unbounded if long was unbounded).
     maxLoss: d.max_profit == null ? null : -d.max_profit,
     premium: Math.abs(d.cost),
@@ -198,14 +208,22 @@ function Greek({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** "63%" for a 0–1 probability; em-dash when the model couldn't price it. */
+function popLabel(p: number | null | undefined): string {
+  if (p == null) return "—";
+  return `${Math.round(p * 100)}%`;
+}
+
 function Row({
   label,
   value,
   tone,
+  title,
 }: {
   label: string;
   value: string;
   tone?: "bullish" | "bearish";
+  title?: string;
 }) {
   const cls =
     tone === "bullish"
@@ -214,7 +232,7 @@ function Row({
         ? "text-bearish"
         : "text-fg-secondary";
   return (
-    <div className="flex items-baseline justify-between gap-2 text-tiny">
+    <div className="flex items-baseline justify-between gap-2 text-tiny" title={title}>
       <span className="uppercase tracking-label-up text-fg-tertiary-2" style={{ fontSize: 11 }}>
         {label}
       </span>

@@ -804,6 +804,7 @@ function Row({
         openInterest={row.call_open_interest}
         delta={row.call_delta}
         theta={row.call_theta}
+        iv={row.call_iv ?? null}
         disabled={disabled || row.call_price <= 0}
         side="call"
         strike={row.strike}
@@ -853,6 +854,7 @@ function Row({
         openInterest={row.put_open_interest}
         delta={row.put_delta}
         theta={row.put_theta}
+        iv={row.put_iv ?? null}
         disabled={disabled || row.put_price <= 0}
         side="put"
         strike={row.strike}
@@ -878,6 +880,7 @@ function Cell({
   openInterest,
   delta,
   theta,
+  iv,
   disabled,
   side,
   strike,
@@ -900,6 +903,8 @@ function Cell({
   openInterest: number | null;
   delta: number;
   theta: number;
+  /** Per-contract IV back-solved from the quote mid — null on model rows. */
+  iv: number | null;
   disabled: boolean;
   side: "call" | "put";
   strike: number;
@@ -980,6 +985,12 @@ function Cell({
     >
       <span className="whitespace-nowrap">
         Δ{delta.toFixed(2)} Θ{theta.toFixed(2)}
+        {iv != null && (
+          <span title="Per-contract implied vol from the quote mid — watch it move across strikes (skew) and vs the header ATM IV">
+            {" "}
+            IV{Math.round(iv * 100)}
+          </span>
+        )}
       </span>
       {volOiEl}
     </span>

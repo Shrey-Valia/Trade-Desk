@@ -44,6 +44,10 @@ export const ChainStrikeRowSchema = z.object({
   call_theta: z.number().default(0),
   put_delta: z.number().default(0),
   put_theta: z.number().default(0),
+  // Per-contract implied vol back-solved from the quote mid (smile/skew
+  // visibility). null/absent on BS-fallback sides and older payloads.
+  call_iv: z.number().nullable().optional(),
+  put_iv: z.number().nullable().optional(),
   // Per-side NBBO + session volume. nullable().optional() so the UI works
   // both before and after the backend starts sending them; null = no live
   // quote on that side (the mid/model price above is the fallback).
@@ -77,7 +81,7 @@ export type ChainTable = z.infer<typeof ChainTableSchema>;
 
 export const ContractPreviewSchema = z.object({
   symbol: z.string(),
-  kind: z.enum(["leg", "straddle"]),
+  kind: z.enum(["leg", "straddle", "multi"]),
   side: z.enum(["call", "put"]).nullable(),
   strike: z.number(),
   contracts: z.number().int(),
@@ -100,13 +104,22 @@ export const ContractPreviewSchema = z.object({
   breakevens: z.array(z.number()),
   /** null = unbounded upside. */
   max_profit: z.number().nullable(),
-  max_loss: z.number(),
+  /** null = unbounded downside (net short calls — multi-leg preview only). */
+  max_loss: z.number().nullable(),
   greeks: z.object({
     delta: z.number(),
     gamma: z.number(),
     theta: z.number(),
     vega: z.number(),
   }),
+  // Closed-form model probabilities (risk-neutral lognormal, ATM IV).
+  // prob_itm: finishes ITM at expiry (null for a straddle). pop_long /
+  // pop_short: probability of profit at expiry per direction.
+  // nullable().optional(): tolerant of payloads from before the backend
+  // computed them.
+  prob_itm: z.number().nullable().optional(),
+  pop_long: z.number().nullable().optional(),
+  pop_short: z.number().nullable().optional(),
 });
 export type ContractPreview = z.infer<typeof ContractPreviewSchema>;
 

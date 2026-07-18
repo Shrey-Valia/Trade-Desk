@@ -8,6 +8,7 @@ import { colors } from "@/lib/design";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useCachedChainTable } from "@/hooks/useChainTable";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
+import { usePortfolioGreeks } from "@/hooks/usePortfolioGreeks";
 import { usePreLiquidationWarnings } from "@/hooks/usePreLiquidationWarnings";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
@@ -338,6 +339,7 @@ function MetricPills() {
           valueClass={signedClass(upl)}
           title="Unrealized P&L — live, summed across all open positions on this tier."
         />
+        <PortfolioGreeksMini openCount={openPositions.length} />
         <DllMini
           used={dllUsed}
           budget={dllBudget}
@@ -441,6 +443,47 @@ function CushionHero({
         />
       </div>
     </div>
+  );
+}
+
+/**
+ * Net portfolio Greek book — the ThinkorSwim-Analyze top-line numbers.
+ * Shows the SPY-beta-weighted delta (equivalent SPY shares) and net theta
+ * ($/day) while positions are open; the tooltip carries the full per-symbol
+ * grid. Hidden on a flat book — an empty Δβ pill is noise.
+ */
+function PortfolioGreeksMini({ openCount }: { openCount: number }) {
+  const { data } = usePortfolioGreeks(openCount > 0);
+  if (openCount === 0 || !data || data.positions === 0) return null;
+  const bw = data.beta_weighted_delta;
+  const theta = data.net.theta;
+  const lines = [
+    `Net book exposure across ${data.positions} open position${data.positions === 1 ? "" : "s"}:`,
+    `Δβ(SPY) ${bw == null ? "—" : bw.toFixed(1)} equivalent SPY shares · ` +
+      `Δ ${data.net.delta.toFixed(1)} · Γ ${data.net.gamma.toFixed(3)} · ` +
+      `Θ ${theta.toFixed(0)}$/day · ν ${data.net.vega.toFixed(0)}$/vol-pt`,
+    ...data.by_symbol.map(
+      (r) =>
+        `${r.symbol} (β ${r.beta.toFixed(2)}): Δβ ${
+          r.beta_weighted_delta == null ? "—" : r.beta_weighted_delta.toFixed(1)
+        } · Θ ${r.theta.toFixed(0)}`,
+    ),
+  ];
+  return (
+    <MiniStat
+      label="Δβ · Θ"
+      value={`${bw == null ? "—" : (bw > 0 ? "+" : "") + bw.toFixed(0)} · ${theta.toFixed(0)}`}
+      valueClass={
+        bw == null
+          ? "text-fg-secondary"
+          : bw > 0
+            ? "text-bullish"
+            : bw < 0
+              ? "text-bearish"
+              : "text-fg-secondary"
+      }
+      title={lines.join("\n")}
+    />
   );
 }
 
