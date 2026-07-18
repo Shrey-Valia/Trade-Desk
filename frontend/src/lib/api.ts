@@ -25,11 +25,13 @@ import {
 import {
   ChainTableSchema,
   ContractPreviewSchema,
+  ExpirationsSchema,
   MonteCarloResultSchema,
   ZeroDteChainSchema,
   type ChainTable,
   type ContractPreview,
   type ContractPreviewInput,
+  type Expirations,
   type MonteCarloInput,
   type MonteCarloResult,
   type MultiLegSpec,
@@ -729,14 +731,25 @@ export const fetchZeroDteChain = (
   );
 
 /** Windowed chain table for the trading-ticket UI — strikes around ATM
- * with call+put prices (live quote or BS fallback) and open interest. */
+ * with call+put prices (live quote or BS fallback) and open interest.
+ * `expiry` (ISO date) browses a LATER expiration read-only; omitted =
+ * today's 0DTE, else the nearest upcoming expiry. */
 export const fetchChainTable = (
   symbol: string,
   strikes: number = 15,
+  expiry?: string | null,
 ): Promise<ChainTable> =>
   request(
-    `/api/zerodte/chain/table?symbol=${encodeURIComponent(symbol)}&strikes=${strikes}`,
+    `/api/zerodte/chain/table?symbol=${encodeURIComponent(symbol)}&strikes=${strikes}` +
+      (expiry ? `&expiry=${encodeURIComponent(expiry)}` : ""),
     ChainTableSchema,
+  );
+
+/** Listed expirations (today or later) for the chain's expiry selector. */
+export const fetchExpirations = (symbol: string): Promise<Expirations> =>
+  request(
+    `/api/zerodte/expirations?symbol=${encodeURIComponent(symbol)}`,
+    ExpirationsSchema,
   );
 
 /** Pre-trade payoff + greeks for the selected contract (detail panel). */

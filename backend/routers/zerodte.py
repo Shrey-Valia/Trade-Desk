@@ -170,6 +170,9 @@ class ChainTableOut(BaseModel):
     rows: list[ChainStrikeRow]
     t_years_to_close: float
     session_close_iso: str
+    # False when the table shows a LATER expiration than today (multi-expiry
+    # browsing): cells are display-only — opening remains strictly 0DTE.
+    expiry_is_today: bool = True
     # Freshest observation timestamp behind this snapshot (ISO-8601) — the
     # max of the underlying quote's trade stamp and the contracts' last-trade
     # stamps. None when the feed omits timestamps entirely.
@@ -280,10 +283,46 @@ def _quote_price(c) -> tuple[float | None, str]:
     return None, "none"
 
 
+class ExpirationOut(BaseModel):
+    """One listed expiration for the chain browser."""
+
+    expiry: str          # ISO date
+    dte: int             # calendar days from today (0 = today)
+    is_today: bool
+
+
+class ExpirationsOut(BaseModel):
+    symbol: str
+    expirations: list[ExpirationOut]
+
+
+@router.get("/expirations", response_model=ExpirationsOut)
+def get_expirations(symbol: str = "SPY") -> ExpirationsOut:
+    """Listed expirations (today or later) for the chain browser's expiry
+    selector — audit wave 2's answer to 'there is no expiration selector
+    anywhere'. Browsing any expiry is allowed; OPENING remains 0DTE-gated."""
+    sym = symbol.upper().strip()
+    chain = get_chain_snapshot(sym, with_volume=False)
+    if not chain:
+        raise HTTPException(503, f"{sym} options chain unavailable")
+    today = datetime.now(_ET).date()
+    expiries = sorted({c.expiry for c in chain if c.expiry >= today})[:12]
+    return ExpirationsOut(
+        symbol=sym,
+        expirations=[
+            ExpirationOut(
+                expiry=e.isoformat(), dte=(e - today).days, is_today=(e == today)
+            )
+            for e in expiries
+        ],
+    )
+
+
 @router.get("/chain/table", response_model=ChainTableOut)
 def get_chain_table(
     symbol: str = "SPY",
     strikes: int = 15,
+    expiry: str | None = None,
 ) -> ChainTableOut:
     """A WINDOWED chain table for the trading-ticket UI.
 
@@ -307,25 +346,56 @@ def get_chain_table(
         raise HTTPException(503, f"{sym} quote unavailable")
     spot = float(quote.price)
 
-    # Strict 0DTE: chain table refuses to fall back to the nearest
-    # future expiry. Showing a non-0DTE chain would let the user click
-    # a strike and then 409 — confusing. The UI listens for this 409
-    # detail and renders a clean "No 0DTE for {SYMBOL} today" message
-    # with the open buttons disabled.
+    # Expiry resolution (audit wave 2 — multi-expiry BROWSING; opening stays
+    # 0DTE-gated in the open paths):
+    #   explicit ?expiry=  → that expiry (404 when it isn't listed);
+    #   omitted            → today's 0DTE when it exists, else the NEAREST
+    #                        upcoming expiry — a no-0DTE day used to 409 and
+    #                        dead-terminal the whole chain panel.
+    # `expiry_is_today` on the response tells the UI whether cells are
+    # tradeable (today) or browse-only (any other expiry).
     today = datetime.now(_ET).date()
-    same_day = [c for c in chain if c.expiry == today]
-    if not same_day:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No 0DTE for {sym} today ({today.isoformat()}).",
-        )
-    target_expiry = today
+    if expiry is not None:
+        try:
+            target_expiry = date.fromisoformat(expiry)
+        except ValueError as exc:
+            raise HTTPException(422, f"bad expiry {expiry!r} — use YYYY-MM-DD") from exc
+        same_day = [c for c in chain if c.expiry == target_expiry]
+        if not same_day:
+            raise HTTPException(
+                404, f"{sym} has no listed contracts expiring {expiry}."
+            )
+    else:
+        same_day = [c for c in chain if c.expiry == today]
+        target_expiry = today
+        if not same_day:
+            upcoming = sorted({c.expiry for c in chain if c.expiry > today})
+            if not upcoming:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"No 0DTE for {sym} today ({today.isoformat()}).",
+                )
+            target_expiry = upcoming[0]
+            same_day = [c for c in chain if c.expiry == target_expiry]
 
     try:
         rate = latest_dgs3mo_rate()
     except Exception:  # noqa: BLE001
         rate = DEFAULT_RATE_FALLBACK
-    t_close = _t_years_to_close()
+    # Time-to-expiry for the TARGET expiry's session close (half-day aware) —
+    # today's close for 0DTE (the legacy path), the expiry's own close when
+    # browsing a later expiration.
+    if target_expiry == today:
+        t_close = _t_years_to_close()
+    else:
+        from calculations.intraday_analytics import SECONDS_PER_YEAR
+        from services.order_monitor import _session_close_for_date
+
+        secs = max(
+            60.0,
+            (_session_close_for_date(target_expiry) - datetime.now(_ET)).total_seconds(),
+        )
+        t_close = secs / SECONDS_PER_YEAR
 
     all_strikes = sorted({c.strike for c in same_day})
     if not all_strikes:
@@ -436,6 +506,7 @@ def get_chain_table(
         rows=rows,
         t_years_to_close=t_close,
         session_close_iso=_session_close_et().isoformat(),
+        expiry_is_today=(target_expiry == today),
         as_of=_chain_as_of(quote, same_day),
     )
 
@@ -725,6 +796,86 @@ def _clamp_contracts_to_cap(
     # in _require_tradeable owns the "no room at all" case (open_now >= cap).
     return max(1, min(int(requested), remaining)) if remaining > 0 else int(requested)
 # ── end WS5 ─────────────────────────────────────────────────────────────────
+
+
+def _book_margin_used(session: Session, combine_id: int, spot_hint: dict[str, float]) -> float:
+    """$ requirement already committed by the combine's OPEN + WORKING
+    execution book (working orders reserved margin at placement). Spot per
+    symbol comes from `spot_hint` (the caller's live quote), then a live
+    fetch, then the trade's own entry underlying — margin can never be
+    bypassed by a cold feed, only priced slightly stale."""
+    from calculations.margin import book_requirement
+
+    rows = (
+        session.execute(
+            select(Trade).where(
+                Trade.combine_id == combine_id,
+                Trade.status.in_(("open", "working")),
+                Trade.origin == "execution",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return 0.0
+    spot_cache: dict[str, float] = dict(spot_hint)
+    structures: list[tuple[list[dict], float]] = []
+    for t in rows:
+        if t.symbol not in spot_cache:
+            live = _spot_for_symbol(t.symbol)
+            spot_cache[t.symbol] = (
+                float(live) if live is not None else float(t.entry_underlying_price)
+            )
+        structures.append((t.legs, spot_cache[t.symbol]))
+    return book_requirement(
+        structures,
+        naked_pct=settings.margin_naked_pct,
+        naked_min_pct=settings.margin_naked_min_pct,
+    )
+
+
+def _require_buying_power(
+    session: Session,
+    combine: Combine,
+    symbol: str,
+    new_legs: list[dict],
+    spot: float,
+) -> None:
+    """MARGIN GATE — the capital constraint the audit flagged as absent
+    (order cost was never checked and naked shorts were free). The new
+    structure's requirement (max loss for defined-risk, Reg-T-style for
+    naked sides — calculations/margin.py) plus what the existing open +
+    working book already commits must fit inside the realized balance.
+
+    Balance is the REALIZED balance (open URPL not counted — the live
+    MLL/DLL gates in _require_tradeable own unrealized exposure). Closes
+    never come through here, so a trader can always exit. Config-off →
+    legacy behavior."""
+    if not settings.margin_enforcement_enabled:
+        return
+    from calculations.margin import structure_requirement
+
+    new_req = structure_requirement(
+        new_legs,
+        spot,
+        naked_pct=settings.margin_naked_pct,
+        naked_min_pct=settings.margin_naked_min_pct,
+    )
+    if new_req <= 0:
+        return
+    snap = combine_snapshot(session, combine)
+    used = _book_margin_used(session, combine.id, {symbol: float(spot)})
+    available = snap.balance - used
+    if new_req > available:
+        raise HTTPException(
+            422,
+            f"insufficient buying power: this structure requires "
+            f"${new_req:,.0f} but only ${max(0.0, available):,.0f} is "
+            f"available (balance ${snap.balance:,.0f} − ${used:,.0f} "
+            "committed to open/working positions). Reduce size or use a "
+            "defined-risk structure.",
+        )
 
 
 def _live_combine_urpl(session: Session, combine: Combine) -> float:
@@ -1020,6 +1171,9 @@ def open_zerodte_straddle(
     typed_legs = [TradeLeg(**leg) for leg in legs_json]
     net = compute_net_debit_credit(typed_legs)
 
+    # MARGIN GATE — priced legs in hand, check the capital requirement.
+    _require_buying_power(session, combine, sym, legs_json, spot)
+
     strategy = "long_straddle" if action == "buy" else "short_straddle"
     notes = (
         "0DTE long straddle · indicative fill"
@@ -1155,6 +1309,10 @@ def open_zerodte_leg(
     }
     from schemas.journal import TradeLeg
     net = compute_net_debit_credit([TradeLeg(**leg_json)])
+
+    # MARGIN GATE — applies to immediate fills AND working orders (a resting
+    # order reserves its requirement at placement, like the contract cap).
+    _require_buying_power(session, combine, sym, [leg_json], spot)
 
     trade = Trade(
         symbol=sym,
@@ -1409,6 +1567,10 @@ def open_zerodte_multi_leg(
                 net < 0, payload.tp_premium_mult, payload.sl_premium_mult
             )
 
+    # MARGIN GATE — the multi-leg structure's requirement (defined-risk max
+    # loss, or Reg-T-style when a side is net short) vs remaining buying power.
+    _require_buying_power(session, combine, sym, legs_json, spot)
+
     strategy = (payload.strategy or "custom").strip().lower() or "custom"
     if is_working:
         notes = (
@@ -1614,7 +1776,11 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         spot=spot,
         iv=iv,
         expiry=table.expiry,
-        dte_label="0DTE",
+        dte_label=(
+            "0DTE"
+            if table.expiry_is_today
+            else f"{(date.fromisoformat(table.expiry) - datetime.now(_ET).date()).days}DTE"
+        ),
         entry_price=preview.entry_price,
         cost=preview.cost,
         open_interest=oi_out,
@@ -1719,7 +1885,11 @@ def preview_multi(payload: PreviewMultiRequest) -> ContractPreviewOut:
         spot=spot,
         iv=iv,
         expiry=table.expiry,
-        dte_label="0DTE",
+        dte_label=(
+            "0DTE"
+            if table.expiry_is_today
+            else f"{(date.fromisoformat(table.expiry) - datetime.now(_ET).date()).days}DTE"
+        ),
         entry_price=preview.entry_price,
         cost=preview.cost,
         open_interest=None,
@@ -1917,6 +2087,14 @@ def reverse_positions(
                 }
             )
         net = compute_net_debit_credit([TradeLeg(**leg) for leg in rev_legs])
+        # MARGIN GATE — flipping a book can transform its requirement (a long
+        # straddle reverses into a naked short straddle). A reversed structure
+        # that doesn't fit the remaining buying power is SKIPPED (that position
+        # ends flat, never over-levered); the close above already booked.
+        try:
+            _require_buying_power(session, combine, t.symbol, rev_legs, spot)
+        except HTTPException:
+            continue
         rev = Trade(
             symbol=t.symbol,
             strategy=_reverse_strategy(t.strategy),

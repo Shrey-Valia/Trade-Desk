@@ -340,6 +340,22 @@ function MetricPills() {
           title="Unrealized P&L — live, summed across all open positions on this tier."
         />
         <PortfolioGreeksMini openCount={openPositions.length} />
+        {account?.buying_power != null && (
+          <MiniStat
+            label="BP"
+            value={formatDollar(account.buying_power)}
+            valueClass={
+              account.buying_power <= 0 ? "text-bearish" : "text-fg-primary"
+            }
+            title={
+              `Buying power for NEW opens = realized balance − margin committed ` +
+              `($${(account.margin_used ?? 0).toFixed(0)} across open + working ` +
+              `positions). Defined-risk structures require their max loss; naked ` +
+              `short sides carry a Reg-T-style requirement. Open URPL is governed ` +
+              `by the MLL/DLL gates, not folded in here.`
+            }
+          />
+        )}
         <DllMini
           used={dllUsed}
           budget={dllBudget}

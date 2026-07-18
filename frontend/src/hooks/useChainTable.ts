@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { fetchChainTable } from "@/lib/api";
+import { fetchChainTable, fetchExpirations } from "@/lib/api";
 import type { ChainTable } from "@/types/zerodte";
 
 /**
@@ -12,10 +12,14 @@ import type { ChainTable } from "@/types/zerodte";
  * refetchInterval: 10s — keeps the indicative prices fresh without
  * hammering the underlying alpaca call (server caches 5min).
  */
-export function useChainTable(symbol: string | null, strikes: number = 15) {
+export function useChainTable(
+  symbol: string | null,
+  strikes: number = 15,
+  expiry: string | null = null,
+) {
   return useQuery({
-    queryKey: ["zerodte", "chain", "table", symbol, strikes],
-    queryFn: () => fetchChainTable(symbol as string, strikes),
+    queryKey: ["zerodte", "chain", "table", symbol, strikes, expiry],
+    queryFn: () => fetchChainTable(symbol as string, strikes, expiry),
     enabled: !!symbol,
     staleTime: 5_000,
     refetchInterval: 10_000,
@@ -25,6 +29,20 @@ export function useChainTable(symbol: string | null, strikes: number = 15) {
     // state can't render the old symbol's rows. queryKey index 3 is `symbol`.
     placeholderData: (prev, prevQuery) =>
       prevQuery?.queryKey?.[3] === symbol ? prev : undefined,
+  });
+}
+
+/**
+ * Listed expirations for the chain's expiry selector. Structural, slow-
+ * moving data — refreshed every 5 min is plenty.
+ */
+export function useExpirations(symbol: string | null) {
+  return useQuery({
+    queryKey: ["zerodte", "expirations", symbol],
+    queryFn: () => fetchExpirations(symbol as string),
+    enabled: !!symbol,
+    staleTime: 300_000,
+    refetchInterval: 300_000,
   });
 }
 

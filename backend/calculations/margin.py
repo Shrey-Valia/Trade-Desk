@@ -1,0 +1,181 @@
+"""Margin / buying-power requirements for option structures.
+
+Before this module the platform had NO capital constraint: order cost was
+never checked against the balance and short options were free to write —
+the only brakes were the contract cap and the drawdown floors. This module
+prices what a position must set aside, per structure (no cross-margining —
+conservative, and standard for a prop sim):
+
+DEFINED-RISK (no naked side): requirement = the structure's max loss at
+expiry — the debit for long premium, width − credit for credit spreads,
+the worst wing for condors. Computed as the payoff minimum over the
+critical points {S=0, every strike, past the top strike}; exact for
+piecewise-linear option payoffs.
+
+NAKED SIDES (net short calls and/or net short puts): a Reg-T-style
+per-contract requirement on the net short quantity of that side:
+
+    calls: max(naked_pct·S − OTM, naked_min_pct·S)·100 + short premium·100
+    puts:  max(naked_pct·S − OTM, naked_min_pct·K)·100 + short premium·100
+
+using the most-conservative short strike on the side (lowest short call /
+highest short put). When BOTH sides are naked (short straddle/strangle)
+the industry rule applies: the greater single side plus the other side's
+short premium. A mixed structure (naked tail + defined-risk body, e.g. a
+ratio spread) takes max(naked requirement, bounded-region max loss) —
+an approximation that stays on the conservative side for the shapes this
+product can express (2–6 legs, ratio ≤ 10).
+
+Rates default from config (margin_naked_pct / margin_naked_min_pct) at the
+call site; this module stays pure and takes them as arguments.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+CONTRACT_MULTIPLIER = 100.0
+
+
+def _sign(leg: dict[str, Any]) -> float:
+    return 1.0 if str(leg.get("action", "buy")).lower() == "buy" else -1.0
+
+
+def _qty(leg: dict[str, Any]) -> int:
+    return max(1, int(leg.get("contracts", 1) or 1))
+
+
+def _payoff_at(legs: list[dict[str, Any]], s: float) -> float:
+    """Expiry P&L per structure at underlying `s`, in dollars (premiums in)."""
+    total = 0.0
+    for leg in legs:
+        k = float(leg.get("strike", 0.0) or 0.0)
+        side = str(leg.get("side", "call")).lower()
+        intrinsic = max(s - k, 0.0) if side == "call" else max(k - s, 0.0)
+        total += _sign(leg) * _qty(leg) * (
+            intrinsic - float(leg.get("entry_price", 0.0) or 0.0)
+        )
+    return total * CONTRACT_MULTIPLIER
+
+
+def _net_side_qty(legs: list[dict[str, Any]], side: str) -> int:
+    """Net signed contract count on one side; negative = net short."""
+    return int(
+        sum(_sign(leg) * _qty(leg) for leg in legs if leg.get("side") == side)
+    )
+
+
+def _naked_req_per_contract(
+    side: str, strike: float, spot: float, premium: float,
+    naked_pct: float, naked_min_pct: float,
+) -> float:
+    """Reg-T-style naked requirement for ONE contract, dollars."""
+    if side == "call":
+        otm = max(0.0, strike - spot)
+        base = max(naked_pct * spot - otm, naked_min_pct * spot)
+    else:
+        otm = max(0.0, spot - strike)
+        base = max(naked_pct * spot - otm, naked_min_pct * strike)
+    return (base + max(0.0, premium)) * CONTRACT_MULTIPLIER
+
+
+def _naked_side_req(
+    legs: list[dict[str, Any]], side: str, net_short: int, spot: float,
+    naked_pct: float, naked_min_pct: float,
+) -> float:
+    """Requirement for the net short exposure on one side, priced at the
+    most-conservative short strike (lowest short call / highest short put)."""
+    shorts = [
+        leg for leg in legs
+        if leg.get("side") == side and str(leg.get("action")).lower() == "sell"
+    ]
+    if not shorts or net_short <= 0:
+        return 0.0
+    pick = min if side == "call" else max
+    worst = pick(shorts, key=lambda leg: float(leg.get("strike", 0.0) or 0.0))
+    return net_short * _naked_req_per_contract(
+        side,
+        float(worst.get("strike", 0.0) or 0.0),
+        spot,
+        float(worst.get("entry_price", 0.0) or 0.0),
+        naked_pct,
+        naked_min_pct,
+    )
+
+
+def _short_premium(legs: list[dict[str, Any]], side: str) -> float:
+    """Total short premium collected on one side, dollars."""
+    return sum(
+        _qty(leg) * float(leg.get("entry_price", 0.0) or 0.0) * CONTRACT_MULTIPLIER
+        for leg in legs
+        if leg.get("side") == side and str(leg.get("action")).lower() == "sell"
+    )
+
+
+def structure_requirement(
+    legs: list[dict[str, Any]],
+    spot: float,
+    *,
+    naked_pct: float = 0.20,
+    naked_min_pct: float = 0.10,
+) -> float:
+    """$ margin requirement for one structure. See the module docstring."""
+    if not legs:
+        return 0.0
+    strikes = sorted(
+        {float(leg.get("strike", 0.0) or 0.0) for leg in legs if leg.get("strike")}
+    )
+    if not strikes:
+        return 0.0
+
+    net_calls = _net_side_qty(legs, "call")
+    net_puts = _net_side_qty(legs, "put")
+    naked_calls = max(0, -net_calls)
+    naked_puts = max(0, -net_puts)
+
+    # Critical points of the piecewise-linear expiry payoff. The point past
+    # the top strike stands in for S→∞ ONLY when the tail is flat (no naked
+    # calls); a naked-call tail is priced by the Reg-T branch instead.
+    criticals = [0.0, *strikes, strikes[-1] * 1.5 + 1.0]
+    if naked_calls > 0:
+        criticals = criticals[:-1]  # tail belongs to the naked-call req
+    if naked_puts > 0:
+        criticals = criticals[1:]  # S=0 belongs to the naked-put req
+    bounded_loss = max(
+        (0.0, *(-_payoff_at(legs, s) for s in criticals))
+    )
+
+    if naked_calls == 0 and naked_puts == 0:
+        return round(bounded_loss, 2)
+
+    call_req = _naked_side_req(legs, "call", naked_calls, spot, naked_pct, naked_min_pct)
+    put_req = _naked_side_req(legs, "put", naked_puts, spot, naked_pct, naked_min_pct)
+    if naked_calls > 0 and naked_puts > 0:
+        # Both sides naked (short straddle/strangle): the greater side plus
+        # the other side's short premium — the standard combined-naked rule.
+        if call_req >= put_req:
+            naked_req = call_req + _short_premium(legs, "put")
+        else:
+            naked_req = put_req + _short_premium(legs, "call")
+    else:
+        naked_req = call_req + put_req
+    return round(max(naked_req, bounded_loss), 2)
+
+
+def book_requirement(
+    structures: list[tuple[list[dict[str, Any]], float]],
+    *,
+    naked_pct: float = 0.20,
+    naked_min_pct: float = 0.10,
+) -> float:
+    """Aggregate requirement across a book: Σ per-structure requirements
+    (no cross-margining). `structures` = [(legs, spot_for_its_symbol)]."""
+    return round(
+        sum(
+            structure_requirement(
+                legs, spot, naked_pct=naked_pct, naked_min_pct=naked_min_pct
+            )
+            for legs, spot in structures
+        ),
+        2,
+    )

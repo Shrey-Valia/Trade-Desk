@@ -70,12 +70,29 @@ export const ChainTableSchema = z.object({
   rows: z.array(ChainStrikeRowSchema),
   t_years_to_close: z.number(),
   session_close_iso: z.string(),
+  /** False when the table shows a LATER expiration than today (multi-expiry
+   *  browsing): cells are display-only — opening remains strictly 0DTE. */
+  expiry_is_today: z.boolean().default(true),
   indicative: z.boolean(),
   notice: z.string(),
   /** Quote timestamp (ISO) — when the chain's prices were sourced. */
   as_of: z.string().nullable().optional(),
 });
 export type ChainTable = z.infer<typeof ChainTableSchema>;
+
+// -- Expirations (the chain browser's expiry selector) ----------------------
+
+export const ExpirationsSchema = z.object({
+  symbol: z.string(),
+  expirations: z.array(
+    z.object({
+      expiry: z.string(), // ISO date
+      dte: z.number().int(),
+      is_today: z.boolean(),
+    }),
+  ),
+});
+export type Expirations = z.infer<typeof ExpirationsSchema>;
 
 // -- Contract preview (the detail panel: payoff + greeks) -------------------
 

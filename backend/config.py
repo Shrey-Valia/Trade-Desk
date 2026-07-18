@@ -130,6 +130,16 @@ class Settings(BaseSettings):
     # isn't at. 300s tolerates normal indicative-feed lag.
     max_spot_staleness_s: float = 300.0
 
+    # MARGIN / BUYING POWER — the capital constraint on opens. Requirement per
+    # structure: max loss at expiry for defined-risk, Reg-T-style rates for
+    # naked short sides (see calculations/margin.py). Checked at open/working
+    # placement against the realized balance minus the requirement already
+    # committed by the open + working book. Off → legacy behavior (no capital
+    # check; contract cap + drawdown floors are the only brakes).
+    margin_enforcement_enabled: bool = True
+    margin_naked_pct: float = 0.20      # 20% of spot, less OTM amount
+    margin_naked_min_pct: float = 0.10  # floor: 10% of spot (calls) / strike (puts)
+
     # EXPIRATION-DAY CLOSE-OUT — the prop-firm answer to assignment/pin risk
     # on physically-settled ETF options: the monitor force-flattens any open
     # position whose last leg expires TODAY once the clock is within this many

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-import { useChainTable } from "@/hooks/useChainTable";
+import { useChainTable, useExpirations } from "@/hooks/useChainTable";
 import { useZeroDteUniverse } from "@/hooks/useLiquidUniverse";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useOpenContractsCount } from "@/hooks/useOpenContractsCount";
@@ -133,7 +133,14 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
   // User-selectable strike span (± strikes around ATM). ±5 keeps the ladder
   // light by default; ±10/±20 pull the deeper wings for wide-move days.
   const [span, setSpan] = useState<number>(5);
-  const { data, isLoading, isError, error } = useChainTable(symbol, span);
+  // Multi-expiry BROWSING (audit wave 2): null = today's 0DTE (or the
+  // nearest upcoming expiry on a no-0DTE day — server fallback). A later
+  // expiry renders read-only: trading stays strictly 0DTE.
+  const [expiry, setExpiry] = useState<string | null>(null);
+  useEffect(() => setExpiry(null), [symbol]);
+  const { data, isLoading, isError, error } = useChainTable(symbol, span, expiry);
+  const { data: expirations } = useExpirations(symbol);
+  const browseOnly = !!data && data.expiry_is_today === false;
   // ── WS5: chain filters (additive — narrows the rendered strikes; composes
   // with WS4's virtualization downstream since it only shrinks the row list).
   const [filters, setFilters] = useState<ChainFilters>(DEFAULT_CHAIN_FILTERS);
@@ -189,7 +196,7 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
       side: "call" | "put",
       anchor: { x: number; y: number },
     ) => {
-      if (!data || noZeroDteToday) return;
+      if (!data || noZeroDteToday || browseOnly) return;
       const price = side === "call" ? row.call_price : row.put_price;
       if (price <= 0) return;
       setQuickTarget({
@@ -226,6 +233,9 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
   useEffect(() => {
     if (!data || isError || !currentSelection) return;
     if (currentSelection.symbol !== data.underlying) return;
+    // Browsing a different expiration must never re-price a 0DTE selection
+    // off the wrong expiry's rows.
+    if (currentSelection.expiry !== data.expiry) return;
     const row = data.rows.find((r) => r.strike === currentSelection.strike);
     if (!row) return;
     const next =
@@ -242,7 +252,7 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
   // (BUY/SELL) stays gated in the ticket; selecting is view-only.
 
   const onClickCall = (row: ChainStrikeRow) => {
-    if (!data || noZeroDteToday) return;
+    if (!data || noZeroDteToday || browseOnly) return;
     setSelection({
       kind: "leg",
       side: "call",
@@ -253,7 +263,7 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
     });
   };
   const onClickPut = (row: ChainStrikeRow) => {
-    if (!data || noZeroDteToday) return;
+    if (!data || noZeroDteToday || browseOnly) return;
     setSelection({
       kind: "leg",
       side: "put",
@@ -264,7 +274,7 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
     });
   };
   const onClickStrike = (row: ChainStrikeRow) => {
-    if (!data || noZeroDteToday) return;
+    if (!data || noZeroDteToday || browseOnly) return;
     if (row.is_atm) {
       setSelection({
         kind: "straddle",
@@ -308,7 +318,18 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
         atm={showChain ? data?.atm_strike ?? null : null}
         iv={showChain ? data?.iv_used ?? null : null}
         asOf={showChain ? data?.as_of ?? null : null}
+        expirations={expirations?.expirations ?? []}
+        onSelectExpiry={(iso, isToday) => setExpiry(isToday ? null : iso)}
       />
+      {browseOnly && showChain && (
+        <div
+          className="px-3 py-1 border-b border-hairline bg-tier-1 text-position text-center shrink-0"
+          style={{ fontSize: 12 }}
+          role="status"
+        >
+          Browsing exp {data?.expiry} — viewing only; trading is strictly 0DTE
+        </div>
+      )}
       <ColumnHeader />
       {/* ── WS5: filter bar — additive; narrows the rendered strikes. ── */}
       {showChain && (
@@ -662,6 +683,8 @@ function Header({
   atm,
   iv,
   asOf,
+  expirations = [],
+  onSelectExpiry,
 }: {
   symbol: string;
   expiry: string | null;
@@ -670,8 +693,13 @@ function Header({
   iv: number | null;
   /** Quote timestamp (ISO) — when the chain's prices were sourced. */
   asOf: string | null;
+  /** Listed expirations for the browser dropdown (≤1 → static label). */
+  expirations?: { expiry: string; dte: number; is_today: boolean }[];
+  onSelectExpiry?: (iso: string, isToday: boolean) => void;
 }) {
   const asOfLabel = asOf ? formatClockEtSeconds(asOf) : null;
+  const expiryLabel = (e: { expiry: string; dte: number; is_today: boolean }) =>
+    e.is_today ? `today · 0DTE` : `${e.expiry} · ${e.dte}DTE`;
   return (
     <div className="border-b border-hairline bg-tier-1 shrink-0">
       <div className="flex items-baseline gap-2 px-3 pt-1.5 tabular-nums">
@@ -679,9 +707,29 @@ function Header({
           Option chain
         </span>
         <span className="text-tiny text-fg-primary">{symbol}</span>
-        <span className="text-tiny text-fg-tertiary-2">
-          0DTE · exp {expiry ?? "today"}
-        </span>
+        {expirations.length > 1 && onSelectExpiry ? (
+          <select
+            value={expiry ?? ""}
+            onChange={(e) => {
+              const hit = expirations.find((x) => x.expiry === e.target.value);
+              if (hit) onSelectExpiry(hit.expiry, hit.is_today);
+            }}
+            aria-label="Expiration to browse (trading is 0DTE-only)"
+            title="Browse any listed expiration. Only today's 0DTE is tradeable — later expiries are view-only."
+            className="text-tiny bg-tier-2 border border-tier-3 text-fg-secondary rounded-btn px-1"
+            style={{ height: 18, fontSize: 11 }}
+          >
+            {expirations.map((e) => (
+              <option key={e.expiry} value={e.expiry}>
+                {expiryLabel(e)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-tiny text-fg-tertiary-2">
+            0DTE · exp {expiry ?? "today"}
+          </span>
+        )}
         <span
           className="ml-auto text-fg-tertiary-2"
           style={{ fontSize: 12 }}
