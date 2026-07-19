@@ -63,6 +63,77 @@ export function tradesToCsv(trades: Trade[]): string {
     .join("\r\n");
 }
 
+/**
+ * Executions (fills) export — one row per EXECUTION rather than per trade:
+ * every leg's entry fill (price, size, underlying, timestamp), plus one
+ * close row per closed position (per-leg exit fills aren't persisted; the
+ * close row carries the exit underlying, close reason and realized P&L).
+ * The reconciliation-grade view the flat trade ledger can't give.
+ */
+export function executionsToCsv(trades: Trade[]): string {
+  const header = [
+    "trade_id",
+    "symbol",
+    "account",
+    "event",
+    "action",
+    "type",
+    "strike",
+    "expiry",
+    "contracts",
+    "price",
+    "underlying",
+    "timestamp",
+    "close_reason",
+    "realized_pnl",
+  ];
+  const rows: string[][] = [];
+  for (const t of trades) {
+    if (t.status === "cancelled") continue;
+    const wasFilled = t.status === "open" || t.status === "closed";
+    if (!wasFilled) continue;
+    for (const l of t.legs) {
+      rows.push([
+        String(t.id),
+        t.symbol,
+        t.is_paper ? "paper" : "live",
+        "entry",
+        l.action,
+        l.side,
+        String(l.strike),
+        l.expiry,
+        String(l.contracts ?? 1),
+        numCell(l.entry_price),
+        numCell(t.entry_underlying_price),
+        t.entry_date,
+        "",
+        "",
+      ]);
+    }
+    if (t.status === "closed") {
+      rows.push([
+        String(t.id),
+        t.symbol,
+        t.is_paper ? "paper" : "live",
+        "close",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        numCell(t.exit_underlying_price),
+        t.exit_date ?? "",
+        t.close_reason ?? "",
+        numCell(t.realized_pnl),
+      ]);
+    }
+  }
+  return [header, ...rows]
+    .map((cells) => cells.map(escapeCsvCell).join(","))
+    .join("\r\n");
+}
+
 function legLabel(l: Trade["legs"][number]): string {
   const k = `${l.strike}${l.side === "call" ? "C" : "P"}`;
   return `${l.action} ${l.contracts}x ${k} @ ${l.entry_price} exp ${l.expiry}`;

@@ -28,6 +28,7 @@ import {
   ExpirationsSchema,
   MonteCarloResultSchema,
   RollOutSchema,
+  TermStructureSchema,
   ZeroDteChainSchema,
   type ChainTable,
   type ContractPreview,
@@ -38,6 +39,7 @@ import {
   type MultiLegSpec,
   type OpenMultiLegInput,
   type RollOut,
+  type TermStructure,
   type ZeroDteChain,
 } from "@/types/zerodte";
 import {
@@ -767,6 +769,13 @@ export const fetchExpirations = (symbol: string): Promise<Expirations> =>
   request(
     `/api/zerodte/expirations?symbol=${encodeURIComponent(symbol)}`,
     ExpirationsSchema,
+  );
+
+/** ATM implied-vol term structure — one point per listed expiration. */
+export const fetchTermStructure = (symbol: string): Promise<TermStructure> =>
+  request(
+    `/api/zerodte/term?symbol=${encodeURIComponent(symbol)}`,
+    TermStructureSchema,
   );
 
 /** Roll an open position: close at the live mark and reopen the same

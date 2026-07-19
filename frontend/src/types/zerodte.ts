@@ -80,6 +80,25 @@ export const ChainTableSchema = z.object({
 });
 export type ChainTable = z.infer<typeof ChainTableSchema>;
 
+// -- IV term structure (ATM IV per listed expiration) -----------------------
+
+export const TermStructureSchema = z.object({
+  symbol: z.string(),
+  spot: z.number(),
+  points: z.array(
+    z.object({
+      expiry: z.string(),
+      dte: z.number().int(),
+      atm_strike: z.number(),
+      atm_iv: z.number().nullable(),
+    }),
+  ),
+  /** far ATM IV − near ATM IV over the covered window; null <2 solved points. */
+  slope: z.number().nullable(),
+  shape: z.enum(["contango", "backwardation", "flat"]).nullable(),
+});
+export type TermStructure = z.infer<typeof TermStructureSchema>;
+
 // -- Roll (atomic close + reopen at shifted strikes) ------------------------
 
 export const RollOutSchema = z.object({

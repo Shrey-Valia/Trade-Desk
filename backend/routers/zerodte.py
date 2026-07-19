@@ -318,6 +318,94 @@ def get_expirations(symbol: str = "SPY") -> ExpirationsOut:
     )
 
 
+class TermPointOut(BaseModel):
+    expiry: str
+    dte: int
+    atm_strike: float
+    # ATM implied vol back-solved from the quote mids at THIS expiry's own
+    # session close; None when neither ATM side carries a usable quote.
+    atm_iv: float | None
+
+
+class TermStructureOut(BaseModel):
+    """ATM implied-vol term structure — the analysis layer a premium seller
+    checks before selling today's vol: is the front cheap or rich vs the
+    curve? shape: contango (far > near — the normal state), backwardation
+    (near > far — event/stress pricing), or flat."""
+
+    symbol: str
+    spot: float
+    points: list[TermPointOut]
+    slope: float | None
+    shape: Literal["contango", "backwardation", "flat"] | None
+
+
+@router.get("/term", response_model=TermStructureOut)
+def get_term_structure(symbol: str = "SPY", max_points: int = 8) -> TermStructureOut:
+    """ATM IV per listed expiration, one cached chain snapshot + one quote —
+    unlocked by the multi-expiry work (wave 2). Each point back-solves the
+    ATM call/put mids at that expiry's OWN session close (half-day aware),
+    so the front of the curve carries honest intraday time."""
+    from calculations.intraday_analytics import SECONDS_PER_YEAR
+    from services.order_monitor import _session_close_for_date
+
+    sym = symbol.upper().strip()
+    chain = get_chain_snapshot(sym, with_volume=False)
+    if not chain:
+        raise HTTPException(503, f"{sym} options chain unavailable")
+    quote = get_quotes([sym]).get(sym)
+    if quote is None:
+        raise HTTPException(503, f"{sym} quote unavailable")
+    spot = float(quote.price)
+
+    try:
+        rate = latest_dgs3mo_rate()
+    except Exception:  # noqa: BLE001
+        rate = DEFAULT_RATE_FALLBACK
+
+    now_et = datetime.now(_ET)
+    today = now_et.date()
+    expiries = sorted({c.expiry for c in chain if c.expiry >= today})
+    expiries = expiries[: max(1, min(12, max_points))]
+
+    points: list[TermPointOut] = []
+    for e in expiries:
+        rows = [c for c in chain if c.expiry == e]
+        strikes_ = sorted({c.strike for c in rows})
+        if not strikes_:
+            continue
+        atm = min(strikes_, key=lambda k: abs(k - spot))
+        t = max(60.0, (_session_close_for_date(e) - now_et).total_seconds()) / SECONDS_PER_YEAR
+        ivs: list[float] = []
+        for c in rows:
+            if c.strike != atm or c.type not in ("call", "put"):
+                continue
+            px, _src = _quote_price(c)
+            if px is None or px <= 0:
+                continue
+            iv = iv_intraday(px, spot, atm, t, rate, c.type)
+            if iv is not None and iv > 0:
+                ivs.append(float(iv))
+        points.append(
+            TermPointOut(
+                expiry=e.isoformat(),
+                dte=(e - today).days,
+                atm_strike=float(atm),
+                atm_iv=round(sum(ivs) / len(ivs), 4) if ivs else None,
+            )
+        )
+
+    solved = [p for p in points if p.atm_iv is not None]
+    slope: float | None = None
+    shape: Literal["contango", "backwardation", "flat"] | None = None
+    if len(solved) >= 2:
+        slope = round(solved[-1].atm_iv - solved[0].atm_iv, 4)  # type: ignore[operator]
+        shape = "contango" if slope > 0.005 else "backwardation" if slope < -0.005 else "flat"
+    return TermStructureOut(
+        symbol=sym, spot=spot, points=points, slope=slope, shape=shape
+    )
+
+
 @router.get("/chain/table", response_model=ChainTableOut)
 def get_chain_table(
     symbol: str = "SPY",

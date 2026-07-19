@@ -355,7 +355,9 @@ function TradeRow({
           </span>
         </Td>
         <Td className="text-left text-fg-primary">
-          {STRATEGY_LABELS[trade.strategy] ?? trade.strategy}
+          <span title={legFillsTitle(trade)}>
+            {STRATEGY_LABELS[trade.strategy] ?? trade.strategy}
+          </span>
         </Td>
         <Td className="text-right text-fg-secondary">{formatDate(trade.entry_date)}</Td>
         <Td className="text-right text-fg-secondary">{dte == null ? "—" : `${dte}d`}</Td>
@@ -702,6 +704,26 @@ function StatusChip({
     return <span className="text-amber uppercase tracking-label-up">Working</span>;
   }
   return <span className="text-fg-tertiary">CLOSED</span>;
+}
+
+/** Leg-level fill tape for the strategy cell's tooltip — the per-execution
+ *  detail the compact row can't carry: every leg's entry fill, plus the
+ *  exit context on closed rows. */
+function legFillsTitle(trade: Trade): string {
+  const legs = trade.legs
+    .map(
+      (l) =>
+        `${l.action === "buy" ? "+" : "−"}${l.contracts ?? 1}× ${l.strike}` +
+        `${l.side === "call" ? "C" : "P"} filled @ ${(l.entry_price ?? 0).toFixed(2)}`,
+    )
+    .join("\n");
+  const exit =
+    trade.status === "closed"
+      ? `\nclosed${trade.close_reason ? ` (${trade.close_reason})` : ""}` +
+        `${trade.exit_underlying_price != null ? ` · und $${trade.exit_underlying_price.toFixed(2)}` : ""}` +
+        `${trade.realized_pnl != null ? ` · realized $${trade.realized_pnl.toFixed(2)}` : ""}`
+      : "";
+  return `Entry fills:\n${legs}${exit}`;
 }
 
 /** True when this row is a copy-traded mirror of a lead account's trade.

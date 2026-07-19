@@ -27,6 +27,7 @@ import {
 } from "@/lib/api";
 import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
+import { tradingDayStartMs } from "@/lib/tradingDay";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import {
@@ -363,20 +364,23 @@ function PillToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
 }
 
 function TodayInline({ trades }: { trades: Trade[] }) {
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const { net, count } = useMemo(() => {
-    let n = 0;
+  // ONE definition of "today": the backend's 5pm-PT accounting window — the
+  // same number the header RP&L, the DLL and settlement all use. The old
+  // UTC-calendar sum here could disagree with every money surface around it
+  // (the audit's two-todays reconciliation trap).
+  const { data: account } = useAccountState();
+  const net = account?.today_realized ?? 0;
+  const count = useMemo(() => {
+    const start = tradingDayStartMs();
+    const after = (iso: string | null | undefined) =>
+      iso != null && Date.parse(iso) >= start;
     let c = 0;
     for (const t of trades) {
-      if (t.status === "closed" && t.exit_date?.startsWith(todayIso)) {
-        n += t.realized_pnl ?? 0;
-        c += 1;
-      } else if (t.status === "open" && t.entry_date.startsWith(todayIso)) {
-        c += 1;
-      }
+      if (t.status === "closed" && after(t.exit_date)) c += 1;
+      else if (t.status === "open" && after(t.entry_date)) c += 1;
     }
-    return { net: n, count: c };
-  }, [trades, todayIso]);
+    return c;
+  }, [trades]);
   const netCls =
     net > 0 ? "text-bullish" : net < 0 ? "text-bearish" : "text-fg-secondary";
   return (
@@ -384,7 +388,10 @@ function TodayInline({ trades }: { trades: Trade[] }) {
       className="flex items-center gap-3 px-3 tabular-nums"
       style={{ height: 36 }}
     >
-      <span className="text-tiny uppercase tracking-label-up text-fg-secondary shrink-0">
+      <span
+        className="text-tiny uppercase tracking-label-up text-fg-secondary shrink-0"
+        title="Realized P&L this trading day (5pm-PT accounting window) — the same window as the header RP&L, the daily loss limit and settlement."
+      >
         Today
       </span>
       <span className={`text-tiny ${netCls}`}>{formatSignedDollar(net)}</span>

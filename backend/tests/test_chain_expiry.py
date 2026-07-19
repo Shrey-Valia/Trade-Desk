@@ -105,3 +105,65 @@ def test_expirations_endpoint_lists_upcoming_sorted(auth_client, monkeypatch):
     ]
     assert body["expirations"][0]["is_today"] is True
     assert body["expirations"][1]["dte"] == 3
+
+
+# --- IV term structure -------------------------------------------------------
+
+
+def test_term_structure_points_and_shape(auth_client, monkeypatch):
+    """Future expiries only (clock-independent: after today's bell a 0DTE
+    point correctly has no solvable forward IV). A far premium fat enough
+    relative to its extra time back-solves to higher IV → contango."""
+    fat = [
+        types.SimpleNamespace(
+            strike=float(k), type=side, expiry=e,
+            bid=b, ask=b + 0.2, last=None, open_interest=None, iv=None,
+        )
+        for e, b in ((_FUT, 2.0), (_FAR, 6.0))
+        for k in (95.0, 100.0, 105.0)
+        for side in ("call", "put")
+    ]
+    monkeypatch.setattr(
+        "routers.zerodte.get_chain_snapshot", lambda sym, with_volume=False: fat
+    )
+    monkeypatch.setattr(
+        "routers.zerodte.get_quotes",
+        lambda syms: {syms[0]: types.SimpleNamespace(price=100.0)},
+    )
+    res = auth_client.get("/api/zerodte/term?symbol=SPY")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [p["expiry"] for p in body["points"]] == [
+        _FUT.isoformat(), _FAR.isoformat()
+    ]
+    assert all(p["atm_strike"] == 100.0 for p in body["points"])
+    ivs = [p["atm_iv"] for p in body["points"]]
+    assert all(v is not None and v > 0 for v in ivs)
+    assert body["slope"] is not None
+    assert body["shape"] in ("contango", "backwardation", "flat")
+
+
+def test_term_structure_unquoted_expiry_is_none(auth_client, monkeypatch):
+    rows = [
+        types.SimpleNamespace(
+            strike=100.0, type=side, expiry=e,
+            bid=(2.0 if e == _FUT else None),
+            ask=(2.2 if e == _FUT else None),
+            last=None, open_interest=None, iv=None,
+        )
+        for e in (_FUT, _FAR)
+        for side in ("call", "put")
+    ]
+    monkeypatch.setattr(
+        "routers.zerodte.get_chain_snapshot", lambda sym, with_volume=False: rows
+    )
+    monkeypatch.setattr(
+        "routers.zerodte.get_quotes",
+        lambda syms: {syms[0]: types.SimpleNamespace(price=100.0)},
+    )
+    res = auth_client.get("/api/zerodte/term?symbol=SPY")
+    assert res.status_code == 200
+    pts = {p["expiry"]: p["atm_iv"] for p in res.json()["points"]}
+    assert pts[_FUT.isoformat()] is not None
+    assert pts[_FAR.isoformat()] is None
+    assert res.json()["slope"] is None  # one solved point can't make a curve
