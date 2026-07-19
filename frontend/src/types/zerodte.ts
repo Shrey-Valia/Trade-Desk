@@ -80,6 +80,18 @@ export const ChainTableSchema = z.object({
 });
 export type ChainTable = z.infer<typeof ChainTableSchema>;
 
+// -- Roll (atomic close + reopen at shifted strikes) ------------------------
+
+export const RollOutSchema = z.object({
+  closed: z.number().int(),
+  opened: z.number().int(),
+  /** $ booked closing the old position. */
+  realized: z.number(),
+  /** The NEW position's net entry ($, signed — debit positive). */
+  net_debit_credit: z.number(),
+});
+export type RollOut = z.infer<typeof RollOutSchema>;
+
 // -- Expirations (the chain browser's expiry selector) ----------------------
 
 export const ExpirationsSchema = z.object({

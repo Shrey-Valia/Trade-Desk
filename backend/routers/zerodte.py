@@ -882,7 +882,7 @@ def _live_combine_urpl(session: Session, combine: Combine) -> float:
     """Live mark-to-market URPL of the combine's OPEN positions. Best-effort and
     fully resilient: any pricing failure (cold feed / circuit open / no creds)
     contributes 0, so the order-time gate degrades to the realized-only check
-    rather than blocking wrongly. The ~20s monitor + auto-liquidation remain the
+    rather than blocking wrongly. The order monitor + auto-liquidation (config-driven cadence, default 5s) remain the
     hard backstop."""
     try:
         open_trades = (
@@ -990,7 +990,7 @@ def _require_tradeable(
         )
     # Mark-to-market gate: the realized-only snapshot above can read "tradeable"
     # while the LIVE balance (incl. open-position URPL) is already through the
-    # MLL floor or has exhausted today's DLL budget. The ~20s monitor would
+    # MLL floor or has exhausted today's DLL budget. The next monitor pass would
     # auto-liquidate, but don't let a fresh open slip in ahead of it. Only losses
     # can newly breach a floor the realized check already passed.
     urpl = _live_combine_urpl(session, combine)
@@ -2117,6 +2117,189 @@ def reverse_positions(
 
     session.commit()
     return FlattenOut(closed=closed, opened=opened, realized=round(total, 2))
+
+
+class RollRequest(BaseModel):
+    """Roll an OPEN position to new strikes as ONE action — the core
+    management move on every real options platform (Tastytrade's one-click
+    roll, ToS right-click → Roll). 0DTE product → same-expiry STRIKE rolls:
+    every leg shifts by the same amount, preserving the structure's widths.
+
+    Exactly one of:
+      strike_shift — signed points to move every leg ("roll up 5");
+      to_atm=True  — shift so the anchor leg (the strike nearest the entry
+                     underlying; a straddle's shared strike) lands on the
+                     current ATM ("re-center").
+    """
+
+    trade_id: int
+    strike_shift: float | None = None
+    to_atm: bool = False
+
+
+class RollOut(BaseModel):
+    closed: int
+    opened: int
+    realized: float           # $ booked closing the old position
+    net_debit_credit: float   # the NEW position's net entry ($, signed)
+
+
+@router.post("/roll", response_model=RollOut)
+def roll_position(
+    payload: RollRequest,
+    combine: Combine = Depends(get_active_combine),
+    session: Session = Depends(get_session),
+) -> RollOut:
+    """Close the position at the live mark and reopen the same structure
+    (same sides/actions/sizes/expiry) at shifted strikes, atomically enough
+    that a refused roll leaves the position UNTOUCHED: every gate — market
+    open, tradeable, target strikes listed, margin after the swap — is
+    checked BEFORE the close books. Underlying-price brackets and any
+    resting close-limit are dropped (they priced the old strikes); premium
+    TP/SL multiples and trailing stops carry over (they re-anchor to the new
+    entry premium automatically)."""
+    _require_market_open()
+    _require_tradeable(session, combine)
+
+    trade = session.get(Trade, payload.trade_id)
+    if trade is None or trade.combine_id != combine.id:
+        raise HTTPException(404, "no such position on the active combine")
+    if trade.status != "open":
+        raise HTTPException(409, "only an open position can be rolled")
+    if (payload.strike_shift is None) == (not payload.to_atm):
+        raise HTTPException(422, "specify exactly one of strike_shift / to_atm")
+    _require_symbol_tradeable(session, trade.symbol)
+
+    src_legs = trade.legs or []
+    if not src_legs:
+        raise HTTPException(422, "position has no usable legs")
+
+    spot = _spot_for_symbol(trade.symbol)
+    if spot is None:
+        raise HTTPException(503, f"{trade.symbol} quote unavailable — can't roll")
+
+    # Today's listed strikes for the target validation (+ ATM for re-center).
+    chain = get_chain_snapshot(trade.symbol, with_volume=False)
+    today = datetime.now(_ET).date()
+    listed = sorted({c.strike for c in chain if c.expiry == today})
+    if not listed:
+        raise HTTPException(409, f"No 0DTE for {trade.symbol} today — nothing to roll into.")
+
+    if payload.to_atm:
+        atm = min(listed, key=lambda k: abs(k - spot))
+        anchor = min(
+            (float(leg["strike"]) for leg in src_legs),
+            key=lambda k: abs(k - float(trade.entry_underlying_price)),
+        )
+        shift = atm - anchor
+        if shift == 0:
+            raise HTTPException(409, "position is already centered on the ATM strike")
+    else:
+        shift = float(payload.strike_shift or 0.0)
+        if shift == 0:
+            raise HTTPException(422, "strike_shift must be non-zero")
+
+    new_strikes = [float(leg["strike"]) + shift for leg in src_legs]
+    unlisted = [k for k in new_strikes if k not in listed]
+    if unlisted:
+        raise HTTPException(
+            422,
+            f"target strike(s) {', '.join(f'{k:g}' for k in unlisted)} are not "
+            f"listed for {trade.symbol} today — adjust the shift to the strike grid",
+        )
+
+    # Price the new legs at the crossed live quote (a roll's open half is a
+    # market fill like any other open), model-mid fallback per leg.
+    from services.order_monitor import _default_option_mark
+
+    now = datetime.now(UTC)
+    proto_legs = [
+        {**dict(leg), "strike": k} for leg, k in zip(src_legs, new_strikes, strict=True)
+    ]
+    live_qs = _live_leg_quotes(trade.symbol, proto_legs)
+    new_legs: list[dict] = []
+    for leg in proto_legs:
+        contracts = int(leg.get("contracts", 1) or 1)
+        q = _live_leg_quote(live_qs, leg)
+        px = (
+            _pick_fill_price(q, str(leg.get("action", "buy")), contracts)
+            if q is not None
+            else 0.0
+        )
+        if px <= 0:
+            one = dict(leg)
+            px = abs(_default_option_mark(_FakeTrade(trade.symbol, [one]), spot, now))
+        if px <= 0:
+            raise HTTPException(503, f"can't price {leg.get('side')} {leg['strike']:g}")
+        new_legs.append(
+            {
+                "side": leg["side"],
+                "action": leg.get("action", "buy"),
+                "strike": float(leg["strike"]),
+                "expiry": leg.get("expiry", today.isoformat()),
+                "contracts": contracts,
+                "entry_price": round(float(px), 4),
+            }
+        )
+
+    # MARGIN — the post-swap book must fit: committed − old requirement +
+    # new requirement ≤ balance. Checked BEFORE the close so a refused roll
+    # never leaves the trader flat.
+    if settings.margin_enforcement_enabled:
+        from calculations.margin import structure_requirement
+
+        kw = dict(
+            naked_pct=settings.margin_naked_pct,
+            naked_min_pct=settings.margin_naked_min_pct,
+        )
+        snap = combine_snapshot(session, combine)
+        used = _book_margin_used(session, combine.id, {trade.symbol: float(spot)})
+        old_req = structure_requirement(src_legs, float(spot), **kw)
+        new_req = structure_requirement(new_legs, float(spot), **kw)
+        if used - old_req + new_req > snap.balance:
+            raise HTTPException(
+                422,
+                f"insufficient buying power to roll: the new strikes require "
+                f"${new_req:,.0f} vs ${max(0.0, snap.balance - used + old_req):,.0f} "
+                "available after releasing the old position",
+            )
+
+    realized = _close_one(session, trade, spot, now, "manual")
+    if realized is None:
+        raise HTTPException(409, "position closed concurrently — nothing to roll")
+    trade.notes = (trade.notes or "") + f" · rolled {shift:+g}"
+
+    net = compute_net_debit_credit([TradeLeg(**leg) for leg in new_legs])
+    rolled = Trade(
+        symbol=trade.symbol,
+        strategy=trade.strategy,
+        entry_date=now,
+        entry_underlying_price=float(spot),
+        net_debit_credit=net,
+        status="open",
+        trail_amount=trade.trail_amount,
+        trail_pct=trade.trail_pct,
+        tp_premium_mult=trade.tp_premium_mult,
+        sl_premium_mult=trade.sl_premium_mult,
+        is_paper=True,
+        notes=f"rolled from #{trade.id} ({shift:+g})",
+        tier=combine.tier,
+        combine_id=combine.id,
+    )
+    rolled.legs = new_legs
+    rolled.tags = ["0dte", "rolled"]
+    rolled.mistake_tags = []
+    session.add(rolled)
+    session.flush()
+    mirror_open(session, combine, rolled)
+    session.commit()
+    session.refresh(rolled)
+    return RollOut(
+        closed=trade.id,
+        opened=rolled.id,
+        realized=float(realized),
+        net_debit_credit=float(rolled.net_debit_credit),
+    )
 
 
 class _FakeTrade:

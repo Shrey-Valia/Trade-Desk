@@ -27,6 +27,7 @@ import {
   ContractPreviewSchema,
   ExpirationsSchema,
   MonteCarloResultSchema,
+  RollOutSchema,
   ZeroDteChainSchema,
   type ChainTable,
   type ContractPreview,
@@ -36,6 +37,7 @@ import {
   type MonteCarloResult,
   type MultiLegSpec,
   type OpenMultiLegInput,
+  type RollOut,
   type ZeroDteChain,
 } from "@/types/zerodte";
 import {
@@ -631,6 +633,21 @@ export const clearCloseOrder = (id: number): Promise<Trade> =>
     method: "DELETE",
   });
 
+/** Close ONE leg of an open multi-leg position at the live mark (buy back
+ *  the tested short, let the rest ride). qty omitted = the whole leg. The
+ *  surviving legs keep riding; strategy label degrades to "custom" (or the
+ *  single-leg name when one leg remains). 409 while copy-followers mirror
+ *  the trade (per-leg closes don't cascade yet). */
+export const closeLeg = (
+  id: number,
+  legIndex: number,
+  qty?: number,
+): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/close-leg`, TradeOutSchema, {
+    method: "POST",
+    body: JSON.stringify({ leg_index: legIndex, qty: qty ?? null }),
+  });
+
 /** Link 2–4 WORKING orders as an OCO group — when one fills, the monitor
  *  cancels the rest. 409 when any is no longer working. */
 export const linkOcoOrders = (tradeIds: number[]): Promise<TradesResponse> =>
@@ -751,6 +768,24 @@ export const fetchExpirations = (symbol: string): Promise<Expirations> =>
     `/api/zerodte/expirations?symbol=${encodeURIComponent(symbol)}`,
     ExpirationsSchema,
   );
+
+/** Roll an open position: close at the live mark and reopen the same
+ *  structure at shifted strikes as ONE action. Exactly one of strikeShift
+ *  (signed points, whole structure moves together) or toAtm (re-center the
+ *  anchor leg on the current ATM). A refused roll leaves the position
+ *  untouched — every gate runs before the close books. */
+export const rollTrade = (
+  tradeId: number,
+  opts: { strikeShift?: number; toAtm?: boolean },
+): Promise<RollOut> =>
+  mutate("/api/zerodte/roll", RollOutSchema, {
+    method: "POST",
+    body: JSON.stringify({
+      trade_id: tradeId,
+      strike_shift: opts.strikeShift ?? null,
+      to_atm: opts.toAtm ?? false,
+    }),
+  });
 
 /** Pre-trade payoff + greeks for the selected contract (detail panel). */
 export const fetchContractPreview = (

@@ -490,6 +490,148 @@ def scale_out_trade(
     return _to_out(trade)
 
 
+class CloseLegRequest(BaseModel):
+    """POST body for closing ONE leg of a multi-leg position. `qty` = None
+    closes the whole leg; a smaller qty reduces it (per-leg scale-out)."""
+
+    leg_index: int = Field(ge=0)
+    qty: int | None = Field(default=None, gt=0)
+
+
+def _single_leg_strategy(leg: dict) -> str:
+    side = str(leg.get("side", "call")).lower()
+    action = str(leg.get("action", "buy")).lower()
+    return f"{'long' if action == 'buy' else 'short'}_{side}"
+
+
+@router.post("/trades/{trade_id}/close-leg", response_model=TradeOut)
+def close_leg(
+    trade_id: int,
+    payload: CloseLegRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Close ONE leg of an open multi-leg position at the live mark — buy back
+    the tested short of a condor and let the far side ride. The leg's slice
+    books like any close: (mark − entry) × sign × qty × 100 minus round-trip
+    commission on the closed contracts minus its spread-crossing friction.
+
+    The surviving structure keeps riding: legs shrink, the entry net is
+    recomputed over the remainder, and the strategy label degrades honestly
+    ("custom", or the single-leg name when one leg remains). Blocked while
+    copy-trade followers mirror this trade (the cascade machinery is
+    whole-position; a silent lead/follower divergence would be worse than
+    the 409). Single-leg positions use CLOSE / scale-out instead."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "open":
+        raise HTTPException(409, "can only close a leg of an OPEN position")
+    legs = trade.legs
+    if len(legs) < 2:
+        raise HTTPException(
+            409, "single-leg position — use close or scale-out instead"
+        )
+    if payload.leg_index >= len(legs):
+        raise HTTPException(422, f"leg_index {payload.leg_index} out of range")
+    followers = session.execute(
+        select(func.count()).select_from(Trade).where(
+            Trade.copied_from_trade_id == trade.id,
+            Trade.status.in_(("open", "working")),
+        )
+    ).scalar_one()
+    if followers:
+        raise HTTPException(
+            409,
+            "this position is copy-mirrored — per-leg closes don't cascade to "
+            "followers yet; use scale-out or a full close",
+        )
+
+    old_json = trade.legs_json
+    leg = dict(legs[payload.leg_index])
+    held = int(leg.get("contracts", 1) or 1)
+    qty = payload.qty if payload.qty is not None else held
+    if qty > held:
+        raise HTTPException(400, f"qty {qty} exceeds the {held} held on this leg")
+
+    # Price the leg at the live mark (chain mid, BS fallback) — the same
+    # per-leg pricer every monitor exit uses.
+    from services.order_monitor import (
+        _leg_model_price,
+        _option_chain_rows,
+        _rate,
+    )
+
+    try:
+        q = get_quotes([trade.symbol]).get(trade.symbol)
+    except Exception:  # noqa: BLE001
+        q = None
+    if q is None:
+        raise HTTPException(503, f"{trade.symbol} quote unavailable — can't price the leg")
+    spot = float(q.price)
+    now = datetime.now(timezone.utc)
+    px = float(_leg_model_price(_option_chain_rows(trade.symbol), leg, spot, now, _rate()))
+
+    sign = 1.0 if str(leg.get("action", "buy")).lower() == "buy" else -1.0
+    entry_px = float(leg.get("entry_price", 0.0) or 0.0)
+    leg_unrealized = sign * qty * (px - entry_px) * CONTRACT_MULTIPLIER
+    # Round-trip commission on the closed contracts (entry side was folded at
+    # the position level; the leg slice carries its own share) + the leg's
+    # spread-crossing exit friction.
+    commission = 2 * qty * settings.per_contract_fee
+    friction = close_friction(trade.symbol, [{**leg, "contracts": qty}])
+    slice_realized = round(leg_unrealized - commission - friction, 2)
+
+    new_legs = [dict(l_) for l_ in legs]
+    if qty == held:
+        new_legs.pop(payload.leg_index)
+    else:
+        new_legs[payload.leg_index]["contracts"] = held - qty
+    from schemas.journal import TradeLeg
+
+    new_net = compute_net_debit_credit([TradeLeg(**l_) for l_ in new_legs])
+    new_strategy = (
+        _single_leg_strategy(new_legs[0]) if len(new_legs) == 1 else "custom"
+    )
+    leg_desc = (
+        f"{leg.get('action')} {leg.get('strike'):g}"
+        f"{'C' if leg.get('side') == 'call' else 'P'}"
+    )
+    new_notes = (
+        (trade.notes or "")
+        + f" · closed leg {leg_desc} ×{qty} @ ~{px:.2f}"
+    )
+
+    # RACE GUARD — compare-and-swap on the EXACT legs blob (stricter than
+    # scale-out's status guard): a concurrent monitor close flips status, and
+    # a concurrent scale-out / other leg close rewrites legs_json; either way
+    # rowcount 0 → nothing was booked twice.
+    claimed = session.execute(
+        update(Trade)
+        .where(
+            Trade.id == trade.id,
+            Trade.status == "open",
+            Trade.legs_json == old_json,
+        )
+        .values(
+            legs_json=json.dumps(new_legs),
+            strategy=new_strategy,
+            net_debit_credit=new_net,
+            realized_pnl=func.coalesce(Trade.realized_pnl, 0.0) + slice_realized,
+            notes=new_notes,
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        session.rollback()
+        raise HTTPException(
+            409,
+            "position changed concurrently (close / scale-out / another leg"
+            " close) — refresh and retry",
+        )
+    session.commit()
+    session.refresh(trade)
+    return _to_out(trade)
+
+
 # Min distance an SL/TP bracket must sit from the underlying — mirrors the
 # placement guard in routers/zerodte (0.1% of spot) so a bracket can't be
 # dragged on top of spot and insta-trigger.

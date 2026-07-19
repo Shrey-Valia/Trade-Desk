@@ -8,7 +8,9 @@ import {
 } from "@tanstack/react-query";
 
 import { BottomNewsFeedTabs } from "@/components/positions/BottomNewsFeedTabs";
+import { strikeStep } from "@/components/positions/tools/StrategyBuilder";
 import { useAccountState } from "@/hooks/useAccountState";
+import { useCachedChainTable } from "@/hooks/useChainTable";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
@@ -16,7 +18,9 @@ import { useTrades } from "@/hooks/useTrades";
 import {
   cancelOrder,
   clearCloseOrder,
+  closeLeg,
   fetchTradeAnalytics,
+  rollTrade,
   scaleOutTrade,
   setCloseOrder,
   updateTrade,
@@ -584,6 +588,7 @@ function OpenPositionCol({
             {formatTimestamp(trade.entry_date)} ET ·{" "}
             {totalContracts(trade)} contract{totalContracts(trade) === 1 ? "" : "s"}
           </div>
+          <LegCloseList trade={trade} />
           {commissionSide > 0 && (
             <div
               className="text-fg-tertiary mt-0.5"
@@ -625,6 +630,7 @@ function OpenPositionCol({
             {held > 1 && (
               <QtyStepper qty={closeQty} max={held} onChange={setCloseQty} />
             )}
+            <RollRow trade={trade} />
             <CloseLimitRow trade={trade} liveAnalytics={liveAnalytics} />
             <div
               className="text-fg-tertiary"
@@ -1008,6 +1014,164 @@ function QtyStepper({
           +
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Per-leg close — buy back the tested short of a condor and let the far
+ * side ride. Rendered only for multi-leg positions; each row is the leg
+ * tape with an arm→confirm ✕ (a leg close books realized P&L). The backend
+ * 409s while copy-followers mirror the trade; the toast surfaces that.
+ */
+function LegCloseList({ trade }: { trade: Trade }) {
+  const queryClient = useQueryClient();
+  const [armedIdx, setArmedIdx] = useState<number | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const close = useMutation({
+    mutationFn: (idx: number) => closeLeg(trade.id, idx),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+      queryClient.invalidateQueries({ queryKey: ["trade-analytics", trade.id] });
+    },
+    onError: (e) => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      toast.error((e as Error)?.message || "Could not close leg");
+    },
+    onSettled: () => setArmedIdx(null),
+  });
+  if (trade.legs.length < 2) return null;
+
+  const fire = (idx: number) => {
+    if (close.isPending) return;
+    if (armedIdx !== idx) {
+      setArmedIdx(idx);
+      if (armTimer.current) clearTimeout(armTimer.current);
+      armTimer.current = setTimeout(() => setArmedIdx(null), 3000);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    close.mutate(idx);
+  };
+
+  return (
+    <div className="flex flex-col mt-0.5" style={{ gap: 1 }}>
+      {trade.legs.map((leg, i) => (
+        <div
+          key={`${leg.side}-${leg.strike}-${i}`}
+          className="flex items-center gap-1.5 tabular-nums text-fg-tertiary-2"
+          style={{ fontSize: 11 }}
+        >
+          <span className={leg.action === "buy" ? "text-bullish" : "text-bearish"}>
+            {leg.action === "buy" ? "+" : "−"}
+            {(leg.contracts ?? 1) > 1 ? `${leg.contracts}×` : ""}
+            {leg.strike}
+            {leg.side === "call" ? "C" : "P"}
+          </span>
+          <span>@ {(leg.entry_price ?? 0).toFixed(2)}</span>
+          <button
+            type="button"
+            onClick={() => fire(i)}
+            disabled={close.isPending}
+            className={[
+              "ml-auto px-1 leading-none uppercase tracking-label-up disabled:opacity-40",
+              armedIdx === i
+                ? "text-warning"
+                : "text-fg-tertiary hover:text-bearish",
+            ].join(" ")}
+            style={{ fontSize: 10 }}
+            title="Close JUST this leg at the live mark — the rest of the structure keeps riding (press twice)"
+            aria-label={`close leg ${leg.strike} ${leg.side}`}
+          >
+            {armedIdx === i ? "confirm ✕" : "✕ leg"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Roll row — the core management action on every real options platform:
+ * close + reopen the same structure at shifted strikes as ONE action.
+ * [↓ step] shifts every leg down one grid step, [atm] re-centers the anchor
+ * leg on the current ATM, [↑ step] shifts up. Strike step comes from the
+ * cached chain the ladder already polls (no extra request). Two-press arm
+ * like the C-C close — a roll books realized P&L.
+ */
+function RollRow({ trade }: { trade: Trade }) {
+  const queryClient = useQueryClient();
+  const setActiveTradeId = useActivePosition((s) => s.setTradeId);
+  const chain = useCachedChainTable(trade.symbol);
+  const step = useMemo(
+    () => strikeStep((chain?.rows ?? []).map((r) => r.strike).sort((a, b) => a - b)),
+    [chain],
+  );
+  const [armed, setArmed] = useState<"down" | "atm" | "up" | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const roll = useMutation({
+    mutationFn: (opts: { strikeShift?: number; toAtm?: boolean }) =>
+      rollTrade(trade.id, opts),
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+      setActiveTradeId(r.opened);
+      toast.success(
+        `Rolled · realized ${formatSignedDollar(r.realized)} · new net ${formatSignedDollar(r.net_debit_credit)}`,
+      );
+    },
+    onError: (e) => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      toast.error((e as Error)?.message || "Could not roll");
+    },
+    onSettled: () => setArmed(null),
+  });
+
+  const fire = (which: "down" | "atm" | "up") => {
+    if (roll.isPending) return;
+    if (armed !== which) {
+      setArmed(which);
+      if (armTimer.current) clearTimeout(armTimer.current);
+      armTimer.current = setTimeout(() => setArmed(null), 3000);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    if (which === "atm") roll.mutate({ toAtm: true });
+    else roll.mutate({ strikeShift: which === "up" ? step : -step });
+  };
+
+  const btn = (which: "down" | "atm" | "up", label: string, title: string) => (
+    <button
+      type="button"
+      onClick={() => fire(which)}
+      disabled={roll.isPending}
+      className={[
+        "flex-1 h-6 border uppercase tracking-label-up disabled:opacity-40",
+        armed === which
+          ? "border-warning text-warning bg-tier-2"
+          : "border-hairline text-fg-tertiary-2 hover:text-fg-secondary hover:bg-tier-2",
+      ].join(" ")}
+      style={{ fontSize: 10, borderRadius: 0 }}
+      title={title}
+    >
+      {armed === which ? "confirm" : label}
+    </button>
+  );
+
+  return (
+    <div className="flex items-center gap-1">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2 shrink-0"
+        style={{ fontSize: 10 }}
+        title="Roll: close this position at the live mark and reopen the same structure at shifted strikes as one action. Premium TP/SL and trailing stops carry over; stale underlying brackets are dropped."
+      >
+        roll
+      </span>
+      {btn("down", `↓ ${step}`, `Shift every leg DOWN ${step} (press twice)`)}
+      {btn("atm", "atm", "Re-center the anchor leg on the current ATM (press twice)")}
+      {btn("up", `↑ ${step}`, `Shift every leg UP ${step} (press twice)`)}
     </div>
   );
 }

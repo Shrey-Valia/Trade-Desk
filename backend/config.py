@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     # isn't at. 300s tolerates normal indicative-feed lag.
     max_spot_staleness_s: float = 300.0
 
+    # ORDER-MONITOR CADENCE — seconds between trigger passes (working-order
+    # fills, brackets, trailing/premium exits, close-limits, liquidation).
+    # The audit's execution-quality finding: at 20s, 0DTE gamma can move
+    # through a stop and back between ticks. 5s is the practical floor for a
+    # POLLED data plane: the underlying quote cache is 5s and the live option
+    # plane 10s, so a faster loop would just re-read cached marks. True
+    # tick-driven triggers need the streaming feed (separate work).
+    order_monitor_interval_s: float = 5.0
+
     # MARGIN / BUYING POWER — the capital constraint on opens. Requirement per
     # structure: max loss at expiry for defined-risk, Reg-T-style rates for
     # naked short sides (see calculations/margin.py). Checked at open/working

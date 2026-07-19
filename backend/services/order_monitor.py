@@ -1,9 +1,10 @@
 """Order monitor — fills working limit/stop entries and auto-closes SL/TP
 brackets (OCO). The simulated analog of an exchange's working-order book.
 
-Runs on a clock (jobs/monitor_orders) every ~20s during market hours, but
-all the decision logic lives here behind injectable callables so it's
-unit-testable without any network or scheduler:
+Runs on a clock (jobs/monitor_orders) every `order_monitor_interval_s`
+(default 5s) during market hours, but all the decision logic lives here
+behind injectable callables so it's unit-testable without any network or
+scheduler:
 
   - `spot_for(symbol)`       → live underlying price (None = unavailable)
   - `option_mark(trade,spot)`→ per-share option premium (working entry checks)

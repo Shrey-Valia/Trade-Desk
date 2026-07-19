@@ -12,7 +12,8 @@ CRUD + a price-evaluation endpoint:
 The frontend also evaluates price alerts client-side against its existing
 5s quote poll (instant toast, no extra round-trip) and POSTs the trip back so
 the row's status persists. The server ``evaluate`` endpoint is the
-authoritative fallback (and what a future background job would call).
+authoritative fallback, and jobs/evaluate_alerts runs the same crossing rule
+on the scheduler every 30s so alerts fire (bell + email) with no tab open.
 
 Per-user, cookie-auth scoped — every query filters on ``user.id`` so one
 trader can never see or trip another's alerts.
