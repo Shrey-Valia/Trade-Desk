@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -93,6 +94,11 @@ def _iso(value: datetime | None) -> str | None:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+# The product's home timezone — same convention as the 5pm-PT settlement
+# boundary in services/combine_settlement.
+_PT = ZoneInfo("America/Los_Angeles")
 
 
 # ---------------------------------------------------------------------------
@@ -929,7 +935,7 @@ class PayoutQueueItem(BaseModel):
     starting_balance: float
     balance: float
     total_approved_payouts: float
-    days_since_funded: int | None
+    days_since_funded: int | None  # PT calendar days (America/Los_Angeles)
 
 
 class PayoutQueueOut(BaseModel):
@@ -1038,8 +1044,18 @@ def payout_queue(
                 starting_balance=starting,
                 balance=round(starting + realized - net_payouts, 2),
                 total_approved_payouts=round(approved_by_user.get(req.user_id, 0.0), 2),
+                # PT calendar days, not elapsed-24h periods: timedelta.days
+                # would under-report by one until the funding hour passes
+                # each day (funded at noon reads "5 days" all morning of
+                # day 6).
                 days_since_funded=(
-                    max(0, (now - _aware(combine.funded_at)).days)
+                    max(
+                        0,
+                        (
+                            now.astimezone(_PT).date()
+                            - _aware(combine.funded_at).astimezone(_PT).date()
+                        ).days,
+                    )
                     if combine.funded_at is not None
                     else None
                 ),

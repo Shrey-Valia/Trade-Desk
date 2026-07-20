@@ -721,6 +721,9 @@ def test_payout_queue_listing_with_reviewer_context(admin_client, auth_client):
     assert item["starting_balance"] == 50_000.0
     assert item["balance"] == pytest.approx(50_600.0)
     assert item["total_approved_payouts"] == 0.0
+    # PT-calendar-day metric: funded_at = _noon_on(6) is exactly 6 PT days
+    # ago whatever the wall-clock hour (elapsed-24h .days would flip at
+    # the funding hour and made this assertion time-of-day dependent).
     assert item["days_since_funded"] == 6
 
     # State filter + validation.
