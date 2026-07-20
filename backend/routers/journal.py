@@ -1604,6 +1604,28 @@ def _intraday_analytics(
         vega=float(g_total["vega"] * CONTRACT_MULTIPLIER),
     )
 
+    # POP FROM HERE (audit wave 7) — probability the position, held to
+    # expiry, ends profitable INCLUDING what's already sunk (entry fills,
+    # folded commission): the sign regions of the expiration curve weighed
+    # by the risk-neutral lognormal from the CURRENT spot/time. None when
+    # the clock has run out or IV is unusable.
+    pop_value: float | None = None
+    t_pop = min((_leg_t(leg)[0] for leg in legs), default=0.0)
+    if t_pop > 0 and iv_used and iv_used > 0:
+        from calculations.probability import pop_from_curve
+
+        pop_value = round(
+            pop_from_curve(
+                float(spot),
+                be_expiration,
+                float(t_pop),
+                float(rate),
+                float(iv_used),
+                lambda s: float(np.interp(s, prices_np, exp_pnl)),
+            ),
+            4,
+        )
+
     return TradeAnalyticsOut(
         trade_id=trade.id,
         symbol=trade.symbol,
@@ -1628,6 +1650,7 @@ def _intraday_analytics(
         unlimited_gain=unlimited_gain,
         unlimited_loss=unlimited_loss,
         greeks=greeks,
+        pop=pop_value,
     )
 
 

@@ -295,6 +295,12 @@ class TradeAnalyticsOut(BaseModel):
     unlimited_gain: bool
     unlimited_loss: bool
     greeks: AnalyticsGreeks
+    # Probability the position held to expiry ends profitable from HERE
+    # (risk-neutral lognormal over the expiration curve's sign regions,
+    # entry fills + folded commission included). None when the clock has
+    # run out / IV unusable — and on the multi-day analytics path, which
+    # doesn't compute it.
+    pop: float | None = None
 
 
 def compute_net_debit_credit(legs: list[TradeLeg]) -> float:

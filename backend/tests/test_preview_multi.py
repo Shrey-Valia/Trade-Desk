@@ -160,3 +160,36 @@ def test_preview_scrub_cannot_add_time(auth_client, stubbed_chain, monkeypatch):
         },
     ).json()
     assert huge["payoff_today"] == pytest.approx(base["payoff_today"])  # clamped
+
+
+# --- pre-trade BP requirement -------------------------------------------------
+
+
+def test_preview_reports_bp_requirement_per_direction(auth_client, stubbed_chain, monkeypatch):
+    _pin_session_clock(monkeypatch, hours=3.0)
+    body = auth_client.post(
+        "/api/zerodte/preview",
+        json={"symbol": "SPY", "kind": "leg", "side": "call", "strike": 100.0},
+    ).json()
+    # Long requirement = the debit (mid 1.1 × 100).
+    assert body["bp_requirement_long"] == pytest.approx(110.0, abs=1.0)
+    # Short = Reg-T-style naked call: (0.20×100 + 1.1) × 100 — many times
+    # the premium collected. The asymmetry is the point of showing it.
+    assert body["bp_requirement_short"] == pytest.approx(2110.0, abs=5.0)
+
+
+def test_preview_multi_reports_as_submitted_requirement(auth_client, stubbed_chain):
+    body = auth_client.post(
+        "/api/zerodte/preview-multi",
+        json={
+            "symbol": "SPY", "contracts": 1,
+            "legs": [
+                {"side": "put", "action": "sell", "strike": 100.0, "ratio": 1},
+                {"side": "put", "action": "buy", "strike": 95.0, "ratio": 1},
+            ],
+        },
+    ).json()
+    # Defined-risk credit spread: width $5 − net credit ($0) at equal mids
+    # → ≈ $500 requirement.
+    assert body["bp_requirement_long"] == pytest.approx(500.0, abs=15.0)
+    assert body["bp_requirement_short"] is None

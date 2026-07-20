@@ -1795,6 +1795,13 @@ class ContractPreviewOut(BaseModel):
     prob_itm: float | None = None
     pop_long: float | None = None
     pop_short: float | None = None
+    # Buying-power requirement (calculations/margin.py) so the cost of
+    # capital is visible BEFORE firing: long = the debit (max loss); short =
+    # the Reg-T-style naked/defined-risk requirement — usually many times
+    # the premium collected. /preview-multi fills bp_requirement_long with
+    # the as-submitted structure's requirement (short is null there).
+    bp_requirement_long: float | None = None
+    bp_requirement_short: float | None = None
 
 
 @router.post("/preview", response_model=ContractPreviewOut)
@@ -1874,6 +1881,20 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
     pop_l = _pop_long(spot, preview.breakevens, t_close, rate, iv, side_out)
     pop_s = None if pop_l is None else max(0.0, min(1.0, 1.0 - pop_l))
 
+    # Buying-power requirement per direction: the preview's legs are LONG
+    # (all buys); the short side is the same structure with actions flipped.
+    from calculations.margin import structure_requirement
+
+    _mkw = dict(
+        naked_pct=settings.margin_naked_pct,
+        naked_min_pct=settings.margin_naked_min_pct,
+    )
+    clean_legs = [{k: v for k, v in leg.items() if k != "_oi"} for leg in legs]
+    bp_long = structure_requirement(clean_legs, spot, **_mkw)
+    bp_short = structure_requirement(
+        [{**leg, "action": "sell"} for leg in clean_legs], spot, **_mkw
+    )
+
     return ContractPreviewOut(
         symbol=sym,
         kind=payload.kind,
@@ -1901,6 +1922,8 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         prob_itm=None if itm is None else round(itm, 4),
         pop_long=None if pop_l is None else round(pop_l, 4),
         pop_short=None if pop_s is None else round(pop_s, 4),
+        bp_requirement_long=bp_long,
+        bp_requirement_short=bp_short,
     )
 
 
@@ -1983,6 +2006,17 @@ def preview_multi(payload: PreviewMultiRequest) -> ContractPreviewOut:
 
     pop = pop_from_curve(spot, preview.breakevens, t_close, rate, iv, _payoff_at)
 
+    # Buying-power requirement for the structure AS SUBMITTED — the number
+    # the margin gate will hold against the balance at open.
+    from calculations.margin import structure_requirement
+
+    bp_req = structure_requirement(
+        legs,
+        spot,
+        naked_pct=settings.margin_naked_pct,
+        naked_min_pct=settings.margin_naked_min_pct,
+    )
+
     return ContractPreviewOut(
         symbol=sym,
         kind="multi",
@@ -2010,6 +2044,8 @@ def preview_multi(payload: PreviewMultiRequest) -> ContractPreviewOut:
         prob_itm=None,
         pop_long=round(pop, 4),
         pop_short=round(max(0.0, min(1.0, 1.0 - pop)), 4),
+        bp_requirement_long=bp_req,
+        bp_requirement_short=None,
     )
 
 

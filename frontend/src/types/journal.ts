@@ -187,6 +187,10 @@ export const TradeAnalyticsSchema = z.object({
   unlimited_gain: z.boolean(),
   unlimited_loss: z.boolean(),
   greeks: AnalyticsGreeksSchema,
+  /** Probability the position held to expiry ends profitable from here
+   *  (model number — entry fills + commission included). null once the
+   *  clock runs out or when IV is unusable. */
+  pop: z.number().nullable().optional(),
 });
 export type TradeAnalytics = z.infer<typeof TradeAnalyticsSchema>;
 

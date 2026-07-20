@@ -130,6 +130,17 @@ export function ContractDetailPanel() {
               value={popLabel(data.prob_itm)}
               title="Probability the contract finishes in the money at expiry (N(d2) at the strike) — direction-independent."
             />
+            <Row
+              label="BP req"
+              value={bpLabel(
+                dir === "long" ? data.bp_requirement_long : data.bp_requirement_short,
+              )}
+              title={
+                dir === "long"
+                  ? "Buying power this position holds against your balance — a long's requirement is the debit (its max loss)."
+                  : "Buying power a SHORT holds against your balance — the Reg-T-style requirement, usually many times the premium collected. The margin gate enforces this at open."
+              }
+            />
           </div>
 
           <div className="px-3 pb-2 text-fg-tertiary" style={{ fontSize: 11 }}>
@@ -255,6 +266,11 @@ function Greek({ label, value }: { label: string; value: string }) {
 function popLabel(p: number | null | undefined): string {
   if (p == null) return "—";
   return `${Math.round(p * 100)}%`;
+}
+
+function bpLabel(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return `$${Math.round(v).toLocaleString()}`;
 }
 
 function Row({

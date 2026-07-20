@@ -168,6 +168,11 @@ export const ContractPreviewSchema = z.object({
   prob_itm: z.number().nullable().optional(),
   pop_long: z.number().nullable().optional(),
   pop_short: z.number().nullable().optional(),
+  // Buying-power requirement per direction (margin model): long = the
+  // debit; short = the Reg-T-style requirement. multi fills _long with the
+  // as-submitted structure's requirement.
+  bp_requirement_long: z.number().nullable().optional(),
+  bp_requirement_short: z.number().nullable().optional(),
 });
 export type ContractPreview = z.infer<typeof ContractPreviewSchema>;
 

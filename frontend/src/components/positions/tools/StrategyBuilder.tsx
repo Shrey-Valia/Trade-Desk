@@ -245,6 +245,15 @@ export function StrategyBuilder({ symbol }: Props) {
                 ? preview.data.breakevens.map((b) => b.toFixed(0)).join("/")
                 : "—"}
             </span>
+            <span
+              className="text-fg-secondary"
+              title="Buying power this structure holds against your balance (margin model: max loss for defined-risk, Reg-T-style for naked sides). The open gate enforces it."
+            >
+              BP{" "}
+              {preview.data.bp_requirement_long == null
+                ? "—"
+                : `$${Math.round(preview.data.bp_requirement_long).toLocaleString()}`}
+            </span>
           </div>
         </div>
       )}

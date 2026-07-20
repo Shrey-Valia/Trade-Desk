@@ -948,6 +948,22 @@ function RiskRow({ analytics }: { analytics: TradeAnalytics }) {
   return (
     <div className="flex items-baseline justify-between mt-1 tabular-nums">
       <RiskItem label="MAX LOSS" value={loss} tone="bearish" />
+      {analytics.pop != null && (
+        <div
+          className="flex flex-col leading-tight"
+          title="Probability this position, held to expiry, ends profitable FROM HERE — entry fills and commission included. A model number (risk-neutral, ATM IV), not a forecast."
+        >
+          <span
+            className="uppercase tracking-label-up text-fg-tertiary-2"
+            style={{ fontSize: 11 }}
+          >
+            POP
+          </span>
+          <span className="text-tiny tabular-nums text-fg-primary">
+            {Math.round(analytics.pop * 100)}%
+          </span>
+        </div>
+      )}
       <RiskItem label="MAX GAIN" value={gain} tone="bullish" />
     </div>
   );
