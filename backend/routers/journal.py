@@ -504,6 +504,73 @@ def _single_leg_strategy(leg: dict) -> str:
     return f"{'long' if action == 'buy' else 'short'}_{side}"
 
 
+def _book_leg_close(
+    session: Session, trade: Trade, leg_index: int, qty: int, px: float
+) -> float | None:
+    """Book a per-leg close on ONE trade row at mark `px` — the shared core
+    for the lead AND its copy-followers. Slice realized = (mark − entry) ×
+    sign × qty × 100 − round-trip commission on the closed contracts − the
+    leg's spread-crossing friction; survivors keep riding with net/strategy
+    recomputed. Compare-and-swap on the exact legs blob (a concurrent
+    close/scale-out/other-leg-close loses nothing — rowcount 0 → None).
+    Returns the booked slice $ or None when the claim was lost. Caller owns
+    the commit."""
+    legs = trade.legs
+    if leg_index >= len(legs):
+        return None
+    old_json = trade.legs_json
+    leg = dict(legs[leg_index])
+    held = int(leg.get("contracts", 1) or 1)
+    qty = min(qty, held)
+    if qty <= 0:
+        return None
+
+    sign = 1.0 if str(leg.get("action", "buy")).lower() == "buy" else -1.0
+    entry_px = float(leg.get("entry_price", 0.0) or 0.0)
+    leg_unrealized = sign * qty * (px - entry_px) * CONTRACT_MULTIPLIER
+    commission = 2 * qty * settings.per_contract_fee
+    friction = close_friction(trade.symbol, [{**leg, "contracts": qty}])
+    slice_realized = round(leg_unrealized - commission - friction, 2)
+
+    new_legs = [dict(l_) for l_ in legs]
+    if qty == held:
+        new_legs.pop(leg_index)
+    else:
+        new_legs[leg_index]["contracts"] = held - qty
+    from schemas.journal import TradeLeg
+
+    new_net = compute_net_debit_credit([TradeLeg(**l_) for l_ in new_legs])
+    new_strategy = (
+        _single_leg_strategy(new_legs[0]) if len(new_legs) == 1 else "custom"
+    )
+    leg_desc = (
+        f"{leg.get('action')} {leg.get('strike'):g}"
+        f"{'C' if leg.get('side') == 'call' else 'P'}"
+    )
+    new_notes = (
+        (trade.notes or "") + f" · closed leg {leg_desc} ×{qty} @ ~{px:.2f}"
+    )
+    claimed = session.execute(
+        update(Trade)
+        .where(
+            Trade.id == trade.id,
+            Trade.status == "open",
+            Trade.legs_json == old_json,
+        )
+        .values(
+            legs_json=json.dumps(new_legs),
+            strategy=new_strategy,
+            net_debit_credit=new_net,
+            realized_pnl=func.coalesce(Trade.realized_pnl, 0.0) + slice_realized,
+            notes=new_notes,
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        return None
+    return slice_realized
+
+
 @router.post("/trades/{trade_id}/close-leg", response_model=TradeOut)
 def close_leg(
     trade_id: int,
@@ -518,10 +585,12 @@ def close_leg(
 
     The surviving structure keeps riding: legs shrink, the entry net is
     recomputed over the remainder, and the strategy label degrades honestly
-    ("custom", or the single-leg name when one leg remains). Blocked while
-    copy-trade followers mirror this trade (the cascade machinery is
-    whole-position; a silent lead/follower divergence would be worse than
-    the 409). Single-leg positions use CLOSE / scale-out instead."""
+    ("custom", or the single-leg name when one leg remains). A lead's leg
+    close CASCADES proportionally to open copy-followers (best-effort, like
+    every mirror_* path): same leg index, follower's own size, each booked
+    against its own entry fills at the same mark. A follower whose structure
+    drifted (different leg shape) is skipped rather than corrupted.
+    Single-leg positions use CLOSE / scale-out instead."""
     trade = _owned_trade(session, user, trade_id)
     if trade.status != "open":
         raise HTTPException(409, "can only close a leg of an OPEN position")
@@ -532,20 +601,7 @@ def close_leg(
         )
     if payload.leg_index >= len(legs):
         raise HTTPException(422, f"leg_index {payload.leg_index} out of range")
-    followers = session.execute(
-        select(func.count()).select_from(Trade).where(
-            Trade.copied_from_trade_id == trade.id,
-            Trade.status.in_(("open", "working")),
-        )
-    ).scalar_one()
-    if followers:
-        raise HTTPException(
-            409,
-            "this position is copy-mirrored — per-leg closes don't cascade to "
-            "followers yet; use scale-out or a full close",
-        )
 
-    old_json = trade.legs_json
     leg = dict(legs[payload.leg_index])
     held = int(leg.get("contracts", 1) or 1)
     qty = payload.qty if payload.qty is not None else held
@@ -570,57 +626,8 @@ def close_leg(
     now = datetime.now(timezone.utc)
     px = float(_leg_model_price(_option_chain_rows(trade.symbol), leg, spot, now, _rate()))
 
-    sign = 1.0 if str(leg.get("action", "buy")).lower() == "buy" else -1.0
-    entry_px = float(leg.get("entry_price", 0.0) or 0.0)
-    leg_unrealized = sign * qty * (px - entry_px) * CONTRACT_MULTIPLIER
-    # Round-trip commission on the closed contracts (entry side was folded at
-    # the position level; the leg slice carries its own share) + the leg's
-    # spread-crossing exit friction.
-    commission = 2 * qty * settings.per_contract_fee
-    friction = close_friction(trade.symbol, [{**leg, "contracts": qty}])
-    slice_realized = round(leg_unrealized - commission - friction, 2)
-
-    new_legs = [dict(l_) for l_ in legs]
-    if qty == held:
-        new_legs.pop(payload.leg_index)
-    else:
-        new_legs[payload.leg_index]["contracts"] = held - qty
-    from schemas.journal import TradeLeg
-
-    new_net = compute_net_debit_credit([TradeLeg(**l_) for l_ in new_legs])
-    new_strategy = (
-        _single_leg_strategy(new_legs[0]) if len(new_legs) == 1 else "custom"
-    )
-    leg_desc = (
-        f"{leg.get('action')} {leg.get('strike'):g}"
-        f"{'C' if leg.get('side') == 'call' else 'P'}"
-    )
-    new_notes = (
-        (trade.notes or "")
-        + f" · closed leg {leg_desc} ×{qty} @ ~{px:.2f}"
-    )
-
-    # RACE GUARD — compare-and-swap on the EXACT legs blob (stricter than
-    # scale-out's status guard): a concurrent monitor close flips status, and
-    # a concurrent scale-out / other leg close rewrites legs_json; either way
-    # rowcount 0 → nothing was booked twice.
-    claimed = session.execute(
-        update(Trade)
-        .where(
-            Trade.id == trade.id,
-            Trade.status == "open",
-            Trade.legs_json == old_json,
-        )
-        .values(
-            legs_json=json.dumps(new_legs),
-            strategy=new_strategy,
-            net_debit_credit=new_net,
-            realized_pnl=func.coalesce(Trade.realized_pnl, 0.0) + slice_realized,
-            notes=new_notes,
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
-    if claimed == 0:
+    booked = _book_leg_close(session, trade, payload.leg_index, qty, px)
+    if booked is None:
         session.rollback()
         raise HTTPException(
             409,
@@ -629,6 +636,42 @@ def close_leg(
         )
     session.commit()
     session.refresh(trade)
+
+    # COPY CASCADE — mirror the leg close to open follower copies at the same
+    # mark, proportional to each follower's own leg size (lead closed
+    # qty/held of the leg). Best-effort per follower: a drifted structure
+    # (leg shape no longer matches) or a lost CAS skips that follower —
+    # never corrupt, never fail the lead's booked close.
+    followers = (
+        session.execute(
+            select(Trade).where(
+                Trade.copied_from_trade_id == trade.id,
+                Trade.status == "open",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for f in followers:
+        try:
+            f_legs = f.legs
+            if payload.leg_index >= len(f_legs):
+                continue
+            f_leg = f_legs[payload.leg_index]
+            if (
+                f_leg.get("side") != leg.get("side")
+                or float(f_leg.get("strike", 0) or 0) != float(leg.get("strike", 0) or 0)
+                or f_leg.get("action") != leg.get("action")
+            ):
+                continue  # structure drifted — don't touch it
+            f_held = int(f_leg.get("contracts", 1) or 1)
+            f_qty = max(1, min(f_held, round(f_held * qty / held)))
+            if _book_leg_close(session, f, payload.leg_index, f_qty, px) is not None:
+                session.commit()
+        except Exception:  # noqa: BLE001 — mirror is best-effort by convention
+            session.rollback()
+            log.exception("close-leg cascade failed for follower %s", f.id)
+
     return _to_out(trade)
 
 

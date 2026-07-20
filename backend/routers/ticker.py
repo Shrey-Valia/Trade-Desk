@@ -24,7 +24,7 @@ from calculations.gamma_exposure import (
     largest_oi_strike,
     max_pain,
 )
-from calculations.iv_metrics import iv_percentile, vrp
+from calculations.iv_metrics import iv_percentile, iv_rank, vrp
 from calculations.pc_ratio import pc_ratio
 from calculations.realized_vol import realized_vol
 from calculations.skew import skew_25d
@@ -125,7 +125,8 @@ _AVG_VOL_WINDOW = 20
 _NEAR_TERM_MIN_DTE = 5
 _NEAR_TERM_MAX_DTE = 60
 
-_IV_HISTORY_WINDOW = 60  # days needed before iv_percentile populates
+_IV_HISTORY_WINDOW = 60   # days needed before the PERCENTILE proxy populates
+_IV_RANK_WINDOW = 252     # days of history for TRUE IV Rank (min/max range)
 
 
 # -- Phase 2: detail ---------------------------------------------------------
@@ -695,13 +696,20 @@ def _atm_iv(
 
 
 def _iv_rank_with_status(symbol: str, iv30: float | None) -> tuple[float | None, str | None]:
+    """SELF-UPGRADING IV metric (audit wave 5): with a full 252-day history
+    this is TRUE IV Rank (range position); until then it serves the
+    percentile proxy and SAYS so — the audit flagged a percentile silently
+    labeled 'IVR' as dishonest decision support. The status string is the
+    honesty channel the UI already appends."""
     if iv30 is None:
         return None, "no IV available"
     history = _historical_iv30(symbol)
     n = len(history)
     if n < _IV_HISTORY_WINDOW:
         return None, f"{n}/{_IV_HISTORY_WINDOW} days collected"
-    return iv_percentile(iv30, history), None
+    if n >= _IV_RANK_WINDOW:
+        return iv_rank(iv30, history[-_IV_RANK_WINDOW:]), None
+    return iv_percentile(iv30, history), f"percentile · {n}/{_IV_RANK_WINDOW}d to rank"
 
 
 def _historical_iv30(symbol: str) -> list[float]:
@@ -727,7 +735,9 @@ def _historical_iv30_query(session: Session, symbol: str) -> list[float]:
     a skew-and-term-weighted number that wasn't IV30 and wasn't comparable
     day-to-day. We filter to each day's near-term expiry and its ATM contracts
     (|delta|≈0.5) so the series is a true ATM-IV30 history."""
-    cutoff = datetime.now(_ET).date() - timedelta(days=_IV_HISTORY_WINDOW * 2)
+    # Enough calendar days to cover the 252-TRADING-day rank window (~365
+    # calendar) with slack for holidays/collection gaps.
+    cutoff = datetime.now(_ET).date() - timedelta(days=_IV_RANK_WINDOW + 130)
     rows = session.execute(
         select(
             OptionsSnapshot.snapshot_date,

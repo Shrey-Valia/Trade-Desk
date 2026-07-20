@@ -11,6 +11,7 @@ import { BottomNewsFeedTabs } from "@/components/positions/BottomNewsFeedTabs";
 import { strikeStep } from "@/components/positions/tools/StrategyBuilder";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useCachedChainTable } from "@/hooks/useChainTable";
+import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
@@ -639,13 +640,7 @@ function OpenPositionCol({
             )}
             <RollRow trade={trade} />
             <CloseLimitRow trade={trade} liveAnalytics={liveAnalytics} />
-            <div
-              className="text-fg-tertiary"
-              style={{ fontSize: 10 }}
-              title="Expiration-day policy: rather than model OCC assignment, the desk force-flattens 0DTE books shortly before the bell (half-day aware). Working orders on dying contracts are pulled at the same cutoff."
-            >
-              0DTE policy · auto-close ~10 min before the bell
-            </div>
+            <AutoCloseCountdown />
             <CloseButton
               disabled={close.isPending || scaleOut.isPending}
               upl={isPartial ? sliceRealized : liveUpl}
@@ -1021,6 +1016,68 @@ function QtyStepper({
           +
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Expiration-day auto-close countdown (audit wave 5 — completing wave 1's
+ * policy). Far from the bell: a quiet static line stating the policy. Inside
+ * 20 minutes of the CUTOFF (session close − expiry_closeout_minutes, half-day
+ * aware via today_close): a live amber countdown; past the cutoff: red
+ * "imminent". The window comes off the market-status payload so the display
+ * always matches the enforced config. Ticks on a 15s clock — the flatten
+ * itself is server-side; this is advance warning, not the trigger.
+ */
+function AutoCloseCountdown() {
+  const { data: market } = useMarketStatus();
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const windowMin = market?.expiry_closeout_minutes ?? 10;
+  if (!windowMin || windowMin <= 0) return null; // policy disabled
+  const staticLine = (
+    <div
+      className="text-fg-tertiary"
+      style={{ fontSize: 10 }}
+      title="Expiration-day policy: rather than model OCC assignment, the desk force-flattens 0DTE books shortly before the bell (half-day aware). Working orders on dying contracts are pulled at the same cutoff."
+    >
+      0DTE policy · auto-close ~{Math.round(windowMin)} min before the bell
+    </div>
+  );
+  if (!market?.today_close || market.status !== "open") return staticLine;
+  const closeMs = Date.parse(market.today_close);
+  if (!Number.isFinite(closeMs)) return staticLine;
+  const cutoffMs = closeMs - windowMin * 60_000;
+  const remainMs = cutoffMs - nowMs;
+  if (remainMs > 20 * 60_000) return staticLine;
+
+  if (remainMs <= 0) {
+    return (
+      <div
+        className="px-1.5 py-0.5 border border-bearish/60 bg-tier-1 text-bearish uppercase tracking-label-up"
+        style={{ fontSize: 10 }}
+        role="alert"
+        title="The expiration-day close-out window is live — the desk is flattening 0DTE books and pulling working orders on dying contracts."
+      >
+        auto-close imminent — book is being flattened
+      </div>
+    );
+  }
+  const mins = Math.floor(remainMs / 60_000);
+  const secs = Math.floor((remainMs % 60_000) / 1000);
+  return (
+    <div
+      className="px-1.5 py-0.5 border border-warning/60 bg-tier-1 text-warning uppercase tracking-label-up"
+      style={{ fontSize: 10 }}
+      role="status"
+      title="Expiration-day policy: open 0DTE positions are force-flattened at this cutoff (half-day aware). Close or roll before it if you want to name your own exit."
+    >
+      auto-close in {mins}:{String(secs).padStart(2, "0")} — close or roll to
+      name your exit
     </div>
   );
 }

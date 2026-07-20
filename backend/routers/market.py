@@ -51,6 +51,10 @@ class MarketStatusResponse(BaseModel):
     # today_close / is_early_close.
     today_close: str | None = None
     is_early_close: bool = False
+    # Expiration-day close-out policy window (minutes before the bell the
+    # monitor force-flattens 0DTE books; 0 = policy disabled) — served so the
+    # UI's auto-close countdown always matches the enforced config.
+    expiry_closeout_minutes: float = 10.0
 
 
 def _now_et() -> datetime:
@@ -88,6 +92,11 @@ def get_market_status() -> MarketStatusResponse:
     else:
         log.warning("alpaca clock unavailable; using local calendar fallback")
         response = _status_from_local_calendar()
+    # Stamp the ENFORCED close-out window once, here, rather than threading it
+    # through every branch constructor — the UI countdown must match config.
+    response = response.model_copy(
+        update={"expiry_closeout_minutes": float(settings.expiry_closeout_minutes)}
+    )
     # 15s TTL so the open/close edge transitions promptly.
     cache.set(cache_key, response, ttl_seconds=15)
     return response

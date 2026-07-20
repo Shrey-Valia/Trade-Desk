@@ -163,17 +163,52 @@ def test_validation_errors(auth_client, session_factory, monkeypatch):
     assert res.status_code == 409
 
 
-def test_copy_mirrored_lead_is_blocked(auth_client, session_factory, monkeypatch):
+def test_copy_cascade_mirrors_leg_close_proportionally(
+    auth_client, session_factory, monkeypatch
+):
+    """A lead's leg close cascades to open follower copies: same leg index,
+    follower's own size, booked against the follower's own entry fills."""
+    c = make_combine(auth_client, "50K")
+    lead_legs = [
+        _leg("call", "buy", 100.0, 1.0, 2), _leg("put", "buy", 100.0, 1.0, 2),
+    ]
+    tid = _seed(session_factory, c["id"], lead_legs, strategy="long_straddle")
+    # Follower runs the same shape at 2× size with a different entry fill.
+    fid = _seed(
+        session_factory, c["id"],
+        [_leg("call", "buy", 100.0, 0.8, 4), _leg("put", "buy", 100.0, 0.9, 4)],
+        strategy="long_straddle", copied_from_trade_id=tid,
+    )
+    _pin_pricing(monkeypatch, mark=1.5)
+    # Lead closes 1 of 2 on the call leg → follower closes 2 of 4.
+    res = auth_client.post(
+        f"/api/journal/trades/{tid}/close-leg", json={"leg_index": 0, "qty": 1}
+    )
+    assert res.status_code == 200, res.text
+    f = _get(session_factory, fid)
+    assert f.status == "open"
+    assert f.legs[0]["contracts"] == 2
+    assert f.legs[1]["contracts"] == 4
+    # Follower slice booked at ITS entry: (1.5 − 0.8) × 2 × 100 − 2×2×fee.
+    assert f.realized_pnl == round(140.0 - 4 * _FEE, 2)
+    assert "closed leg buy 100C" in (f.notes or "")
+
+
+def test_copy_cascade_skips_drifted_follower(auth_client, session_factory, monkeypatch):
     c = make_combine(auth_client, "50K")
     legs = [_leg("call", "buy", 100.0, 1.0), _leg("put", "buy", 100.0, 1.0)]
     tid = _seed(session_factory, c["id"], legs, strategy="long_straddle")
-    _seed(
-        session_factory, c["id"], [dict(l) for l in legs],
+    # Follower's leg 0 is a DIFFERENT strike — structure drifted; must be
+    # left untouched rather than corrupted.
+    fid = _seed(
+        session_factory, c["id"],
+        [_leg("call", "buy", 105.0, 1.0), _leg("put", "buy", 100.0, 1.0)],
         strategy="long_straddle", copied_from_trade_id=tid,
     )
     _pin_pricing(monkeypatch)
     res = auth_client.post(
         f"/api/journal/trades/{tid}/close-leg", json={"leg_index": 0}
     )
-    assert res.status_code == 409
-    assert "copy" in res.json()["detail"]
+    assert res.status_code == 200
+    f = _get(session_factory, fid)
+    assert len(f.legs) == 2 and f.realized_pnl is None
