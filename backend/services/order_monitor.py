@@ -263,6 +263,32 @@ def _commission_side(trade: Trade) -> float:
 # --- trigger logic ----------------------------------------------------------
 
 
+def _two_sided(q) -> bool:
+    """Genuine two-sided live NBBO — the fill-time analog of the open path's
+    quote-quality gate."""
+    return (
+        q is not None
+        and (getattr(q, "bid", None) or 0) > 0
+        and (getattr(q, "ask", None) or 0) > 0
+    )
+
+
+def _sell_fill_quote_blocked(legs: list[dict], quotes: dict) -> bool:
+    """True when a working ENTRY carrying a SELL leg must NOT fill this tick:
+    credit is being collected and no genuine two-sided market exists for that
+    leg (config working_sell_fill_requires_quote). The order stays working —
+    skip, never cancel — and becomes fill-eligible the moment the quote
+    plane warms."""
+    if not settings.working_sell_fill_requires_quote:
+        return False
+    for leg in legs:
+        if str(leg.get("action", "buy")).lower() != "sell":
+            continue
+        if not _two_sided(fills.leg_quote(quotes, leg)):
+            return True
+    return False
+
+
 def _entry_fill_triggered(order_type: str, action: str, mark: float, trigger: float) -> bool:
     """Working-order fill rule on the OPTION premium.
     limit-buy: mark ≤ limit · limit-sell: mark ≥ limit
@@ -1503,6 +1529,11 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     if not hit:
         return None
 
+    # FILL-TIME QUOTE GATE — a triggered SELL entry may not book credit off a
+    # model mark; it rests until a genuine two-sided market exists.
+    if _sell_fill_quote_blocked(legs, quotes):
+        return None
+
     fill_px = _entry_fill_price(
         trade.order_type, action, trigger, prem, leg_q, total_contracts
     )
@@ -1555,6 +1586,11 @@ def _process_working_multi(
         return None  # debit still too rich / credit still too thin
 
     quotes = fills.live_leg_quotes(trade.symbol, legs)
+    # FILL-TIME QUOTE GATE — every SELL leg of the structure needs a genuine
+    # two-sided market before the net fill books (credit off a model mark is
+    # the sim-exploitation vector). Skip the tick, keep the order working.
+    if _sell_fill_quote_blocked(legs, quotes):
+        return None
     # Resolve the chain + rate up front — needed for each leg's MID (the
     # frictionless model/chain mark, the same _leg_model_price option_mark uses
     # for the trigger) so we can cap the booked net at the limit.

@@ -100,3 +100,63 @@ def test_preview_multi_validates_leg_count(auth_client, stubbed_chain):
         },
     )
     assert res.status_code == 422
+
+
+# --- pre-trade time scrubber on /preview -------------------------------------
+
+
+def _pin_session_clock(monkeypatch, hours=3.0):
+    """Pin the chain table's time-to-close (wall-clock-free tests: after the
+    bell the real value floors at 60s and nothing could decay)."""
+    from calculations.intraday_analytics import SECONDS_PER_YEAR
+
+    monkeypatch.setattr(
+        "routers.zerodte._t_years_to_close",
+        lambda: hours * 3600.0 / SECONDS_PER_YEAR,
+    )
+
+
+def test_preview_time_scrubber_decays_the_today_curve(
+    auth_client, stubbed_chain, monkeypatch
+):
+    _pin_session_clock(monkeypatch, hours=3.0)
+    base = auth_client.post(
+        "/api/zerodte/preview",
+        json={"symbol": "SPY", "kind": "leg", "side": "call", "strike": 100.0},
+    ).json()
+    scrubbed = auth_client.post(
+        "/api/zerodte/preview",
+        json={
+            "symbol": "SPY", "kind": "leg", "side": "call", "strike": 100.0,
+            "minutes_to_close": 2,
+        },
+    ).json()
+    # Entry pricing is unchanged (you buy at the market NOW)…
+    assert scrubbed["entry_price"] == base["entry_price"]
+    assert scrubbed["payoff_expiration"] == base["payoff_expiration"]
+    # …but the T+0 curve has decayed toward expiry: AT THE MONEY (where the
+    # time value lives) the what-if value at 2 minutes sits well below the
+    # 3-hour value.
+    atm_i = min(
+        range(len(base["prices"])), key=lambda i: abs(base["prices"][i] - 100.0)
+    )
+    assert scrubbed["payoff_today"][atm_i] < base["payoff_today"][atm_i]
+    # …and the scrubbed curve sits BETWEEN now and expiry (time only decays
+    # toward the expiration payoff, never through it).
+    assert scrubbed["payoff_today"][atm_i] >= base["payoff_expiration"][atm_i]
+
+
+def test_preview_scrub_cannot_add_time(auth_client, stubbed_chain, monkeypatch):
+    _pin_session_clock(monkeypatch, hours=3.0)
+    base = auth_client.post(
+        "/api/zerodte/preview",
+        json={"symbol": "SPY", "kind": "leg", "side": "call", "strike": 100.0},
+    ).json()
+    huge = auth_client.post(
+        "/api/zerodte/preview",
+        json={
+            "symbol": "SPY", "kind": "leg", "side": "call", "strike": 100.0,
+            "minutes_to_close": 100000,
+        },
+    ).json()
+    assert huge["payoff_today"] == pytest.approx(base["payoff_today"])  # clamped

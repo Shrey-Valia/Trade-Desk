@@ -3,6 +3,7 @@ import { useState } from "react";
 import { PayoffCurveSvg } from "@/components/analytics/PayoffCurveSvg";
 import { PanelHeader } from "@/components/positions/panelChrome";
 import { useContractPreview } from "@/hooks/useContractPreview";
+import { useMarketStatus } from "@/hooks/useMarket";
 import { useTradeTicket } from "@/stores/tradeTicket";
 import type { ContractPreview } from "@/types/zerodte";
 
@@ -19,8 +20,17 @@ type Direction = "long" | "short";
  */
 export function ContractDetailPanel() {
   const selection = useTradeTicket((s) => s.selection);
-  const { data, isLoading, isError, refetch } = useContractPreview();
+  // Pre-trade time scrubber (audit wave 6): what-if minutes-to-close for
+  // the T+0 curve/greeks. null = now. Range = [1, minutes left in session].
+  const [scrubMin, setScrubMin] = useState<number | null>(null);
+  const { data, isLoading, isError, refetch } = useContractPreview(scrubMin);
   const [dir, setDir] = useState<Direction>("long");
+  const { data: market } = useMarketStatus();
+  const sessionMinutesLeft = (() => {
+    if (market?.status !== "open" || !market.today_close) return null;
+    const ms = Date.parse(market.today_close) - Date.now();
+    return Number.isFinite(ms) && ms > 2 * 60_000 ? Math.floor(ms / 60_000) : null;
+  })();
 
   // No selection → keep the original empty spacer (fills the column).
   if (!selection) return <div className="flex-1 bg-tier-0" />;
@@ -53,6 +63,39 @@ export function ContractDetailPanel() {
             />
           </div>
 
+          {sessionMinutesLeft != null && sessionMinutesLeft > 2 && (
+            <div
+              className="px-3 pt-1 flex items-center gap-2 tabular-nums"
+              title="What-if clock: drag toward the bell to preview the dashed T+0 curve and greeks after theta has burned. Entry pricing stays at the live market — only the what-if time moves."
+            >
+              <span
+                className="uppercase tracking-label-up text-fg-tertiary-2 shrink-0"
+                style={{ fontSize: 10 }}
+              >
+                what-if clock
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={sessionMinutesLeft}
+                step={1}
+                // Slider runs now → bell; value stores minutes REMAINING.
+                value={scrubMin ?? sessionMinutesLeft}
+                onChange={(e) => {
+                  const v2 = Number(e.target.value);
+                  setScrubMin(v2 >= sessionMinutesLeft ? null : v2);
+                }}
+                className="flex-1"
+                aria-label="What-if minutes to close"
+              />
+              <span
+                className="text-fg-secondary shrink-0"
+                style={{ fontSize: 11, minWidth: 52, textAlign: "right" }}
+              >
+                {scrubMin == null ? "now" : `close −${scrubMin}m`}
+              </span>
+            </div>
+          )}
           <div className="px-3 pt-2 grid grid-cols-4 gap-x-3 gap-y-1">
             <Greek label="Δ Delta" value={v.greeks.delta.toFixed(2)} />
             <Greek label="Γ Gamma" value={v.greeks.gamma.toFixed(3)} />

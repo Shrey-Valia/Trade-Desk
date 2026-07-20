@@ -9,7 +9,7 @@ import { useTradeTicket } from "@/stores/tradeTicket";
  * selection + quantity; disabled when nothing is selected. The backend
  * resolves indicative pricing, so this works with the market closed.
  */
-export function useContractPreview() {
+export function useContractPreview(minutesToClose: number | null = null) {
   const selection = useTradeTicket((s) => s.selection);
   const contracts = useTradeTicket((s) => s.contracts);
 
@@ -21,6 +21,7 @@ export function useContractPreview() {
       selection?.side ?? null,
       selection?.strike ?? null,
       contracts,
+      minutesToClose,
     ],
     queryFn: () =>
       fetchContractPreview({
@@ -29,6 +30,7 @@ export function useContractPreview() {
         side: selection!.side,
         strike: selection!.strike,
         contracts,
+        minutes_to_close: minutesToClose,
       }),
     enabled: !!selection,
     staleTime: 10_000,

@@ -177,6 +177,9 @@ export interface ContractPreviewInput {
   side?: "call" | "put";
   strike: number;
   contracts: number;
+  /** Pre-trade time scrubber: what-if minutes-to-close for the T+0 curve
+   *  and greeks (entry pricing stays at the real now). Omitted = now. */
+  minutes_to_close?: number | null;
 }
 
 // -- WS5: multi-leg strategy builder ----------------------------------------

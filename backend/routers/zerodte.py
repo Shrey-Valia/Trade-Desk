@@ -1726,6 +1726,7 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         take_profit=trade.take_profit,
         tp_premium_mult=trade.tp_premium_mult,
         sl_premium_mult=trade.sl_premium_mult,
+        close_limit_price=trade.close_limit_price,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
@@ -1752,6 +1753,12 @@ class PreviewRequest(BaseModel):
     side: Literal["call", "put"] | None = None
     strike: float = Field(gt=0)
     contracts: int = Field(gt=0, le=100, default=1)
+    # Pre-trade TIME SCRUBBER (audit wave 6): what-if minutes-to-close for
+    # the T+0 curve and greeks — "what does this position look like at
+    # 3:30pm?". Entry PRICING always uses the real now (you buy at the
+    # market, then time passes); clamped to [1, actual minutes to close].
+    # None = now (legacy behavior).
+    minutes_to_close: float | None = Field(default=None, gt=0)
 
 
 class PreviewGreeks(BaseModel):
@@ -1837,8 +1844,20 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         side_out = s
         oi_out = legs[0]["_oi"]
 
+    # Time scrubber: the T+0 curve/greeks evaluate at the what-if clock,
+    # clamped so a scrub can never ADD time (max = the real time to close)
+    # or hit T=0 exactly (60s floor keeps BS finite). Entry pricing above
+    # already used the real now.
+    t_view = t_close
+    if payload.minutes_to_close is not None:
+        from calculations.intraday_analytics import SECONDS_PER_YEAR
+
+        t_view = min(
+            t_close, max(60.0, payload.minutes_to_close * 60.0) / SECONDS_PER_YEAR
+        )
+
     preview = compute_contract_preview(
-        spot=spot, rate=rate, iv=iv, t_now=t_close, legs=legs
+        spot=spot, rate=rate, iv=iv, t_now=t_view, legs=legs
     )
 
     # Closed-form probabilities at expiry (risk-neutral, ATM IV) — prob-ITM

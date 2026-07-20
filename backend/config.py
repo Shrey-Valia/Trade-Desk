@@ -130,6 +130,16 @@ class Settings(BaseSettings):
     # isn't at. 300s tolerates normal indicative-feed lag.
     max_spot_staleness_s: float = 300.0
 
+    # FILL-TIME QUOTE GATE (audit wave 6) — a working SELL entry collects
+    # credit, so filling it off a model mark when no live market exists is
+    # the sim-exploitation vector the audit flagged: rest a sell, wait for a
+    # cold feed, book fabricated premium. With this on, any SELL leg of a
+    # working entry needs a genuine two-sided live NBBO at FILL time; the
+    # order simply stays working through a cold tick (skip, never cancel).
+    # BUY legs keep the legacy mid fallback (paying a model price collects
+    # no edge). Mirrors the immediate-open path's _require_quote_quality.
+    working_sell_fill_requires_quote: bool = True
+
     # ORDER-MONITOR CADENCE — seconds between trigger passes (working-order
     # fills, brackets, trailing/premium exits, close-limits, liquidation).
     # The audit's execution-quality finding: at 20s, 0DTE gamma can move
