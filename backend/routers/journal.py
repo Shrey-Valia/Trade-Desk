@@ -449,6 +449,13 @@ def scale_out_trade(
         leg["contracts"] = int(leg.get("contracts", 1) or 1) - payload.qty
     px = f"${payload.exit_underlying_price:.2f}" if payload.exit_underlying_price else "—"
     new_notes = (trade.notes or "") + f" · scaled out {payload.qty} @ {px}"
+    # Same structure-mutation rule as close-leg (review wave 8, finding 1):
+    # a resting close-limit is per-1× of the OLD leg ratios; an unbalanced
+    # scale-out shifts that unit, so the limit is pulled rather than left to
+    # trigger/book against a structure it never described. (Balanced books
+    # would survive, but one predictable rule beats a ratio-dependent one.)
+    if trade.close_limit_price is not None:
+        new_notes += " · resting close limit pulled (structure changed)"
 
     # RACE GUARD: write the slice through ONE conditional UPDATE claimed on
     # status='open'. The recompute above spans a network window (live mark,
@@ -463,6 +470,7 @@ def scale_out_trade(
         "legs_json": json.dumps(legs),
         "realized_pnl": func.coalesce(Trade.realized_pnl, 0.0) + slice_realized,
         "notes": new_notes,
+        "close_limit_price": None,
     }
     if payload.exit_underlying_price is not None:
         values["exit_underlying_price"] = payload.exit_underlying_price
@@ -550,6 +558,13 @@ def _book_leg_close(
     new_notes = (
         (trade.notes or "") + f" · closed leg {leg_desc} ×{qty} @ ~{px:.2f}"
     )
+    # A resting close-limit was signed against the OLD structure's per-1× net;
+    # after the legs change, its trigger threshold and pinned booking are
+    # meaningless (review wave 8, finding 1: a stale limit insta-fired and
+    # booked fabricated P&L on the remainder). Pull it — the trader re-rests
+    # against the new structure if they still want one.
+    if trade.close_limit_price is not None:
+        new_notes += " · resting close limit pulled (structure changed)"
     claimed = session.execute(
         update(Trade)
         .where(
@@ -561,6 +576,7 @@ def _book_leg_close(
             legs_json=json.dumps(new_legs),
             strategy=new_strategy,
             net_debit_credit=new_net,
+            close_limit_price=None,
             realized_pnl=func.coalesce(Trade.realized_pnl, 0.0) + slice_realized,
             notes=new_notes,
         )
@@ -637,16 +653,26 @@ def close_leg(
     session.commit()
     session.refresh(trade)
 
-    # COPY CASCADE — mirror the leg close to open follower copies at the same
+    # COPY CASCADE — mirror the leg close to follower copies at the same
     # mark, proportional to each follower's own leg size (lead closed
     # qty/held of the leg). Best-effort per follower: a drifted structure
     # (leg shape no longer matches) or a lost CAS skips that follower —
     # never corrupt, never fail the lead's booked close.
+    #
+    # Review wave 8, findings 3+4:
+    #   - WORKING followers are included and CANCELLED (mirror_close's
+    #     convention): letting a still-resting mirrored order fill AFTER the
+    #     lead changed shape strands the follower on a structure the lead no
+    #     longer has, permanently outside every future cascade.
+    #   - The proportional share rounds HALF-UP (floor(x + 0.5) — Python's
+    #     round() is banker's) and a share that rounds to ZERO skips the
+    #     follower instead of being floored to 1: max(1, …) force-closed a
+    #     1-lot follower's entire leg on a 10% lead trim.
     followers = (
         session.execute(
             select(Trade).where(
                 Trade.copied_from_trade_id == trade.id,
-                Trade.status == "open",
+                Trade.status.in_(("open", "working")),
             )
         )
         .scalars()
@@ -654,6 +680,19 @@ def close_leg(
     )
     for f in followers:
         try:
+            if f.status == "working":
+                cancelled = session.execute(
+                    update(Trade)
+                    .where(Trade.id == f.id, Trade.status == "working")
+                    .values(status="cancelled")
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                if cancelled:
+                    f.status = "cancelled"
+                    f.close_reason = None
+                    f.notes = (f.notes or "") + " · cancelled (lead closed a leg before fill)"
+                    session.commit()
+                continue
             f_legs = f.legs
             if payload.leg_index >= len(f_legs):
                 continue
@@ -665,7 +704,9 @@ def close_leg(
             ):
                 continue  # structure drifted — don't touch it
             f_held = int(f_leg.get("contracts", 1) or 1)
-            f_qty = max(1, min(f_held, round(f_held * qty / held)))
+            f_qty = min(f_held, int(f_held * qty / held + 0.5))
+            if f_qty <= 0:
+                continue  # share rounds to nothing — leave the follower whole
             if _book_leg_close(session, f, payload.leg_index, f_qty, px) is not None:
                 session.commit()
         except Exception:  # noqa: BLE001 — mirror is best-effort by convention
@@ -929,7 +970,14 @@ def oco_link(
 ) -> TradesResponse:
     """Group the given WORKING orders under one fresh oco_group. 409 when any
     is no longer working (a filled/cancelled order can't be a sibling); an
-    order already in a group is re-homed to the new one (last link wins)."""
+    order already in a group is re-homed to the new one (last link wins).
+
+    RACE GUARD (review wave 8, finding 6): the link is ONE conditional
+    UPDATE claimed on status='working' for ALL ids — all-or-nothing. The
+    old read-check-assign flow lost the race against a monitor fill: the
+    link landed on an already-filled order, the sibling kept resting with
+    no protection (double exposure), and the group later fired a bogus
+    delayed cancel when the filled position exited."""
     if len(set(payload.trade_ids)) != len(payload.trade_ids):
         raise HTTPException(422, "duplicate trade ids in the OCO link")
     trades = [_owned_trade(session, user, tid) for tid in payload.trade_ids]
@@ -941,9 +989,22 @@ def oco_link(
             "are no longer working",
         )
     group = str(uuid4())
-    for t in trades:
-        t.oco_group = group
-        t.notes = (t.notes or "") + " · OCO linked"
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id.in_(payload.trade_ids), Trade.status == "working")
+        .values(
+            oco_group=group,
+            notes=func.coalesce(Trade.notes, "") + " · OCO linked",
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed != len(payload.trade_ids):
+        session.rollback()
+        raise HTTPException(
+            409,
+            "an order filled or was cancelled while linking — no OCO group "
+            "was created; refresh and re-link the survivors",
+        )
     session.commit()
     for t in trades:
         session.refresh(t)

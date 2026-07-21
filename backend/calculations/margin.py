@@ -22,9 +22,12 @@ using the most-conservative short strike on the side (lowest short call /
 highest short put). When BOTH sides are naked (short straddle/strangle)
 the industry rule applies: the greater single side plus the other side's
 short premium. A mixed structure (naked tail + defined-risk body, e.g. a
-ratio spread) takes max(naked requirement, bounded-region max loss) —
-an approximation that stays on the conservative side for the shapes this
-product can express (2–6 legs, ratio ≤ 10).
+ratio spread) requires the naked requirement PLUS the bounded-region max
+loss — the sum slightly overshoots a broker's paired-off decomposition
+(it charges the whole bounded region, not just the spread's share), which
+is the correct side to err on: the previous max() rule UNDERSTATED a 1×2
+ratio spread by ~24% vs Reg-T sum-of-parts (review wave 8, finding 5).
+Pure-naked and pure-defined shapes are unaffected (their other term is 0).
 
 Rates default from config (margin_naked_pct / margin_naked_min_pct) at the
 call site; this module stays pure and takes them as arguments.
@@ -159,7 +162,12 @@ def structure_requirement(
             naked_req = put_req + _short_premium(legs, "call")
     else:
         naked_req = call_req + put_req
-    return round(max(naked_req, bounded_loss), 2)
+    # SUM, not max: a mixed structure's defined-risk body requires its own
+    # collateral on top of the naked tail (max() understated ratio spreads —
+    # see module docstring). Pure shapes are unchanged: a bare naked side has
+    # bounded_loss 0 over its trimmed criticals, and a defined-risk structure
+    # never reaches this branch.
+    return round(naked_req + bounded_loss, 2)
 
 
 def book_requirement(

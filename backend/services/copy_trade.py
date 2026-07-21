@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from config import settings
 from models.combine import Combine
 from models.trade import Trade
 from models.user import User
@@ -154,6 +155,37 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
         if open_now + mirrored_total > cap:
             result.skipped.append((f.id, "scaling cap exceeded"))
             continue
+
+        # MARGIN — the follower's OWN buying power must hold the mirrored
+        # structure (review wave 8, finding 2: followers previously received
+        # positions with NO capital check while every direct open is gated —
+        # a lead on a large tier could mirror a naked short into a small-tier
+        # follower whose balance can't hold one contract of it). Same
+        # skip-not-fail convention as the other follower gates; priced at the
+        # lead's fill spot so the cascade adds no quote round-trip.
+        if settings.margin_enforcement_enabled:
+            from calculations.margin import structure_requirement
+            from routers.zerodte import _book_margin_used  # lazy — avoids import cycle
+            from services.combine_state import combine_snapshot
+
+            spot_ref = float(lead_trade.entry_underlying_price or 0.0)
+            req = structure_requirement(
+                legs,
+                spot_ref,
+                naked_pct=settings.margin_naked_pct,
+                naked_min_pct=settings.margin_naked_min_pct,
+            )
+            if req > 0:
+                snap = combine_snapshot(session, f)
+                used = _book_margin_used(
+                    session,
+                    f.id,
+                    {lead_trade.symbol: spot_ref} if spot_ref > 0 else {},
+                )
+                if req > snap.balance - used:
+                    result.skipped.append((f.id, "insufficient buying power"))
+                    continue
+
         net = compute_net_debit_credit([TradeLeg(**leg) for leg in legs])
 
         # Per-follower bracket overrides win; fall back to the lead's levels

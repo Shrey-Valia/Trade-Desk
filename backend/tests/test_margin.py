@@ -85,11 +85,22 @@ def test_short_straddle_greater_side_plus_other_premium():
     assert structure_requirement(legs, 100.0) == pytest.approx(2210.0)
 
 
-def test_ratio_spread_takes_naked_leg():
+def test_ratio_spread_sums_naked_and_bounded():
     # Buy 1 100C, sell 2 105C → net short 1 call: naked req on the 105 short
-    # (0.20×100 − 5 + 0.5)×100 = $1,550 vs bounded debit 0.1×100 → naked wins.
+    # (0.20×100 − 5 + 0.5)×100 = $1,550 PLUS the bounded region's max loss
+    # (the 0.10 net debit below the strikes = $10). SUM, not max — review
+    # finding 5: max() understated mixed structures.
     legs = [_leg("call", "buy", 100, 1.1), _leg("call", "sell", 105, 0.5, 2)]
-    assert structure_requirement(legs, 100.0) == pytest.approx(1550.0)
+    assert structure_requirement(legs, 100.0) == pytest.approx(1560.0)
+
+
+def test_put_ratio_spread_no_longer_understated():
+    """The review's worked example: sell 2× 95P @1.00 / buy 1× 90P @0.50 at
+    spot 100. Old max() rule returned $1,600 (~24% under broker sum-of-parts
+    ≈ $2,100); the sum rule returns naked $1,600 + bounded $850 = $2,450 —
+    over-conservative, the correct side for a margin model to err on."""
+    legs = [_leg("put", "sell", 95, 1.0, 2), _leg("put", "buy", 90, 0.5)]
+    assert structure_requirement(legs, 100.0) == pytest.approx(2450.0)
 
 
 def test_requirement_scales_with_contracts():

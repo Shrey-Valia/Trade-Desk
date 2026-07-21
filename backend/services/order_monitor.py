@@ -1651,6 +1651,12 @@ def _commit_fill(
     if claimed == 0:
         session.expire(trade)
         return None  # cancelled (or otherwise decided) during the window
+    # Re-read the row after winning the claim: an OCO link (or note edit)
+    # committed AFTER this pass loaded its working set must be honored —
+    # the in-memory copy's oco_group is stale, and _cancel_oco_siblings
+    # below would otherwise miss a just-linked sibling (review wave 8,
+    # finding 6, interleaving 1: both siblings fill = double exposure).
+    session.refresh(trade)
     legs = trade.legs
     for leg, px in zip(legs, leg_prices):
         leg["entry_price"] = round(float(px), 4)
