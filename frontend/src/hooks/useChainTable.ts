@@ -67,6 +67,12 @@ export function useCachedChainTable(symbol: string | null): ChainTable | null {
       .getQueryCache()
       .findAll({ queryKey: ["zerodte", "chain", "table", symbol] })) {
       const data = q.state.data as ChainTable | undefined;
+      // TODAY'S table only (review wave 9, finding 7): the expiry browser
+      // polls a LATER expiration into this same key prefix, and passive
+      // consumers (the header's "expected move to today's close" pill,
+      // RollRow's strike step) are 0DTE-semantic — a browsed multi-day
+      // table must never become their freshest match.
+      if (data && data.expiry_is_today === false) continue;
       if (data && q.state.dataUpdatedAt > bestAt) {
         best = data;
         bestAt = q.state.dataUpdatedAt;

@@ -377,11 +377,18 @@ function TodayInline({ trades }: { trades: Trade[] }) {
       iso != null && Date.parse(iso) >= start;
     let c = 0;
     for (const t of trades) {
+      // SAME population as the net (review wave 9, finding 8): the backend's
+      // today_realized covers the ACTIVE combine's execution book only —
+      // counting copy-follower mirrors in other combines or manual journal
+      // rows beside it rebuilt the net-vs-count reconciliation mismatch.
+      if (account?.combine_id != null && t.combine_id !== account.combine_id)
+        continue;
+      if (t.origin !== "execution") continue;
       if (t.status === "closed" && after(t.exit_date)) c += 1;
       else if (t.status === "open" && after(t.entry_date)) c += 1;
     }
     return c;
-  }, [trades]);
+  }, [trades, account?.combine_id]);
   const netCls =
     net > 0 ? "text-bullish" : net < 0 ? "text-bearish" : "text-fg-secondary";
   return (

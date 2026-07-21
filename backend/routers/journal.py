@@ -1666,23 +1666,28 @@ def _intraday_analytics(
     )
 
     # POP FROM HERE (audit wave 7) — probability the position, held to
-    # expiry, ends profitable INCLUDING what's already sunk (entry fills,
-    # folded commission): the sign regions of the expiration curve weighed
-    # by the risk-neutral lognormal from the CURRENT spot/time. None when
-    # the clock has run out or IV is unusable.
+    # expiry, ends profitable including the sunk entry fills (commission,
+    # ~a penny of breakeven shift, is ignored by the analytic curve): the
+    # sign regions of the expiration payoff weighed by the risk-neutral
+    # lognormal from the CURRENT spot/time. None when the clock has run
+    # out or IV is unusable. Breakevens and the payoff
+    # come ANALYTICALLY from the legs (review wave 9, finding 9): the ±25%
+    # display grid missed tail crossings and printed a hard 100%/0% for
+    # deep-ITM/OTM structures.
     pop_value: float | None = None
     t_pop = min((_leg_t(leg)[0] for leg in legs), default=0.0)
     if t_pop > 0 and iv_used and iv_used > 0:
+        from calculations.margin import exact_breakevens, payoff_at_expiry
         from calculations.probability import pop_from_curve
 
         pop_value = round(
             pop_from_curve(
                 float(spot),
-                be_expiration,
+                exact_breakevens(legs),
                 float(t_pop),
                 float(rate),
                 float(iv_used),
-                lambda s: float(np.interp(s, prices_np, exp_pnl)),
+                lambda s: payoff_at_expiry(legs, s),
             ),
             4,
         )

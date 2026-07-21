@@ -115,6 +115,51 @@ def _short_premium(legs: list[dict[str, Any]], side: str) -> float:
     )
 
 
+def payoff_at_expiry(legs: list[dict[str, Any]], s: float) -> float:
+    """Public expiry-payoff evaluator (dollars, premiums included) — the
+    exact piecewise-linear function exact_breakevens() roots."""
+    return _payoff_at(legs, s)
+
+
+def exact_breakevens(legs: list[dict[str, Any]]) -> list[float]:
+    """Exact zero-crossings of the piecewise-linear EXPIRY payoff, computed
+    from the legs themselves — not from a display grid. The payoff's knots
+    are S=0 and the strikes; between knots it's linear, and beyond the top
+    strike it's linear with slope 100·(net call quantity)/$. A ±25% display
+    grid misses crossings in the tails, which made POP print a hard 1.0/0.0
+    for deep-ITM/OTM structures (review wave 9, finding 9)."""
+    strikes = sorted(
+        {float(leg.get("strike", 0.0) or 0.0) for leg in legs if leg.get("strike")}
+    )
+    if not strikes:
+        return []
+    knots = [0.0, *strikes]
+    values = [_payoff_at(legs, s) for s in knots]
+    crossings: list[float] = []
+    for i in range(1, len(knots)):
+        v0, v1 = values[i - 1], values[i]
+        if v0 == 0.0:
+            crossings.append(knots[i - 1])
+        if (v0 < 0 < v1) or (v1 < 0 < v0):
+            t = v0 / (v0 - v1)
+            crossings.append(knots[i - 1] + t * (knots[i] - knots[i - 1]))
+    if values[-1] == 0.0:
+        crossings.append(knots[-1])
+    # Tail beyond the top strike: slope = Σ sign·qty over CALL legs, ×100/$.
+    tail_slope = 100.0 * sum(
+        _sign(leg) * _qty(leg) for leg in legs if leg.get("side") == "call"
+    )
+    v_top = values[-1]
+    if tail_slope != 0.0 and (v_top < 0) != (tail_slope < 0) and v_top != 0.0:
+        crossings.append(knots[-1] + (-v_top) / tail_slope)
+    # Dedup near-identical roots (a crossing exactly at a knot appears twice).
+    out: list[float] = []
+    for c in sorted(c for c in crossings if c > 0):
+        if not out or abs(c - out[-1]) > 1e-9:
+            out.append(round(c, 6))
+    return out
+
+
 def structure_requirement(
     legs: list[dict[str, Any]],
     spot: float,

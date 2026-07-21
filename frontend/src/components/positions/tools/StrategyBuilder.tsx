@@ -88,8 +88,16 @@ export function StrategyBuilder({ symbol }: Props) {
   // every builder that shows a leg list and fires blind.
   const preview = useMultiLegPreview(symbol, legs, contracts);
 
+  // A no-0DTE day serves the NEAREST upcoming expiry (server fallback) —
+  // fine for BROWSING, but this builder opens strictly-0DTE structures, so
+  // firing would only 409 at the server after showing a live risk graph
+  // (review wave 9, finding 10: the old chain 409 disabled the builder with
+  // a reason; the fallback regressed that to fire-then-fail).
+  const chainIsToday = chain?.expiry_is_today !== false;
+
   const canFire =
     marketOpen &&
+    chainIsToday &&
     atm != null &&
     legs.length >= 2 &&
     !openMulti.isPending &&
@@ -364,6 +372,12 @@ export function StrategyBuilder({ symbol }: Props) {
       {!marketOpen && (
         <span className="text-warning" style={{ fontSize: 11 }}>
           Market closed — structures open during the regular session.
+        </span>
+      )}
+      {marketOpen && !chainIsToday && (
+        <span className="text-warning" style={{ fontSize: 11 }}>
+          No 0DTE for {symbol} today — the chain shows exp {chain?.expiry} for
+          reference; structures open on today&rsquo;s expiry only.
         </span>
       )}
       {openMulti.isError && (

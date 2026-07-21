@@ -2004,7 +2004,12 @@ def preview_multi(payload: PreviewMultiRequest) -> ContractPreviewOut:
     max_profit = None if net_calls > 0 else round(max(values), 2)
     max_loss = None if net_calls < 0 else round(min(values), 2)
 
-    pop = pop_from_curve(spot, preview.breakevens, t_close, rate, iv, _payoff_at)
+    # POP roots the payoff ANALYTICALLY (review wave 9, finding 9): the
+    # ±25% preview grid misses tail crossings, which hard-printed 1.0/0.0
+    # for structures whose breakevens sit outside it.
+    from calculations.margin import exact_breakevens
+
+    pop = pop_from_curve(spot, exact_breakevens(legs), t_close, rate, iv, _payoff_at)
 
     # Buying-power requirement for the structure AS SUBMITTED — the number
     # the margin gate will hold against the balance at open.
