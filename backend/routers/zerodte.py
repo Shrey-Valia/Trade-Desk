@@ -43,7 +43,8 @@ from schemas.journal import TradeLeg, TradeOut, compute_net_debit_credit
 from services import platform_state
 from services.alpaca_client import get_chain_snapshot, get_quotes
 from services.auth import get_active_combine
-from services.combine_state import combine_snapshot
+from services.cache import cache
+from services.combine_state import CombineSnapshot, combine_snapshot
 from services.copy_trade import mirror_close, mirror_open
 from services.fills import (
     fill_slippage as _fill_slippage,
@@ -345,11 +346,19 @@ def get_term_structure(symbol: str = "SPY", max_points: int = 8) -> TermStructur
     """ATM IV per listed expiration, one cached chain snapshot + one quote —
     unlocked by the multi-expiry work (wave 2). Each point back-solves the
     ATM call/put mids at that expiry's OWN session close (half-day aware),
-    so the front of the curve carries honest intraday time."""
+    so the front of the curve carries honest intraday time.
+
+    Cached 45s per symbol (review wave 10): the curve is structural and
+    slow-moving, and every client polls it at 60s — without the cache each
+    tab paid ~16 brentq solves per poll for byte-identical answers."""
     from calculations.intraday_analytics import SECONDS_PER_YEAR
     from services.order_monitor import _session_close_for_date
 
     sym = symbol.upper().strip()
+    cache_key = f"term:{sym}:{max_points}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
     chain = get_chain_snapshot(sym, with_volume=False)
     if not chain:
         raise HTTPException(503, f"{sym} options chain unavailable")
@@ -401,9 +410,11 @@ def get_term_structure(symbol: str = "SPY", max_points: int = 8) -> TermStructur
     if len(solved) >= 2:
         slope = round(solved[-1].atm_iv - solved[0].atm_iv, 4)  # type: ignore[operator]
         shape = "contango" if slope > 0.005 else "backwardation" if slope < -0.005 else "flat"
-    return TermStructureOut(
+    response = TermStructureOut(
         symbol=sym, spot=spot, points=points, slope=slope, shape=shape
     )
+    cache.set(cache_key, response, ttl_seconds=45)
+    return response
 
 
 @router.get("/chain/table", response_model=ChainTableOut)
@@ -424,8 +435,18 @@ def get_chain_table(
     in alpaca_client; the windowing + BS fallback here is O(strikes)
     so the endpoint adds ~1ms on a warm cache. `with_volume=True` so the
     per-strike volume columns carry real data — the ticker page fetches
-    the same cache key, so the expensive bars pass is typically warm."""
+    the same cache key, so the expensive bars pass is typically warm.
+
+    The ASSEMBLED response is additionally cached 5s (review wave 10): the
+    per-row IV back-solves added in wave 1 are ~2×strikes brentq root-finds
+    per request, and every client polls this at 10s — concurrent/adjacent
+    polls now share one computation, aligned with the 5s quote cache so
+    freshness is unchanged."""
     sym = symbol.upper().strip()
+    cache_key = f"chain_table:{sym}:{strikes}:{expiry or 'today'}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
     chain = get_chain_snapshot(sym, with_volume=True)
     if not chain:
         raise HTTPException(503, f"{sym} options chain unavailable")
@@ -584,7 +605,7 @@ def get_chain_table(
             )
         )
 
-    return ChainTableOut(
+    response = ChainTableOut(
         underlying=sym,
         spot=spot,
         expiry=target_expiry.isoformat(),
@@ -597,6 +618,8 @@ def get_chain_table(
         expiry_is_today=(target_expiry == today),
         as_of=_chain_as_of(quote, same_day),
     )
+    cache.set(cache_key, response, ttl_seconds=5)
+    return response
 
 
 def _chain_as_of(quote, contract_rows) -> str | None:
@@ -867,7 +890,10 @@ def _open_contracts_for_combine(session: Session, combine_id: int) -> int:
 
 # ── WS5: server-side contract clamping (folded from WS3) ────────────────────
 def _clamp_contracts_to_cap(
-    session: Session, combine: Combine, requested: int
+    session: Session,
+    combine: Combine,
+    requested: int,
+    snap: "CombineSnapshot | None" = None,
 ) -> int:
     """Defense-in-depth size clamp. `_require_tradeable` already REJECTS an
     over-cap request with a 422, but this clamps the per-order size to the
@@ -876,8 +902,10 @@ def _clamp_contracts_to_cap(
     snapshot shifts under us. Returns the size to actually use (>=1).
 
     The cap is per-COMBINE aggregate: remaining = max_contracts − already-open.
-    With nothing open and a cap of N this is a no-op (returns `requested`)."""
-    snap = combine_snapshot(session, combine)
+    With nothing open and a cap of N this is a no-op (returns `requested`).
+    Pass the snapshot from _require_tradeable when available — recomputing it
+    per gate tripled the heaviest account computation on every open."""
+    snap = snap or combine_snapshot(session, combine)
     open_now = _open_contracts_for_combine(session, combine.id)
     remaining = max(0, snap.max_contracts - open_now)
     # Never clamp below 1 — a 0-contract order is meaningless; the reject path
@@ -908,14 +936,23 @@ def _book_margin_used(session: Session, combine_id: int, spot_hint: dict[str, fl
     if not rows:
         return 0.0
     spot_cache: dict[str, float] = dict(spot_hint)
+    # ONE batched quote call for every symbol the hint didn't cover — the
+    # house convention (StockSnapshotRequest batches server-side); the old
+    # per-symbol loop paid a round-trip apiece on the 5s header poll.
+    missing = sorted({t.symbol for t in rows} - set(spot_cache))
+    if missing:
+        try:
+            for sym, q in (get_quotes(missing) or {}).items():
+                if q is not None and float(q.price) > 0:
+                    spot_cache[sym] = float(q.price)
+        except Exception:  # noqa: BLE001 — cold feed → entry-price fallback below
+            log.debug("book margin: batched quote fetch failed for %s", missing)
     structures: list[tuple[list[dict], float]] = []
     for t in rows:
-        if t.symbol not in spot_cache:
-            live = _spot_for_symbol(t.symbol)
-            spot_cache[t.symbol] = (
-                float(live) if live is not None else float(t.entry_underlying_price)
-            )
-        structures.append((t.legs, spot_cache[t.symbol]))
+        spot = spot_cache.get(t.symbol)
+        structures.append(
+            (t.legs, spot if spot is not None else float(t.entry_underlying_price))
+        )
     return book_requirement(
         structures,
         naked_pct=settings.margin_naked_pct,
@@ -929,6 +966,8 @@ def _require_buying_power(
     symbol: str,
     new_legs: list[dict],
     spot: float,
+    snap: "CombineSnapshot | None" = None,
+    release_legs: list[dict] | None = None,
 ) -> None:
     """MARGIN GATE — the capital constraint the audit flagged as absent
     (order cost was never checked and naked shorts were free). The new
@@ -939,21 +978,28 @@ def _require_buying_power(
     Balance is the REALIZED balance (open URPL not counted — the live
     MLL/DLL gates in _require_tradeable own unrealized exposure). Closes
     never come through here, so a trader can always exit. Config-off →
-    legacy behavior."""
+    legacy behavior.
+
+    `snap`: pass the snapshot _require_tradeable already computed (review
+    wave 10: three snapshots per open request). `release_legs`: a structure
+    the caller is about to close as part of the same action (the ROLL swap)
+    — its requirement is credited back before the new one is tested, so a
+    refused roll can never be stricter than the equivalent fresh open."""
     if not settings.margin_enforcement_enabled:
         return
     from calculations.margin import structure_requirement
 
-    new_req = structure_requirement(
-        new_legs,
-        spot,
+    _mkw = dict(
         naked_pct=settings.margin_naked_pct,
         naked_min_pct=settings.margin_naked_min_pct,
     )
+    new_req = structure_requirement(new_legs, spot, **_mkw)
     if new_req <= 0:
         return
-    snap = combine_snapshot(session, combine)
+    snap = snap or combine_snapshot(session, combine)
     used = _book_margin_used(session, combine.id, {symbol: float(spot)})
+    if release_legs:
+        used = max(0.0, used - structure_requirement(release_legs, spot, **_mkw))
     available = snap.balance - used
     if new_req > available:
         raise HTTPException(
@@ -1009,7 +1055,7 @@ def _require_tradeable(
     combine: Combine,
     contracts: int | None = None,
     symbol: str | None = None,
-) -> None:
+) -> "CombineSnapshot":
     """Enforce the combine's standing rules on the OPEN path — the rule
     actually binds server-side, not just via the trade-ticket soft-gate.
     Blocks a FAILED eval (MLL floor breached; must be reset) and a DAY
@@ -1107,6 +1153,11 @@ def _require_tradeable(
                     "settlement."
                 ),
             )
+    # Hand the snapshot back so the rest of the open path (size clamp, margin
+    # gate) reuses it instead of recomputing — combine_snapshot is the
+    # heaviest account computation in the codebase, and the review found
+    # THREE of them per open request (wave 10 efficiency cluster).
+    return snap
 
 
 # SL/TP brackets must sit at least this far from the current underlying —
@@ -1214,10 +1265,12 @@ def open_zerodte_straddle(
     # total-contract cap. Gate and clamp on that effective total, then back out
     # the per-leg size. (Defense-in-depth: _require_tradeable already 422s an
     # over-cap request; the clamp guards a snapshot shift under us.)
-    _require_tradeable(
+    snap = _require_tradeable(
         session, combine, contracts=payload.contracts * 2, symbol=payload.symbol
     )
-    allowed_total = _clamp_contracts_to_cap(session, combine, payload.contracts * 2)
+    allowed_total = _clamp_contracts_to_cap(
+        session, combine, payload.contracts * 2, snap=snap
+    )
     contracts = max(1, allowed_total // 2)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
     _require_today_expiry(expiry)
@@ -1260,7 +1313,7 @@ def open_zerodte_straddle(
     net = compute_net_debit_credit(typed_legs)
 
     # MARGIN GATE — priced legs in hand, check the capital requirement.
-    _require_buying_power(session, combine, sym, legs_json, spot)
+    _require_buying_power(session, combine, sym, legs_json, spot, snap=snap)
 
     strategy = "long_straddle" if action == "buy" else "short_straddle"
     notes = (
@@ -1318,11 +1371,11 @@ def open_zerodte_leg(
     _validate_premium_mults(
         payload.action == "sell", payload.tp_premium_mult, payload.sl_premium_mult
     )
-    _require_tradeable(
+    snap = _require_tradeable(
         session, combine, contracts=payload.contracts, symbol=payload.symbol
     )
     # WS5: defense-in-depth — clamp the persisted size to the scaling cap.
-    contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
+    contracts = _clamp_contracts_to_cap(session, combine, payload.contracts, snap=snap)
     sym, spot, target_expiry, by_key = _resolve_same_day_quotes(payload.symbol)
 
     action = payload.action
@@ -1400,7 +1453,7 @@ def open_zerodte_leg(
 
     # MARGIN GATE — applies to immediate fills AND working orders (a resting
     # order reserves its requirement at placement, like the contract cap).
-    _require_buying_power(session, combine, sym, [leg_json], spot)
+    _require_buying_power(session, combine, sym, [leg_json], spot, snap=snap)
 
     trade = Trade(
         symbol=sym,
@@ -1575,10 +1628,12 @@ def open_zerodte_multi_leg(
     # 4 contracts; a butterfly 1-2-1 is 4). Gate AND clamp on that effective
     # total, then back out the base size.
     sum_ratio = sum(int(spec.ratio) for spec in payload.legs)
-    _require_tradeable(
+    snap = _require_tradeable(
         session, combine, contracts=payload.contracts * sum_ratio, symbol=payload.symbol
     )
-    effective = _clamp_contracts_to_cap(session, combine, payload.contracts * sum_ratio)
+    effective = _clamp_contracts_to_cap(
+        session, combine, payload.contracts * sum_ratio, snap=snap
+    )
     base_contracts = max(1, effective // sum_ratio)
 
     sym, spot, expiry, by_key = _resolve_same_day_quotes(payload.symbol)
@@ -1657,7 +1712,7 @@ def open_zerodte_multi_leg(
 
     # MARGIN GATE — the multi-leg structure's requirement (defined-risk max
     # loss, or Reg-T-style when a side is net short) vs remaining buying power.
-    _require_buying_power(session, combine, sym, legs_json, spot)
+    _require_buying_power(session, combine, sym, legs_json, spot, snap=snap)
 
     strategy = (payload.strategy or "custom").strip().lower() or "custom"
     if is_working:
@@ -1979,20 +2034,16 @@ def preview_multi(payload: PreviewMultiRequest) -> ContractPreviewOut:
         spot=spot, rate=rate, iv=iv, t_now=t_close, legs=legs
     )
 
-    # Expiry payoff at a price — signed intrinsic minus the net entry, in $.
+    # Expiry payoff — the SHARED analytic evaluator (calculations/margin),
+    # the same function the margin gate and exact_breakevens root (review
+    # cleanup: this endpoint carried its own byte-identical copy).
+    from calculations.margin import payoff_at_expiry
+
     def _sign(leg: dict) -> int:
         return 1 if leg["action"] == "buy" else -1
 
-    cb_ps = sum(_sign(l) * l["contracts"] * l["entry_price"] for l in legs)
-
     def _payoff_at(s: float) -> float:
-        intrinsic = sum(
-            _sign(l)
-            * l["contracts"]
-            * (max(s - l["strike"], 0.0) if l["side"] == "call" else max(l["strike"] - s, 0.0))
-            for l in legs
-        )
-        return (intrinsic - cb_ps) * 100.0
+        return payoff_at_expiry(legs, s)
 
     # Bounded extremes live at the payoff's critical points: S→0, each
     # strike, and anywhere past the top strike (the tail is flat unless net
@@ -2165,7 +2216,7 @@ def reverse_positions(
     # account re-establish a full opposite-side book and bypass the prop-firm
     # rules every other open path enforces.) Per-position size is clamped to the
     # remaining scaling-cap below.
-    _require_tradeable(session, combine)
+    snap = _require_tradeable(session, combine)
     now = datetime.now(UTC)
     positions = _open_positions_for_combine(session, combine.id)
     # Reversing re-OPENS the opposite side of every held position, so each
@@ -2209,7 +2260,7 @@ def reverse_positions(
         # (the close above frees this position's own size). Scale every leg by
         # the same factor so multi-leg ratios are preserved.
         requested = sum(int(leg.get("contracts", 1) or 1) for leg in src_legs)
-        allowed = _clamp_contracts_to_cap(session, combine, requested)
+        allowed = _clamp_contracts_to_cap(session, combine, requested, snap=snap)
         scale = (allowed / requested) if requested > 0 else 1.0
 
         rev_legs: list[dict] = []
@@ -2240,7 +2291,9 @@ def reverse_positions(
         # that doesn't fit the remaining buying power is SKIPPED (that position
         # ends flat, never over-levered); the close above already booked.
         try:
-            _require_buying_power(session, combine, t.symbol, rev_legs, spot)
+            _require_buying_power(
+                session, combine, t.symbol, rev_legs, spot, snap=snap
+            )
         except HTTPException:
             continue
         rev = Trade(
@@ -2307,7 +2360,7 @@ def roll_position(
     TP/SL multiples and trailing stops carry over (they re-anchor to the new
     entry premium automatically)."""
     _require_market_open()
-    _require_tradeable(session, combine)
+    snap = _require_tradeable(session, combine)
 
     trade = session.get(Trade, payload.trade_id)
     if trade is None or trade.combine_id != combine.id:
@@ -2392,25 +2445,18 @@ def roll_position(
 
     # MARGIN — the post-swap book must fit: committed − old requirement +
     # new requirement ≤ balance. Checked BEFORE the close so a refused roll
-    # never leaves the trader flat.
-    if settings.margin_enforcement_enabled:
-        from calculations.margin import structure_requirement
-
-        kw = dict(
-            naked_pct=settings.margin_naked_pct,
-            naked_min_pct=settings.margin_naked_min_pct,
-        )
-        snap = combine_snapshot(session, combine)
-        used = _book_margin_used(session, combine.id, {trade.symbol: float(spot)})
-        old_req = structure_requirement(src_legs, float(spot), **kw)
-        new_req = structure_requirement(new_legs, float(spot), **kw)
-        if used - old_req + new_req > snap.balance:
-            raise HTTPException(
-                422,
-                f"insufficient buying power to roll: the new strikes require "
-                f"${new_req:,.0f} vs ${max(0.0, snap.balance - used + old_req):,.0f} "
-                "available after releasing the old position",
-            )
+    # never leaves the trader flat. Same shared gate as every open path
+    # (review wave 10: the inline duplicate is gone) — release_legs credits
+    # the position being swapped out.
+    _require_buying_power(
+        session,
+        combine,
+        trade.symbol,
+        new_legs,
+        float(spot),
+        snap=snap,
+        release_legs=src_legs,
+    )
 
     realized = _close_one(session, trade, spot, now, "manual")
     if realized is None:

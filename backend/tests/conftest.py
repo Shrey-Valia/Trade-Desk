@@ -58,6 +58,19 @@ def _relax_compliance_gates(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _clear_response_cache():
+    """The TTL response cache is process-global; clear it between tests so a
+    cached chain table / term structure / market status assembled against one
+    test's stubs can't be served to the next test (wave 10 added response
+    caches on the hottest endpoints)."""
+    from services.cache import cache as _cache
+
+    _cache._store.clear()
+    yield
+    _cache._store.clear()
+
+
+@pytest.fixture(autouse=True)
 def _fast_bcrypt():
     prior = settings.bcrypt_rounds
     settings.bcrypt_rounds = 4

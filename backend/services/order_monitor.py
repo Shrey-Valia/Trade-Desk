@@ -264,13 +264,10 @@ def _commission_side(trade: Trade) -> float:
 
 
 def _two_sided(q) -> bool:
-    """Genuine two-sided live NBBO — the fill-time analog of the open path's
-    quote-quality gate."""
-    return (
-        q is not None
-        and (getattr(q, "bid", None) or 0) > 0
-        and (getattr(q, "ask", None) or 0) > 0
-    )
+    """Genuine two-sided live NBBO — delegates to the fill engine's shared
+    definition so the fill-time gate can never drift from the rest of the
+    quote-quality machinery (review cleanup: this was a re-implementation)."""
+    return fills.two_sided(q) is not None
 
 
 def _sell_fill_quote_blocked(legs: list[dict], quotes: dict) -> bool:
@@ -729,72 +726,20 @@ def settle_expired_positions(
 # --- expiration-day close-out (policy flatten before the bell) ---------------
 
 
-def expiry_closeout(session, now: datetime, spot_for, unrealized_for, spot_cache) -> int:
-    """Force-flatten open positions inside the last `expiry_closeout_minutes`
-    of their dying session, and pull working orders resting on those contracts.
-
-    This is the prop-firm answer to assignment/pin risk on physically-settled
-    ETF options: rather than model OCC auto-exercise (share delivery this sim
-    can't hold), the desk closes 0DTE books ~10 minutes before the bell —
-    matching how funded-account firms actually handle expiry. Half-day aware
-    via the NYSE schedule. Every row (lead AND copy-follower) is processed
-    independently — the conditional UPDATE in _book_close keeps that
-    idempotent, and each follower books its own honest exit mark.
-
-    Returns positions closed (cancelled working orders are counted by the
-    caller through the row status, not the return value). 0 disables via
-    config. Runs only in-session — past the close, expiry settlement owns
-    the book."""
+def _in_closeout_window(trade: Trade, now_et: datetime) -> bool:
+    """True when this row sits inside the last `expiry_closeout_minutes` of
+    its dying session — the prop-firm answer to assignment/pin risk on
+    physically-settled ETF options (the desk flattens 0DTE books before the
+    bell instead of modeling OCC auto-exercise). Half-day aware. Past the
+    close, expiry settlement owns the book. Config 0 disables."""
     minutes = float(settings.expiry_closeout_minutes)
     if minutes <= 0:
-        return 0
-    closed = 0
-    now_et = now.astimezone(_ET)
-    trades = (
-        session.execute(select(Trade).where(Trade.status.in_(("working", "open"))))
-        .scalars()
-        .all()
-    )
-    for trade in trades:
-        expiry = _latest_leg_expiry(trade)
-        if expiry is None:
-            continue
-        close_et = _session_close_for_date(expiry)
-        if now_et < close_et - timedelta(minutes=minutes) or now_et >= close_et:
-            continue  # outside the close-out window (settlement owns post-close)
-        try:
-            if trade.status == "working":
-                # A resting order on a dying contract can only fill into a book
-                # this policy immediately flattens — pull it instead.
-                claimed = session.execute(
-                    update(Trade)
-                    .where(Trade.id == trade.id, Trade.status == "working")
-                    .values(status="cancelled")
-                    .execution_options(synchronize_session=False)
-                ).rowcount
-                if claimed:
-                    trade.status = "cancelled"
-                    trade.close_reason = None
-                    trade.notes = (trade.notes or "") + " · expiry close-out (order pulled)"
-                session.commit()
-                continue
-            if trade.symbol not in spot_cache:
-                fetched = spot_for(trade.symbol)
-                if fetched is not None:
-                    _record_good_spot(trade.symbol, fetched, now)
-                spot_cache[trade.symbol] = fetched
-            spot = spot_cache[trade.symbol]
-            if spot is None:
-                continue  # cold feed — retry next tick inside the window
-            if _book_close(session, trade, spot, now, unrealized_for, "expiry_closeout"):
-                trade.notes = (trade.notes or "") + " · expiry close-out (policy)"
-                _cancel_oco_siblings(session, trade)
-                closed += 1
-            session.commit()
-        except Exception:  # noqa: BLE001 — isolate one bad trade from the rest
-            session.rollback()
-            log.exception("expiry_closeout: trade %s failed", trade.id)
-    return closed
+        return False
+    expiry = _latest_leg_expiry(trade)
+    if expiry is None:
+        return False
+    close_et = _session_close_for_date(expiry)
+    return close_et - timedelta(minutes=minutes) <= now_et < close_et
 
 
 # --- the pass ---------------------------------------------------------------
@@ -840,12 +785,8 @@ def run_order_monitor(
     session = session_factory()
     filled = closed = cancelled = 0
     spot_cache: dict[str, float | None] = {}
+    now_et = now.astimezone(_ET)
     try:
-        # EXPIRATION-DAY CLOSE-OUT runs FIRST: inside the policy window the
-        # book is being flattened and dying-contract orders pulled, so the
-        # fill/bracket pass below sees their final status and skips them.
-        closeouts = expiry_closeout(session, now, spot_for, unrealized_for, spot_cache)
-        closed += closeouts
         trades = (
             session.execute(
                 select(Trade).where(Trade.status.in_(("working", "open")))
@@ -869,11 +810,37 @@ def run_order_monitor(
                 cancelled += 1
                 session.commit()
                 continue
+            # EXPIRATION-DAY CLOSE-OUT (policy) — one loop, one query, one
+            # spot path (review wave 10: this was a separate pre-pass that
+            # doubled the per-tick table scan and drifted on spot fallback).
+            in_closeout = _in_closeout_window(trade, now_et)
+            if trade.status == "working" and in_closeout:
+                # A resting order on a dying contract can only fill into a
+                # book this policy immediately flattens — pull it (and
+                # cascade to follower copies, matching every other cancel).
+                claimed = session.execute(
+                    update(Trade)
+                    .where(Trade.id == trade.id, Trade.status == "working")
+                    .values(status="cancelled")
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                if claimed:
+                    trade.status = "cancelled"
+                    trade.close_reason = None
+                    trade.notes = (trade.notes or "") + " · expiry close-out (order pulled)"
+                    from services.copy_trade import mirror_cancel
+
+                    mirror_cancel(session, trade)
+                    cancelled += 1
+                session.commit()
+                continue
             # Skip open positions with nothing to monitor (no SL/TP bracket,
             # no trailing stop, no premium-denominated TP/SL AND no resting
-            # close-limit). Auto-liquidation still scans them below.
+            # close-limit) — unless the close-out window owns them.
+            # Auto-liquidation still scans them below.
             if (
                 trade.status == "open"
+                and not in_closeout
                 and trade.stop_loss is None
                 and trade.take_profit is None
                 and not _has_trailing_stop(trade)
@@ -892,6 +859,19 @@ def run_order_monitor(
             if spot is None:
                 continue
             try:
+                # Close-out flatten for OPEN rows in the window (working rows
+                # were pulled above). Booked like a manual market close;
+                # every row — lead and copy-follower — flattens independently
+                # via _book_close's conditional claim.
+                if trade.status == "open" and in_closeout:
+                    if _book_close(
+                        session, trade, spot, now, unrealized_for, "expiry_closeout"
+                    ):
+                        trade.notes = (trade.notes or "") + " · expiry close-out (policy)"
+                        _cancel_oco_siblings(session, trade)
+                        closed += 1
+                    session.commit()
+                    continue
                 if trade.status == "working":
                     # DAY time-in-force: a working order that survived unfilled
                     # into a later ET session is expired (the simulated analog of
@@ -1575,11 +1555,9 @@ def _process_working_multi(
         return None
     legs = trade.legs
     # base size = the common factor of the leg quantities (contracts = ratio ×
-    # base at placement), so mark/base is the per-1x-structure net premium.
-    base = 0
-    for leg in legs:
-        base = gcd(base, max(1, int(leg.get("contracts", 1) or 1)))
-    base = max(1, base)
+    # base at placement), so mark/base is the per-1x-structure net premium —
+    # the SAME reduction the close-limit trigger uses (_structure_base).
+    base = _structure_base(trade)
     limit = float(trade.limit_price)
     net_1x = option_mark(trade, spot) / base
     if net_1x > limit:

@@ -156,3 +156,21 @@ def test_multi_position_flatten_and_realized_math(auth_client, session_factory):
         assert t.status == "closed" and t.close_reason == "expiry_closeout"
         assert t.realized_pnl is not None
         assert t.realized_pnl <= round(50.0 - _FEE, 2)
+
+
+def test_pulled_dying_order_cascades_to_follower_copies(auth_client, session_factory):
+    """Wave 10: the close-out pull now runs mirror_cancel (the pre-pass
+    version silently left follower copies resting on dying contracts)."""
+    c = make_combine(auth_client, "50K")
+    lead = _seed(
+        session_factory, c["id"],
+        status="working", order_type="limit", limit_price=0.5,
+    )
+    follower = _seed(
+        session_factory, c["id"],
+        status="working", order_type="limit", limit_price=0.5,
+        copied_from_trade_id=lead,
+    )
+    _run(session_factory, now=_INSIDE)
+    assert _get(session_factory, lead).status == "cancelled"
+    assert _get(session_factory, follower).status == "cancelled"

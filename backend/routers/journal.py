@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, time, timezone
-from math import gcd
 from typing import Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -850,18 +849,14 @@ class CloseOrderRequest(BaseModel):
 
 
 def _entry_net_1x(trade: Trade) -> tuple[float, int]:
-    """(signed net ENTRY premium per 1× structure, base size). Base = gcd of
-    the leg quantities — the same reduction the order monitor uses, so the
-    limit and the live trigger share one unit."""
-    base = 0
-    net = 0.0
-    for leg in trade.legs:
-        contracts = max(1, int(leg.get("contracts", 1) or 1))
-        base = gcd(base, contracts)
-        sign = 1.0 if leg.get("action") == "buy" else -1.0
-        net += sign * contracts * float(leg.get("entry_price", 0.0) or 0.0)
-    base = max(1, base)
-    return net / base, base
+    """(signed net ENTRY premium per 1× structure, base size) — COMPOSED from
+    the order monitor's own helpers so the placement validator and the live
+    trigger literally share one unit definition (review cleanup: this was a
+    third hand-rolled copy of the gcd/net reduction)."""
+    from services.order_monitor import _entry_net_premium, _structure_base
+
+    base = _structure_base(trade)
+    return _entry_net_premium(trade) / base, base
 
 
 @router.post("/trades/{trade_id}/close-order", response_model=TradeOut)
