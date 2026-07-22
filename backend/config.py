@@ -130,6 +130,44 @@ class Settings(BaseSettings):
     # isn't at. 300s tolerates normal indicative-feed lag.
     max_spot_staleness_s: float = 300.0
 
+    # FILL-TIME QUOTE GATE (audit wave 6) — a working SELL entry collects
+    # credit, so filling it off a model mark when no live market exists is
+    # the sim-exploitation vector the audit flagged: rest a sell, wait for a
+    # cold feed, book fabricated premium. With this on, any SELL leg of a
+    # working entry needs a genuine two-sided live NBBO at FILL time; the
+    # order simply stays working through a cold tick (skip, never cancel).
+    # BUY legs keep the legacy mid fallback (paying a model price collects
+    # no edge). Mirrors the immediate-open path's _require_quote_quality.
+    working_sell_fill_requires_quote: bool = True
+
+    # ORDER-MONITOR CADENCE — seconds between trigger passes (working-order
+    # fills, brackets, trailing/premium exits, close-limits, liquidation).
+    # The audit's execution-quality finding: at 20s, 0DTE gamma can move
+    # through a stop and back between ticks. 5s is the practical floor for a
+    # POLLED data plane: the underlying quote cache is 5s and the live option
+    # plane 10s, so a faster loop would just re-read cached marks. True
+    # tick-driven triggers need the streaming feed (separate work).
+    order_monitor_interval_s: float = 5.0
+
+    # MARGIN / BUYING POWER — the capital constraint on opens. Requirement per
+    # structure: max loss at expiry for defined-risk, Reg-T-style rates for
+    # naked short sides (see calculations/margin.py). Checked at open/working
+    # placement against the realized balance minus the requirement already
+    # committed by the open + working book. Off → legacy behavior (no capital
+    # check; contract cap + drawdown floors are the only brakes).
+    margin_enforcement_enabled: bool = True
+    margin_naked_pct: float = 0.20      # 20% of spot, less OTM amount
+    margin_naked_min_pct: float = 0.10  # floor: 10% of spot (calls) / strike (puts)
+
+    # EXPIRATION-DAY CLOSE-OUT — the prop-firm answer to assignment/pin risk
+    # on physically-settled ETF options: the monitor force-flattens any open
+    # position whose last leg expires TODAY once the clock is within this many
+    # minutes of that session's close (half-day aware), and cancels working
+    # orders on those dying contracts. Real desks (Topstep et al.) close 0DTE
+    # books ~10 minutes before the bell rather than model OCC assignment.
+    # 0 disables the policy (positions ride to expiry settlement instead).
+    expiry_closeout_minutes: float = 10.0
+
     # ---------------------------------------------------------------------
     # Deployment environment. "development" (default) keeps the dev-friendly
     # behaviours (e.g. the session cookie is allowed over plain HTTP); set

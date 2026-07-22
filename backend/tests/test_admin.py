@@ -916,7 +916,7 @@ def test_jobs_health_after_run_logged(admin_client, session_factory, monkeypatch
     assert run_logged("noop_job", lambda: 42)() == 42
     with pytest.raises(ValueError):
         run_logged("boom_job", lambda: (_ for _ in ()).throw(ValueError("kaput")))()
-    # A stale money-critical job: monitor_orders runs every 20s; a run 10
+    # A stale money-critical job: a run 10
     # minutes old is > 3 cadences behind.
     session = session_factory()
     session.add(
@@ -943,7 +943,9 @@ def test_jobs_health_after_run_logged(admin_client, session_factory, monkeypatch
     assert "kaput" in boom["error"]
 
     monitor = by_name["monitor_orders"]
-    assert monitor["cadence_s"] == 20
+    # Cadence tracks config.order_monitor_interval_s (default 5s since the
+    # audit-wave-3 tightening); 10 minutes behind is stale at any setting.
+    assert monitor["cadence_s"] == max(1, int(settings.order_monitor_interval_s))
     assert monitor["stale"] is True
 
 

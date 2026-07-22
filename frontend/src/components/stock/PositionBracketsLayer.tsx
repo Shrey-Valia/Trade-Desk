@@ -91,6 +91,62 @@ export function PositionBracketsLayer({ chartRef, seriesRef, brackets }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Right-click at a price → context menu to SET the SL/TP there (audit
+  // wave 6 chart-trading v1). Listens on the chart host (this overlay is
+  // pointer-transparent), maps clientY → price through the same series
+  // projection the drag path uses, and skips the time-scale strip. The
+  // browser menu is suppressed only when the click maps to a price.
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; price: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    const root = rootRef.current;
+    const host = root?.parentElement;
+    if (!host) return;
+    const onCtx = (e: MouseEvent) => {
+      const series = seriesRef.current;
+      const chart = chartRef.current;
+      if (!series || !chart || !root) return;
+      const rect = root.getBoundingClientRect();
+      const yIn = e.clientY - rect.top;
+      const paneBottom = root.clientHeight - chart.timeScale().height();
+      if (yIn < 0 || yIn > paneBottom) return;
+      const price = series.coordinateToPrice(yIn);
+      if (price == null || Number(price) <= 0) return;
+      e.preventDefault();
+      setCtxMenu({
+        x: Math.min(e.clientX - rect.left, rect.width - 130),
+        y: yIn,
+        price: round2(Number(price)),
+      });
+    };
+    host.addEventListener("contextmenu", onCtx);
+    return () => host.removeEventListener("contextmenu", onCtx);
+    // refs are stable; handler reads .current live.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
+
+  const setAt = (kind: Kind, price: number) => {
+    brackets.onChange({
+      stop_loss: kind === "sl" ? price : brackets.stopLoss,
+      take_profit: kind === "tp" ? price : brackets.takeProfit,
+    });
+    setCtxMenu(null);
+  };
+
   // Drag — window-level move/up so the cursor can leave the line.
   useEffect(() => {
     if (!drag) return;
@@ -182,6 +238,44 @@ export function PositionBracketsLayer({ chartRef, seriesRef, brackets }: Props) 
           <AddButton color={colors.bullish} label="+ TP" onClick={add("tp")} />
         )}
       </div>
+      {ctxMenu && (
+        <div
+          className="absolute flex flex-col"
+          style={{
+            left: ctxMenu.x,
+            top: Math.max(4, ctxMenu.y - 4),
+            pointerEvents: "auto",
+            zIndex: 30,
+            background: colors.bgTier0,
+            border: `1px solid ${colors.borderHairline}`,
+            minWidth: 122,
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          role="menu"
+          aria-label={`Set bracket at ${ctxMenu.price.toFixed(2)}`}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => setAt("sl", ctxMenu.price)}
+            className="px-2 py-1 text-left uppercase tracking-label-up hover:bg-tier-2"
+            style={{ fontSize: 11, color: colors.bearish }}
+            title="Auto-close when the underlying crosses this level"
+          >
+            SL @ {ctxMenu.price.toFixed(2)}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => setAt("tp", ctxMenu.price)}
+            className="px-2 py-1 text-left uppercase tracking-label-up hover:bg-tier-2"
+            style={{ fontSize: 11, color: colors.bullish }}
+            title="Auto-close when the underlying crosses this level"
+          >
+            TP @ {ctxMenu.price.toFixed(2)}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

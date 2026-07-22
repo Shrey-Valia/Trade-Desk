@@ -27,6 +27,7 @@ from jobs.prewarm_hot_tickers import prewarm_hot_tickers
 from jobs.refresh_watchlist import refresh_watchlist
 from jobs.seed_trades import seed_example_trades
 from jobs.send_outbox import send_outbox
+from jobs.evaluate_alerts import evaluate_alerts
 from jobs.monitor_orders import monitor_orders
 from jobs.renew_combines import renew_combines
 from jobs.settle_combines import settle_combines
@@ -255,11 +256,25 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=_SCHED_GRACE,
     )
     # Order monitor — fill working limit/stop orders + auto-close SL/TP
-    # brackets every 20s during market hours. No-ops out of session.
+    # brackets during market hours. Cadence is config-driven (default 5s —
+    # the practical floor for the polled data plane; see config). No-ops out
+    # of session.
     scheduler.add_job(
         run_logged("monitor_orders", monitor_orders),
-        trigger=IntervalTrigger(seconds=20),
+        trigger=IntervalTrigger(seconds=settings.order_monitor_interval_s),
         id="monitor_orders",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=_SCHED_GRACE,
+    )
+    # Price alerts — server-side evaluation every 30s so alerts fire with no
+    # tab open (the frontend's 15s poll remains the instant-toast path). One
+    # batched quote fetch across every active alert symbol; trips land in the
+    # notification bell + email outbox.
+    scheduler.add_job(
+        run_logged("evaluate_alerts", evaluate_alerts),
+        trigger=IntervalTrigger(seconds=30),
+        id="evaluate_alerts",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=_SCHED_GRACE,

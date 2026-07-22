@@ -1,9 +1,10 @@
 """Order monitor — fills working limit/stop entries and auto-closes SL/TP
 brackets (OCO). The simulated analog of an exchange's working-order book.
 
-Runs on a clock (jobs/monitor_orders) every ~20s during market hours, but
-all the decision logic lives here behind injectable callables so it's
-unit-testable without any network or scheduler:
+Runs on a clock (jobs/monitor_orders) every `order_monitor_interval_s`
+(default 5s) during market hours, but all the decision logic lives here
+behind injectable callables so it's unit-testable without any network or
+scheduler:
 
   - `spot_for(symbol)`       → live underlying price (None = unavailable)
   - `option_mark(trade,spot)`→ per-share option premium (working entry checks)
@@ -44,7 +45,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from math import gcd
 from zoneinfo import ZoneInfo
 
@@ -262,6 +263,29 @@ def _commission_side(trade: Trade) -> float:
 # --- trigger logic ----------------------------------------------------------
 
 
+def _two_sided(q) -> bool:
+    """Genuine two-sided live NBBO — delegates to the fill engine's shared
+    definition so the fill-time gate can never drift from the rest of the
+    quote-quality machinery (review cleanup: this was a re-implementation)."""
+    return fills.two_sided(q) is not None
+
+
+def _sell_fill_quote_blocked(legs: list[dict], quotes: dict) -> bool:
+    """True when a working ENTRY carrying a SELL leg must NOT fill this tick:
+    credit is being collected and no genuine two-sided market exists for that
+    leg (config working_sell_fill_requires_quote). The order stays working —
+    skip, never cancel — and becomes fill-eligible the moment the quote
+    plane warms."""
+    if not settings.working_sell_fill_requires_quote:
+        return False
+    for leg in legs:
+        if str(leg.get("action", "buy")).lower() != "sell":
+            continue
+        if not _two_sided(fills.leg_quote(quotes, leg)):
+            return True
+    return False
+
+
 def _entry_fill_triggered(order_type: str, action: str, mark: float, trigger: float) -> bool:
     """Working-order fill rule on the OPTION premium.
     limit-buy: mark ≤ limit · limit-sell: mark ≥ limit
@@ -405,6 +429,87 @@ def _premium_exit_reason(trade: Trade, mark_net: float) -> tuple[str | None, str
         if sl is not None and mark >= entry * sl:
             return "stop_loss", f"premium stop {sl:g}×"
     return None, None
+
+
+# --- resting close-limit (take-profit limit on the net premium) --------------
+
+
+def _has_close_limit(trade: Trade) -> bool:
+    return trade.close_limit_price is not None
+
+
+def _structure_base(trade: Trade) -> int:
+    """Base size of the structure = gcd of the leg quantities (contracts =
+    ratio × base at placement) — the same reduction _process_working_multi
+    uses, so close_limit_price and the entry net limit share one unit:
+    signed net premium per 1× structure."""
+    base = 0
+    for leg in trade.legs:
+        base = gcd(base, max(1, int(leg.get("contracts", 1) or 1)))
+    return max(1, base)
+
+
+def _close_limit_triggered(trade: Trade, mark_net: float) -> bool:
+    """Uniform trigger for a resting close order: the live signed net per 1×
+    has risen to the limit. A long structure (positive net) closes when its
+    value reaches the target; a short structure (negative net) buys back when
+    the premium has decayed so its negative net climbs to the limit
+    (-0.30 = 'pay at most 0.30'). One rule covers both: net_1x ≥ limit —
+    the mirror image of the entry limit's net_1x ≤ limit."""
+    limit = trade.close_limit_price
+    if limit is None:
+        return False
+    return (mark_net / _structure_base(trade)) >= float(limit)
+
+
+def _process_close_limit(
+    session, trade: Trade, spot: float, now: datetime, option_mark
+) -> bool:
+    """Fill a resting close-limit on an open position. Returns True if closed.
+
+    Trigger: mid-based net mark (same machinery as the premium exits), with a
+    TOUCH upgrade for single legs — a live two-sided quote must show the
+    executable side at the limit (sell-to-close fills when the BID reaches it,
+    buy-to-close when the ASK falls to it), mid fallback on a cold feed.
+
+    Booking: exit value is EXACTLY the limit (a limit never fills worse than
+    its price) with NO spread friction — the resting order is the passive side
+    of the market, unlike every other exit path which crosses the spread.
+    Commission is still charged both sides. The placement endpoint refuses a
+    marketable limit, so booking at the limit can't shortchange a fill that
+    should have gone off better."""
+    limit = trade.close_limit_price
+    if limit is None:
+        return False
+    mark_net = option_mark(trade, spot)
+    if not _close_limit_triggered(trade, mark_net):
+        return False
+
+    legs = trade.legs
+    if len(legs) == 1:
+        # Touch check on the CLOSING side: closing a long is a sell (bid must
+        # reach the limit), closing a short is a buy (ask must fall to it).
+        closing_action = "sell" if legs[0].get("action") == "buy" else "buy"
+        quotes = fills.live_leg_quotes(trade.symbol, legs)
+        leg_q = fills.leg_quote(quotes, legs[0])
+        touched = fills.entry_touch_triggered(
+            "limit", closing_action, abs(float(limit)), leg_q
+        )
+        if touched is False:
+            return False  # two-sided quote exists but the touch isn't there yet
+
+    # Exit value pinned AT the limit: unrealized = (limit×base − entry_net)×100
+    # minus the entry-side commission — the same folding _default_unrealized_for
+    # applies — so _book_close's exit-side commission completes the round trip.
+    base = _structure_base(trade)
+    entry_net = _entry_net_premium(trade)
+    pinned = (float(limit) * base - entry_net) * 100.0 - _commission_side(trade)
+    if not _book_close(
+        session, trade, spot, now, lambda _t, _s: pinned, "limit", friction=0.0
+    ):
+        return False  # closed concurrently — never double-book
+    trade.notes = (trade.notes or "") + f" · close limit {float(limit):g} filled"
+    return True
 
 
 # --- expiry settlement ------------------------------------------------------
@@ -618,6 +723,25 @@ def settle_expired_positions(
         session.close()
 
 
+# --- expiration-day close-out (policy flatten before the bell) ---------------
+
+
+def _in_closeout_window(trade: Trade, now_et: datetime) -> bool:
+    """True when this row sits inside the last `expiry_closeout_minutes` of
+    its dying session — the prop-firm answer to assignment/pin risk on
+    physically-settled ETF options (the desk flattens 0DTE books before the
+    bell instead of modeling OCC auto-exercise). Half-day aware. Past the
+    close, expiry settlement owns the book. Config 0 disables."""
+    minutes = float(settings.expiry_closeout_minutes)
+    if minutes <= 0:
+        return False
+    expiry = _latest_leg_expiry(trade)
+    if expiry is None:
+        return False
+    close_et = _session_close_for_date(expiry)
+    return close_et - timedelta(minutes=minutes) <= now_et < close_et
+
+
 # --- the pass ---------------------------------------------------------------
 
 
@@ -661,6 +785,7 @@ def run_order_monitor(
     session = session_factory()
     filled = closed = cancelled = 0
     spot_cache: dict[str, float | None] = {}
+    now_et = now.astimezone(_ET)
     try:
         trades = (
             session.execute(
@@ -685,15 +810,42 @@ def run_order_monitor(
                 cancelled += 1
                 session.commit()
                 continue
+            # EXPIRATION-DAY CLOSE-OUT (policy) — one loop, one query, one
+            # spot path (review wave 10: this was a separate pre-pass that
+            # doubled the per-tick table scan and drifted on spot fallback).
+            in_closeout = _in_closeout_window(trade, now_et)
+            if trade.status == "working" and in_closeout:
+                # A resting order on a dying contract can only fill into a
+                # book this policy immediately flattens — pull it (and
+                # cascade to follower copies, matching every other cancel).
+                claimed = session.execute(
+                    update(Trade)
+                    .where(Trade.id == trade.id, Trade.status == "working")
+                    .values(status="cancelled")
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                if claimed:
+                    trade.status = "cancelled"
+                    trade.close_reason = None
+                    trade.notes = (trade.notes or "") + " · expiry close-out (order pulled)"
+                    from services.copy_trade import mirror_cancel
+
+                    mirror_cancel(session, trade)
+                    cancelled += 1
+                session.commit()
+                continue
             # Skip open positions with nothing to monitor (no SL/TP bracket,
-            # no trailing stop AND no premium-denominated TP/SL).
+            # no trailing stop, no premium-denominated TP/SL AND no resting
+            # close-limit) — unless the close-out window owns them.
             # Auto-liquidation still scans them below.
             if (
                 trade.status == "open"
+                and not in_closeout
                 and trade.stop_loss is None
                 and trade.take_profit is None
                 and not _has_trailing_stop(trade)
                 and not _has_premium_exit(trade)
+                and not _has_close_limit(trade)
             ):
                 continue
             if trade.symbol not in spot_cache:
@@ -707,6 +859,19 @@ def run_order_monitor(
             if spot is None:
                 continue
             try:
+                # Close-out flatten for OPEN rows in the window (working rows
+                # were pulled above). Booked like a manual market close;
+                # every row — lead and copy-follower — flattens independently
+                # via _book_close's conditional claim.
+                if trade.status == "open" and in_closeout:
+                    if _book_close(
+                        session, trade, spot, now, unrealized_for, "expiry_closeout"
+                    ):
+                        trade.notes = (trade.notes or "") + " · expiry close-out (policy)"
+                        _cancel_oco_siblings(session, trade)
+                        closed += 1
+                    session.commit()
+                    continue
                 if trade.status == "working":
                     # DAY time-in-force: a working order that survived unfilled
                     # into a later ET session is expired (the simulated analog of
@@ -1344,6 +1509,11 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
     if not hit:
         return None
 
+    # FILL-TIME QUOTE GATE — a triggered SELL entry may not book credit off a
+    # model mark; it rests until a genuine two-sided market exists.
+    if _sell_fill_quote_blocked(legs, quotes):
+        return None
+
     fill_px = _entry_fill_price(
         trade.order_type, action, trigger, prem, leg_q, total_contracts
     )
@@ -1385,17 +1555,20 @@ def _process_working_multi(
         return None
     legs = trade.legs
     # base size = the common factor of the leg quantities (contracts = ratio ×
-    # base at placement), so mark/base is the per-1x-structure net premium.
-    base = 0
-    for leg in legs:
-        base = gcd(base, max(1, int(leg.get("contracts", 1) or 1)))
-    base = max(1, base)
+    # base at placement), so mark/base is the per-1x-structure net premium —
+    # the SAME reduction the close-limit trigger uses (_structure_base).
+    base = _structure_base(trade)
     limit = float(trade.limit_price)
     net_1x = option_mark(trade, spot) / base
     if net_1x > limit:
         return None  # debit still too rich / credit still too thin
 
     quotes = fills.live_leg_quotes(trade.symbol, legs)
+    # FILL-TIME QUOTE GATE — every SELL leg of the structure needs a genuine
+    # two-sided market before the net fill books (credit off a model mark is
+    # the sim-exploitation vector). Skip the tick, keep the order working.
+    if _sell_fill_quote_blocked(legs, quotes):
+        return None
     # Resolve the chain + rate up front — needed for each leg's MID (the
     # frictionless model/chain mark, the same _leg_model_price option_mark uses
     # for the trigger) so we can cap the booked net at the limit.
@@ -1456,6 +1629,12 @@ def _commit_fill(
     if claimed == 0:
         session.expire(trade)
         return None  # cancelled (or otherwise decided) during the window
+    # Re-read the row after winning the claim: an OCO link (or note edit)
+    # committed AFTER this pass loaded its working set must be honored —
+    # the in-memory copy's oco_group is stale, and _cancel_oco_siblings
+    # below would otherwise miss a just-linked sibling (review wave 8,
+    # finding 6, interleaving 1: both siblings fill = double exposure).
+    session.refresh(trade)
     legs = trade.legs
     for leg, px in zip(legs, leg_prices):
         leg["entry_price"] = round(float(px), 4)
@@ -1504,7 +1683,14 @@ def _cancel_oco_siblings(session, trade: Trade) -> int:
 
 
 def _book_close(
-    session, trade: Trade, spot: float, now: datetime, unrealized_for, reason: str
+    session,
+    trade: Trade,
+    spot: float,
+    now: datetime,
+    unrealized_for,
+    reason: str,
+    *,
+    friction: float | None = None,
 ) -> bool:
     """Book a close on `trade` exactly the way the manual CLOSE button does:
     realized = analytics unrealized − exit-side commission − spread-crossing
@@ -1520,13 +1706,14 @@ def _book_close(
     close. Mutates the trade in place on success; the caller owns the commit
     and any copy-trade cascade."""
     unrealized = unrealized_for(trade, spot)
-    friction = (
-        0.0
-        if reason == "expiry"
-        else fills.close_friction(
-            trade.symbol, trade.legs, stressed=(reason == "liquidation")
+    if friction is None:
+        friction = (
+            0.0
+            if reason == "expiry"
+            else fills.close_friction(
+                trade.symbol, trade.legs, stressed=(reason == "liquidation")
+            )
         )
-    )
     realized = unrealized - _commission_side(trade) - friction
     claimed = session.execute(
         update(Trade)
@@ -1559,6 +1746,14 @@ def _process_open(
     if _has_trailing_stop(trade) and option_mark is not None:
         mark = option_mark(trade, spot)
         if _process_trailing_stop(session, trade, mark, spot, now, unrealized_for):
+            _cancel_oco_siblings(session, trade)
+            return True
+
+    # Resting close-limit (take-profit at a price the trader named) — checked
+    # ahead of the premium/bracket exits: when both a limit target and a
+    # market-order exit would fire the same tick, the trader's named price wins.
+    if _has_close_limit(trade) and option_mark is not None:
+        if _process_close_limit(session, trade, spot, now, option_mark):
             _cancel_oco_siblings(session, trade)
             return True
 

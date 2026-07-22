@@ -76,6 +76,11 @@ vi.mock("@/hooks/useOpenZeroDteMultiLeg", () => ({
     error: null,
   }),
 }));
+// The builder's risk graph polls the multi-leg preview endpoint — stub it
+// out so mounting the TOOLS tab needs no QueryClientProvider/network.
+vi.mock("@/hooks/useMultiLegPreview", () => ({
+  useMultiLegPreview: () => ({ data: undefined, isLoading: false }),
+}));
 
 import { TradeTicket } from "@/components/positions/TradeTicket";
 import { useSelectedTicker } from "@/stores/selectedTicker";
@@ -300,6 +305,53 @@ describe("TradeTicket validation / canFire", () => {
       render(<TradeTicket />);
       expect(buyBtn()).toBeDisabled();
       expect(screen.getByText(/Account FAILED/)).toBeInTheDocument();
+    });
+  });
+
+  describe("fat-finger rails (arm → confirm)", () => {
+    it("arms on a large-notional order and fires on the confirming press", async () => {
+      // $30 premium × 100 × 1 = $3,000 > the $2,500 large-order rail.
+      seedSelection({ ...legSel, price: 30.0 });
+      render(<TradeTicket />);
+      await userEvent.click(buyBtn());
+      expect(legMutate).not.toHaveBeenCalled();
+      expect(screen.getByText(/large order/)).toBeInTheDocument();
+      // Button relabels to CONFIRM; the second press fires through.
+      const confirm = screen.getByRole("button", { name: /CONFIRM \+/ });
+      await userEvent.click(confirm);
+      expect(legMutate).toHaveBeenCalledTimes(1);
+    });
+
+    it("arms when the identical order is re-fired within 10s", async () => {
+      // The spy must settle the mutation, else the synchronous double-click
+      // guard (submittingRef) blocks every fire after the first.
+      legMutate.mockImplementation((_payload, opts) => opts?.onSettled?.());
+      seedSelection(legSel); // $100 notional — no rails on the first fire
+      render(<TradeTicket />);
+      await userEvent.click(buyBtn());
+      expect(legMutate).toHaveBeenCalledTimes(1);
+      await userEvent.click(buyBtn());
+      expect(legMutate).toHaveBeenCalledTimes(1); // armed, not fired
+      expect(screen.getByText(/identical order fired/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /CONFIRM \+/ }));
+      expect(legMutate).toHaveBeenCalledTimes(2);
+    });
+
+    it("arms when a limit trigger is far from the indicative price", async () => {
+      seedSelection(legSel); // indicative $1.00
+      useTradeTicket.setState({ orderType: "limit", limitPrice: 2.0 });
+      render(<TradeTicket />);
+      await userEvent.click(buyBtn());
+      expect(legMutate).not.toHaveBeenCalled();
+      expect(screen.getByText(/away from the market/)).toBeInTheDocument();
+    });
+
+    it("does not arm a clean small order — fires immediately", async () => {
+      seedSelection(legSel);
+      render(<TradeTicket />);
+      await userEvent.click(sellBtn());
+      expect(legMutate).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(/press SELL again/)).not.toBeInTheDocument();
     });
   });
 });

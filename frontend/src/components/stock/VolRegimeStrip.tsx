@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
+import { fetchTermStructure } from "@/lib/api";
 import { TOOLTIPS } from "@/lib/tooltips";
 
 /**
@@ -19,12 +21,35 @@ import { TOOLTIPS } from "@/lib/tooltips";
  */
 export function VolRegimeStrip({ symbol }: { symbol: string | null }) {
   const { data } = useTickerMetrics(symbol);
+  // ATM IV term structure (audit wave 4) — structural, slow-moving; 60s poll
+  // rides the cached chain snapshot server-side.
+  const { data: term } = useQuery({
+    queryKey: ["zerodte", "term", symbol],
+    queryFn: () => fetchTermStructure(symbol as string),
+    enabled: !!symbol,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    retry: 1,
+  });
 
   if (!symbol) return null;
 
   const ivRank = data?.iv_rank ?? null;
   const skew = data?.skew_25d ?? null;
   const vrp = data?.vrp ?? null;
+  const termTitle =
+    term && term.points.length
+      ? "ATM IV per expiration:\n" +
+        term.points
+          .map(
+            (p) =>
+              `${p.dte === 0 ? "0DTE" : `${p.dte}d`} · ${
+                p.atm_iv == null ? "—" : `${(p.atm_iv * 100).toFixed(1)}%`
+              }`,
+          )
+          .join("\n") +
+        "\n\nContango (far > near) is the normal state; backwardation means the front is pricing an event/stress — selling it is picking up the rich leg."
+      : "ATM IV per expiration — appears once at least two expirations carry usable quotes.";
 
   return (
     <div
@@ -61,6 +86,24 @@ export function VolRegimeStrip({ symbol }: { symbol: string | null }) {
         ) : (
           <span className={vrp > 0 ? "text-bullish" : "text-bearish"}>
             {vrp > 0 ? "RICH" : vrp < 0 ? "CHEAP" : "FAIR"}
+          </span>
+        )}
+      </Cell>
+
+      <Cell label="TERM" title={termTitle}>
+        {term?.shape == null ? (
+          <span className="text-fg-tertiary">—</span>
+        ) : (
+          <span
+            className={
+              term.shape === "backwardation" ? "text-bearish" : "text-fg-primary"
+            }
+          >
+            {term.shape === "contango"
+              ? "CNTG ⬀"
+              : term.shape === "backwardation"
+                ? "BWD ⬂"
+                : "FLAT"}
           </span>
         )}
       </Cell>

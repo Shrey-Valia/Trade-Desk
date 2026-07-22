@@ -117,6 +117,16 @@ class Trade(Base):
     # multiple (sl > 1, e.g. 2.0 = stop at 2× the credit). None = unset.
     tp_premium_mult: Mapped[float | None] = mapped_column(Float, nullable=True)
     sl_premium_mult: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Resting CLOSE-LIMIT on an OPEN position — the missing half of the order
+    # lifecycle (every close was market-at-mark before this). Signed NET
+    # premium per 1× structure, same convention as the multi-leg entry limit
+    # (debit positive / credit negative): a long structure closes ("sells")
+    # when the net mark rises to ≥ the limit; a short structure buys back when
+    # its negative net decays up to ≥ the limit (e.g. -0.30 = "pay at most
+    # 0.30"). One uniform trigger: net_1x ≥ close_limit_price. Fills AT the
+    # limit with no spread friction (a resting limit is the passive side).
+    # None = no resting close order.
+    close_limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     # OCO (one-cancels-the-other): orders sharing an oco_group are siblings —
     # when one FILLS (working entry) or its position CLOSES on a bracket, the
     # monitor cancels the still-working siblings in the group. None = no pairing.

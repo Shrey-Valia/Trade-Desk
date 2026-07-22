@@ -9,7 +9,7 @@ import { TradeList } from "@/components/positions/journal/TradeList";
 import { useCombines } from "@/hooks/useCombines";
 import { useJournalScope } from "@/hooks/useJournalCalendar";
 import { useTrades } from "@/hooks/useTrades";
-import { downloadCsv, tradesToCsv } from "@/lib/exportCsv";
+import { downloadCsv, executionsToCsv, tradesToCsv } from "@/lib/exportCsv";
 import { useSelectedTicker } from "@/stores/selectedTicker";
 import type { Trade } from "@/types/journal";
 
@@ -127,6 +127,14 @@ export function JournalPage() {
           const stamp = new Date().toISOString().slice(0, 10);
           downloadCsv(`trade-desk-journal-${stamp}.csv`, tradesToCsv(scoped));
         }}
+        onExportFills={() => {
+          const scoped =
+            isPaperFilter === null
+              ? trades
+              : trades.filter((t) => t.is_paper === isPaperFilter);
+          const stamp = new Date().toISOString().slice(0, 10);
+          downloadCsv(`trade-desk-fills-${stamp}.csv`, executionsToCsv(scoped));
+        }}
         exportDisabled={trades.length === 0}
       />
       <main className="flex-1 min-h-0 flex flex-col">
@@ -173,6 +181,7 @@ function Toolbar({
   onAccountScopeChange,
   onAddTrade,
   onExport,
+  onExportFills,
   exportDisabled,
 }: {
   view: View;
@@ -183,6 +192,7 @@ function Toolbar({
   onAccountScopeChange: (s: AccountScope) => void;
   onAddTrade: () => void;
   onExport: () => void;
+  onExportFills: () => void;
   exportDisabled: boolean;
 }) {
   return (
@@ -264,6 +274,20 @@ function Toolbar({
           style={{ borderRadius: 0 }}
         >
           Export CSV
+        </button>
+        <button
+          type="button"
+          onClick={onExportFills}
+          disabled={exportDisabled}
+          title={
+            exportDisabled
+              ? "Nothing to export yet"
+              : "Download an EXECUTIONS report — one row per leg fill (price, size, underlying, timestamp) plus a close row per position. The reconciliation-grade view."
+          }
+          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ borderRadius: 0 }}
+        >
+          Export Fills
         </button>
         <button
           type="button"

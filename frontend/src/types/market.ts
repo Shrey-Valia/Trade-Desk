@@ -9,6 +9,9 @@ export const MarketStatusSchema = z.object({
   // both before and after the backend starts sending them.
   today_close: z.string().nullable().optional(),
   is_early_close: z.boolean().nullable().optional(),
+  /** Minutes before the bell the expiry close-out policy force-flattens
+   *  0DTE books (0 = disabled). Drives the position panel's countdown. */
+  expiry_closeout_minutes: z.number().nullable().optional(),
 });
 
 const IndexQuoteSchema = z.object({

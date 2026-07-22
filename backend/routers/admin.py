@@ -1302,7 +1302,10 @@ def metrics(db: Session = Depends(get_session)) -> MetricsOut:
 # Fri→Mon gap on the weekday-only chain collector sits right at the 3x edge;
 # acceptable for an operator dashboard).
 _JOB_CADENCE_S: dict[str, int] = {
-    "monitor_orders": 20,
+    # Tracks config.order_monitor_interval_s (int-floored, min 1) so the
+    # staleness alarm tightens/loosens with the configured cadence.
+    "monitor_orders": max(1, int(settings.order_monitor_interval_s)),
+    "evaluate_alerts": 30,
     "send_outbox": 30,
     "refresh_watchlist": 60,
     "prewarm_hot_tickers": 60,

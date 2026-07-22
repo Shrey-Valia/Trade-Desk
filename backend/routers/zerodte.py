@@ -43,7 +43,8 @@ from schemas.journal import TradeLeg, TradeOut, compute_net_debit_credit
 from services import platform_state
 from services.alpaca_client import get_chain_snapshot, get_quotes
 from services.auth import get_active_combine
-from services.combine_state import combine_snapshot
+from services.cache import cache
+from services.combine_state import CombineSnapshot, combine_snapshot
 from services.copy_trade import mirror_close, mirror_open
 from services.fills import (
     fill_slippage as _fill_slippage,
@@ -153,6 +154,11 @@ class ChainStrikeRow(BaseModel):
     call_theta: float = 0.0
     put_delta: float = 0.0
     put_theta: float = 0.0
+    # PER-CONTRACT implied vol, back-solved from the live quote mid (the
+    # smile the flat ATM iv_used can't show). None on BS-fallback sides —
+    # they'd only echo iv_used back.
+    call_iv: float | None = None
+    put_iv: float | None = None
 
 
 class ChainTableOut(BaseModel):
@@ -165,6 +171,9 @@ class ChainTableOut(BaseModel):
     rows: list[ChainStrikeRow]
     t_years_to_close: float
     session_close_iso: str
+    # False when the table shows a LATER expiration than today (multi-expiry
+    # browsing): cells are display-only — opening remains strictly 0DTE.
+    expiry_is_today: bool = True
     # Freshest observation timestamp behind this snapshot (ISO-8601) — the
     # max of the underlying quote's trade stamp and the contracts' last-trade
     # stamps. None when the feed omits timestamps entirely.
@@ -275,10 +284,144 @@ def _quote_price(c) -> tuple[float | None, str]:
     return None, "none"
 
 
+class ExpirationOut(BaseModel):
+    """One listed expiration for the chain browser."""
+
+    expiry: str          # ISO date
+    dte: int             # calendar days from today (0 = today)
+    is_today: bool
+
+
+class ExpirationsOut(BaseModel):
+    symbol: str
+    expirations: list[ExpirationOut]
+
+
+@router.get("/expirations", response_model=ExpirationsOut)
+def get_expirations(symbol: str = "SPY") -> ExpirationsOut:
+    """Listed expirations (today or later) for the chain browser's expiry
+    selector — audit wave 2's answer to 'there is no expiration selector
+    anywhere'. Browsing any expiry is allowed; OPENING remains 0DTE-gated."""
+    sym = symbol.upper().strip()
+    chain = get_chain_snapshot(sym, with_volume=False)
+    if not chain:
+        raise HTTPException(503, f"{sym} options chain unavailable")
+    today = datetime.now(_ET).date()
+    expiries = sorted({c.expiry for c in chain if c.expiry >= today})[:12]
+    return ExpirationsOut(
+        symbol=sym,
+        expirations=[
+            ExpirationOut(
+                expiry=e.isoformat(), dte=(e - today).days, is_today=(e == today)
+            )
+            for e in expiries
+        ],
+    )
+
+
+class TermPointOut(BaseModel):
+    expiry: str
+    dte: int
+    atm_strike: float
+    # ATM implied vol back-solved from the quote mids at THIS expiry's own
+    # session close; None when neither ATM side carries a usable quote.
+    atm_iv: float | None
+
+
+class TermStructureOut(BaseModel):
+    """ATM implied-vol term structure — the analysis layer a premium seller
+    checks before selling today's vol: is the front cheap or rich vs the
+    curve? shape: contango (far > near — the normal state), backwardation
+    (near > far — event/stress pricing), or flat."""
+
+    symbol: str
+    spot: float
+    points: list[TermPointOut]
+    slope: float | None
+    shape: Literal["contango", "backwardation", "flat"] | None
+
+
+@router.get("/term", response_model=TermStructureOut)
+def get_term_structure(symbol: str = "SPY", max_points: int = 8) -> TermStructureOut:
+    """ATM IV per listed expiration, one cached chain snapshot + one quote —
+    unlocked by the multi-expiry work (wave 2). Each point back-solves the
+    ATM call/put mids at that expiry's OWN session close (half-day aware),
+    so the front of the curve carries honest intraday time.
+
+    Cached 45s per symbol (review wave 10): the curve is structural and
+    slow-moving, and every client polls it at 60s — without the cache each
+    tab paid ~16 brentq solves per poll for byte-identical answers."""
+    from calculations.intraday_analytics import SECONDS_PER_YEAR
+    from services.order_monitor import _session_close_for_date
+
+    sym = symbol.upper().strip()
+    cache_key = f"term:{sym}:{max_points}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    chain = get_chain_snapshot(sym, with_volume=False)
+    if not chain:
+        raise HTTPException(503, f"{sym} options chain unavailable")
+    quote = get_quotes([sym]).get(sym)
+    if quote is None:
+        raise HTTPException(503, f"{sym} quote unavailable")
+    spot = float(quote.price)
+
+    try:
+        rate = latest_dgs3mo_rate()
+    except Exception:  # noqa: BLE001
+        rate = DEFAULT_RATE_FALLBACK
+
+    now_et = datetime.now(_ET)
+    today = now_et.date()
+    expiries = sorted({c.expiry for c in chain if c.expiry >= today})
+    expiries = expiries[: max(1, min(12, max_points))]
+
+    points: list[TermPointOut] = []
+    for e in expiries:
+        rows = [c for c in chain if c.expiry == e]
+        strikes_ = sorted({c.strike for c in rows})
+        if not strikes_:
+            continue
+        atm = min(strikes_, key=lambda k: abs(k - spot))
+        t = max(60.0, (_session_close_for_date(e) - now_et).total_seconds()) / SECONDS_PER_YEAR
+        ivs: list[float] = []
+        for c in rows:
+            if c.strike != atm or c.type not in ("call", "put"):
+                continue
+            px, _src = _quote_price(c)
+            if px is None or px <= 0:
+                continue
+            iv = iv_intraday(px, spot, atm, t, rate, c.type)
+            if iv is not None and iv > 0:
+                ivs.append(float(iv))
+        points.append(
+            TermPointOut(
+                expiry=e.isoformat(),
+                dte=(e - today).days,
+                atm_strike=float(atm),
+                atm_iv=round(sum(ivs) / len(ivs), 4) if ivs else None,
+            )
+        )
+
+    solved = [p for p in points if p.atm_iv is not None]
+    slope: float | None = None
+    shape: Literal["contango", "backwardation", "flat"] | None = None
+    if len(solved) >= 2:
+        slope = round(solved[-1].atm_iv - solved[0].atm_iv, 4)  # type: ignore[operator]
+        shape = "contango" if slope > 0.005 else "backwardation" if slope < -0.005 else "flat"
+    response = TermStructureOut(
+        symbol=sym, spot=spot, points=points, slope=slope, shape=shape
+    )
+    cache.set(cache_key, response, ttl_seconds=45)
+    return response
+
+
 @router.get("/chain/table", response_model=ChainTableOut)
 def get_chain_table(
     symbol: str = "SPY",
     strikes: int = 15,
+    expiry: str | None = None,
 ) -> ChainTableOut:
     """A WINDOWED chain table for the trading-ticket UI.
 
@@ -292,8 +435,18 @@ def get_chain_table(
     in alpaca_client; the windowing + BS fallback here is O(strikes)
     so the endpoint adds ~1ms on a warm cache. `with_volume=True` so the
     per-strike volume columns carry real data — the ticker page fetches
-    the same cache key, so the expensive bars pass is typically warm."""
+    the same cache key, so the expensive bars pass is typically warm.
+
+    The ASSEMBLED response is additionally cached 5s (review wave 10): the
+    per-row IV back-solves added in wave 1 are ~2×strikes brentq root-finds
+    per request, and every client polls this at 10s — concurrent/adjacent
+    polls now share one computation, aligned with the 5s quote cache so
+    freshness is unchanged."""
     sym = symbol.upper().strip()
+    cache_key = f"chain_table:{sym}:{strikes}:{expiry or 'today'}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
     chain = get_chain_snapshot(sym, with_volume=True)
     if not chain:
         raise HTTPException(503, f"{sym} options chain unavailable")
@@ -302,25 +455,56 @@ def get_chain_table(
         raise HTTPException(503, f"{sym} quote unavailable")
     spot = float(quote.price)
 
-    # Strict 0DTE: chain table refuses to fall back to the nearest
-    # future expiry. Showing a non-0DTE chain would let the user click
-    # a strike and then 409 — confusing. The UI listens for this 409
-    # detail and renders a clean "No 0DTE for {SYMBOL} today" message
-    # with the open buttons disabled.
+    # Expiry resolution (audit wave 2 — multi-expiry BROWSING; opening stays
+    # 0DTE-gated in the open paths):
+    #   explicit ?expiry=  → that expiry (404 when it isn't listed);
+    #   omitted            → today's 0DTE when it exists, else the NEAREST
+    #                        upcoming expiry — a no-0DTE day used to 409 and
+    #                        dead-terminal the whole chain panel.
+    # `expiry_is_today` on the response tells the UI whether cells are
+    # tradeable (today) or browse-only (any other expiry).
     today = datetime.now(_ET).date()
-    same_day = [c for c in chain if c.expiry == today]
-    if not same_day:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No 0DTE for {sym} today ({today.isoformat()}).",
-        )
-    target_expiry = today
+    if expiry is not None:
+        try:
+            target_expiry = date.fromisoformat(expiry)
+        except ValueError as exc:
+            raise HTTPException(422, f"bad expiry {expiry!r} — use YYYY-MM-DD") from exc
+        same_day = [c for c in chain if c.expiry == target_expiry]
+        if not same_day:
+            raise HTTPException(
+                404, f"{sym} has no listed contracts expiring {expiry}."
+            )
+    else:
+        same_day = [c for c in chain if c.expiry == today]
+        target_expiry = today
+        if not same_day:
+            upcoming = sorted({c.expiry for c in chain if c.expiry > today})
+            if not upcoming:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"No 0DTE for {sym} today ({today.isoformat()}).",
+                )
+            target_expiry = upcoming[0]
+            same_day = [c for c in chain if c.expiry == target_expiry]
 
     try:
         rate = latest_dgs3mo_rate()
     except Exception:  # noqa: BLE001
         rate = DEFAULT_RATE_FALLBACK
-    t_close = _t_years_to_close()
+    # Time-to-expiry for the TARGET expiry's session close (half-day aware) —
+    # today's close for 0DTE (the legacy path), the expiry's own close when
+    # browsing a later expiration.
+    if target_expiry == today:
+        t_close = _t_years_to_close()
+    else:
+        from calculations.intraday_analytics import SECONDS_PER_YEAR
+        from services.order_monitor import _session_close_for_date
+
+        secs = max(
+            60.0,
+            (_session_close_for_date(target_expiry) - datetime.now(_ET)).total_seconds(),
+        )
+        t_close = secs / SECONDS_PER_YEAR
 
     all_strikes = sorted({c.strike for c in same_day})
     if not all_strikes:
@@ -383,6 +567,19 @@ def get_chain_table(
         cg = greeks_intraday(spot, k, t_close, rate, iv_used, "call")
         pg = greeks_intraday(spot, k, t_close, rate, iv_used, "put")
 
+        # Per-contract IV from the quote mid (smile/skew visibility). Only
+        # for quote-sourced sides — a BS-priced side would just echo iv_used.
+        call_iv = (
+            iv_intraday(float(call_px), spot, k, t_close, rate, "call")
+            if call_source == "quote"
+            else None
+        )
+        put_iv = (
+            iv_intraday(float(put_px), spot, k, t_close, rate, "put")
+            if put_source == "quote"
+            else None
+        )
+
         rows.append(
             ChainStrikeRow(
                 strike=k,
@@ -403,10 +600,12 @@ def get_chain_table(
                 call_theta=round(cg["theta"], 4),
                 put_delta=round(pg["delta"], 4),
                 put_theta=round(pg["theta"], 4),
+                call_iv=round(call_iv, 4) if call_iv is not None else None,
+                put_iv=round(put_iv, 4) if put_iv is not None else None,
             )
         )
 
-    return ChainTableOut(
+    response = ChainTableOut(
         underlying=sym,
         spot=spot,
         expiry=target_expiry.isoformat(),
@@ -416,8 +615,11 @@ def get_chain_table(
         rows=rows,
         t_years_to_close=t_close,
         session_close_iso=_session_close_et().isoformat(),
+        expiry_is_today=(target_expiry == today),
         as_of=_chain_as_of(quote, same_day),
     )
+    cache.set(cache_key, response, ttl_seconds=5)
+    return response
 
 
 def _chain_as_of(quote, contract_rows) -> str | None:
@@ -688,7 +890,10 @@ def _open_contracts_for_combine(session: Session, combine_id: int) -> int:
 
 # ── WS5: server-side contract clamping (folded from WS3) ────────────────────
 def _clamp_contracts_to_cap(
-    session: Session, combine: Combine, requested: int
+    session: Session,
+    combine: Combine,
+    requested: int,
+    snap: "CombineSnapshot | None" = None,
 ) -> int:
     """Defense-in-depth size clamp. `_require_tradeable` already REJECTS an
     over-cap request with a 422, but this clamps the per-order size to the
@@ -697,8 +902,10 @@ def _clamp_contracts_to_cap(
     snapshot shifts under us. Returns the size to actually use (>=1).
 
     The cap is per-COMBINE aggregate: remaining = max_contracts − already-open.
-    With nothing open and a cap of N this is a no-op (returns `requested`)."""
-    snap = combine_snapshot(session, combine)
+    With nothing open and a cap of N this is a no-op (returns `requested`).
+    Pass the snapshot from _require_tradeable when available — recomputing it
+    per gate tripled the heaviest account computation on every open."""
+    snap = snap or combine_snapshot(session, combine)
     open_now = _open_contracts_for_combine(session, combine.id)
     remaining = max(0, snap.max_contracts - open_now)
     # Never clamp below 1 — a 0-contract order is meaningless; the reject path
@@ -707,11 +914,109 @@ def _clamp_contracts_to_cap(
 # ── end WS5 ─────────────────────────────────────────────────────────────────
 
 
+def _book_margin_used(session: Session, combine_id: int, spot_hint: dict[str, float]) -> float:
+    """$ requirement already committed by the combine's OPEN + WORKING
+    execution book (working orders reserved margin at placement). Spot per
+    symbol comes from `spot_hint` (the caller's live quote), then a live
+    fetch, then the trade's own entry underlying — margin can never be
+    bypassed by a cold feed, only priced slightly stale."""
+    from calculations.margin import book_requirement
+
+    rows = (
+        session.execute(
+            select(Trade).where(
+                Trade.combine_id == combine_id,
+                Trade.status.in_(("open", "working")),
+                Trade.origin == "execution",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return 0.0
+    spot_cache: dict[str, float] = dict(spot_hint)
+    # ONE batched quote call for every symbol the hint didn't cover — the
+    # house convention (StockSnapshotRequest batches server-side); the old
+    # per-symbol loop paid a round-trip apiece on the 5s header poll.
+    missing = sorted({t.symbol for t in rows} - set(spot_cache))
+    if missing:
+        try:
+            for sym, q in (get_quotes(missing) or {}).items():
+                if q is not None and float(q.price) > 0:
+                    spot_cache[sym] = float(q.price)
+        except Exception:  # noqa: BLE001 — cold feed → entry-price fallback below
+            log.debug("book margin: batched quote fetch failed for %s", missing)
+    structures: list[tuple[list[dict], float]] = []
+    for t in rows:
+        spot = spot_cache.get(t.symbol)
+        structures.append(
+            (t.legs, spot if spot is not None else float(t.entry_underlying_price))
+        )
+    return book_requirement(
+        structures,
+        naked_pct=settings.margin_naked_pct,
+        naked_min_pct=settings.margin_naked_min_pct,
+    )
+
+
+def _require_buying_power(
+    session: Session,
+    combine: Combine,
+    symbol: str,
+    new_legs: list[dict],
+    spot: float,
+    snap: "CombineSnapshot | None" = None,
+    release_legs: list[dict] | None = None,
+) -> None:
+    """MARGIN GATE — the capital constraint the audit flagged as absent
+    (order cost was never checked and naked shorts were free). The new
+    structure's requirement (max loss for defined-risk, Reg-T-style for
+    naked sides — calculations/margin.py) plus what the existing open +
+    working book already commits must fit inside the realized balance.
+
+    Balance is the REALIZED balance (open URPL not counted — the live
+    MLL/DLL gates in _require_tradeable own unrealized exposure). Closes
+    never come through here, so a trader can always exit. Config-off →
+    legacy behavior.
+
+    `snap`: pass the snapshot _require_tradeable already computed (review
+    wave 10: three snapshots per open request). `release_legs`: a structure
+    the caller is about to close as part of the same action (the ROLL swap)
+    — its requirement is credited back before the new one is tested, so a
+    refused roll can never be stricter than the equivalent fresh open."""
+    if not settings.margin_enforcement_enabled:
+        return
+    from calculations.margin import structure_requirement
+
+    _mkw = dict(
+        naked_pct=settings.margin_naked_pct,
+        naked_min_pct=settings.margin_naked_min_pct,
+    )
+    new_req = structure_requirement(new_legs, spot, **_mkw)
+    if new_req <= 0:
+        return
+    snap = snap or combine_snapshot(session, combine)
+    used = _book_margin_used(session, combine.id, {symbol: float(spot)})
+    if release_legs:
+        used = max(0.0, used - structure_requirement(release_legs, spot, **_mkw))
+    available = snap.balance - used
+    if new_req > available:
+        raise HTTPException(
+            422,
+            f"insufficient buying power: this structure requires "
+            f"${new_req:,.0f} but only ${max(0.0, available):,.0f} is "
+            f"available (balance ${snap.balance:,.0f} − ${used:,.0f} "
+            "committed to open/working positions). Reduce size or use a "
+            "defined-risk structure.",
+        )
+
+
 def _live_combine_urpl(session: Session, combine: Combine) -> float:
     """Live mark-to-market URPL of the combine's OPEN positions. Best-effort and
     fully resilient: any pricing failure (cold feed / circuit open / no creds)
     contributes 0, so the order-time gate degrades to the realized-only check
-    rather than blocking wrongly. The ~20s monitor + auto-liquidation remain the
+    rather than blocking wrongly. The order monitor + auto-liquidation (config-driven cadence, default 5s) remain the
     hard backstop."""
     try:
         open_trades = (
@@ -750,7 +1055,7 @@ def _require_tradeable(
     combine: Combine,
     contracts: int | None = None,
     symbol: str | None = None,
-) -> None:
+) -> "CombineSnapshot":
     """Enforce the combine's standing rules on the OPEN path — the rule
     actually binds server-side, not just via the trade-ticket soft-gate.
     Blocks a FAILED eval (MLL floor breached; must be reset) and a DAY
@@ -819,7 +1124,7 @@ def _require_tradeable(
         )
     # Mark-to-market gate: the realized-only snapshot above can read "tradeable"
     # while the LIVE balance (incl. open-position URPL) is already through the
-    # MLL floor or has exhausted today's DLL budget. The ~20s monitor would
+    # MLL floor or has exhausted today's DLL budget. The next monitor pass would
     # auto-liquidate, but don't let a fresh open slip in ahead of it. Only losses
     # can newly breach a floor the realized check already passed.
     urpl = _live_combine_urpl(session, combine)
@@ -848,6 +1153,11 @@ def _require_tradeable(
                     "settlement."
                 ),
             )
+    # Hand the snapshot back so the rest of the open path (size clamp, margin
+    # gate) reuses it instead of recomputing — combine_snapshot is the
+    # heaviest account computation in the codebase, and the review found
+    # THREE of them per open request (wave 10 efficiency cluster).
+    return snap
 
 
 # SL/TP brackets must sit at least this far from the current underlying —
@@ -955,10 +1265,12 @@ def open_zerodte_straddle(
     # total-contract cap. Gate and clamp on that effective total, then back out
     # the per-leg size. (Defense-in-depth: _require_tradeable already 422s an
     # over-cap request; the clamp guards a snapshot shift under us.)
-    _require_tradeable(
+    snap = _require_tradeable(
         session, combine, contracts=payload.contracts * 2, symbol=payload.symbol
     )
-    allowed_total = _clamp_contracts_to_cap(session, combine, payload.contracts * 2)
+    allowed_total = _clamp_contracts_to_cap(
+        session, combine, payload.contracts * 2, snap=snap
+    )
     contracts = max(1, allowed_total // 2)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
     _require_today_expiry(expiry)
@@ -999,6 +1311,9 @@ def open_zerodte_straddle(
     from schemas.journal import TradeLeg
     typed_legs = [TradeLeg(**leg) for leg in legs_json]
     net = compute_net_debit_credit(typed_legs)
+
+    # MARGIN GATE — priced legs in hand, check the capital requirement.
+    _require_buying_power(session, combine, sym, legs_json, spot, snap=snap)
 
     strategy = "long_straddle" if action == "buy" else "short_straddle"
     notes = (
@@ -1056,11 +1371,11 @@ def open_zerodte_leg(
     _validate_premium_mults(
         payload.action == "sell", payload.tp_premium_mult, payload.sl_premium_mult
     )
-    _require_tradeable(
+    snap = _require_tradeable(
         session, combine, contracts=payload.contracts, symbol=payload.symbol
     )
     # WS5: defense-in-depth — clamp the persisted size to the scaling cap.
-    contracts = _clamp_contracts_to_cap(session, combine, payload.contracts)
+    contracts = _clamp_contracts_to_cap(session, combine, payload.contracts, snap=snap)
     sym, spot, target_expiry, by_key = _resolve_same_day_quotes(payload.symbol)
 
     action = payload.action
@@ -1135,6 +1450,10 @@ def open_zerodte_leg(
     }
     from schemas.journal import TradeLeg
     net = compute_net_debit_credit([TradeLeg(**leg_json)])
+
+    # MARGIN GATE — applies to immediate fills AND working orders (a resting
+    # order reserves its requirement at placement, like the contract cap).
+    _require_buying_power(session, combine, sym, [leg_json], spot, snap=snap)
 
     trade = Trade(
         symbol=sym,
@@ -1309,10 +1628,12 @@ def open_zerodte_multi_leg(
     # 4 contracts; a butterfly 1-2-1 is 4). Gate AND clamp on that effective
     # total, then back out the base size.
     sum_ratio = sum(int(spec.ratio) for spec in payload.legs)
-    _require_tradeable(
+    snap = _require_tradeable(
         session, combine, contracts=payload.contracts * sum_ratio, symbol=payload.symbol
     )
-    effective = _clamp_contracts_to_cap(session, combine, payload.contracts * sum_ratio)
+    effective = _clamp_contracts_to_cap(
+        session, combine, payload.contracts * sum_ratio, snap=snap
+    )
     base_contracts = max(1, effective // sum_ratio)
 
     sym, spot, expiry, by_key = _resolve_same_day_quotes(payload.symbol)
@@ -1389,6 +1710,10 @@ def open_zerodte_multi_leg(
                 net < 0, payload.tp_premium_mult, payload.sl_premium_mult
             )
 
+    # MARGIN GATE — the multi-leg structure's requirement (defined-risk max
+    # loss, or Reg-T-style when a side is net short) vs remaining buying power.
+    _require_buying_power(session, combine, sym, legs_json, spot, snap=snap)
+
     strategy = (payload.strategy or "custom").strip().lower() or "custom"
     if is_working:
         notes = (
@@ -1456,6 +1781,7 @@ def _trade_to_out(trade: Trade) -> TradeOut:
         take_profit=trade.take_profit,
         tp_premium_mult=trade.tp_premium_mult,
         sl_premium_mult=trade.sl_premium_mult,
+        close_limit_price=trade.close_limit_price,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
         tags=trade.tags,
         mistake_tags=trade.mistake_tags,
@@ -1482,6 +1808,12 @@ class PreviewRequest(BaseModel):
     side: Literal["call", "put"] | None = None
     strike: float = Field(gt=0)
     contracts: int = Field(gt=0, le=100, default=1)
+    # Pre-trade TIME SCRUBBER (audit wave 6): what-if minutes-to-close for
+    # the T+0 curve and greeks — "what does this position look like at
+    # 3:30pm?". Entry PRICING always uses the real now (you buy at the
+    # market, then time passes); clamped to [1, actual minutes to close].
+    # None = now (legacy behavior).
+    minutes_to_close: float | None = Field(default=None, gt=0)
 
 
 class PreviewGreeks(BaseModel):
@@ -1509,8 +1841,22 @@ class ContractPreviewOut(BaseModel):
     payoff_expiration: list[float]
     breakevens: list[float]
     max_profit: float | None           # null = unbounded
-    max_loss: float
+    max_loss: float | None             # null = unbounded (multi-leg net short calls)
     greeks: PreviewGreeks
+    # Closed-form model probabilities (risk-neutral lognormal, ATM IV):
+    # prob_itm — the contract finishes ITM at expiry (null for a straddle);
+    # pop_long / pop_short — probability of profit at expiry for each
+    # direction of the shown structure (short = 1 − long).
+    prob_itm: float | None = None
+    pop_long: float | None = None
+    pop_short: float | None = None
+    # Buying-power requirement (calculations/margin.py) so the cost of
+    # capital is visible BEFORE firing: long = the debit (max loss); short =
+    # the Reg-T-style naked/defined-risk requirement — usually many times
+    # the premium collected. /preview-multi fills bp_requirement_long with
+    # the as-submitted structure's requirement (short is null there).
+    bp_requirement_long: float | None = None
+    bp_requirement_short: float | None = None
 
 
 @router.post("/preview", response_model=ContractPreviewOut)
@@ -1560,8 +1906,48 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         side_out = s
         oi_out = legs[0]["_oi"]
 
+    # Time scrubber: the T+0 curve/greeks evaluate at the what-if clock,
+    # clamped so a scrub can never ADD time (max = the real time to close)
+    # or hit T=0 exactly (60s floor keeps BS finite). Entry pricing above
+    # already used the real now.
+    t_view = t_close
+    if payload.minutes_to_close is not None:
+        from calculations.intraday_analytics import SECONDS_PER_YEAR
+
+        t_view = min(
+            t_close, max(60.0, payload.minutes_to_close * 60.0) / SECONDS_PER_YEAR
+        )
+
     preview = compute_contract_preview(
-        spot=spot, rate=rate, iv=iv, t_now=t_close, legs=legs
+        spot=spot, rate=rate, iv=iv, t_now=t_view, legs=legs
+    )
+
+    # Closed-form probabilities at expiry (risk-neutral, ATM IV) — prob-ITM
+    # off the strike, POP off the structure's breakevens. The short side is
+    # the exact complement of the long side at expiry.
+    from calculations.probability import pop_long as _pop_long
+    from calculations.probability import prob_itm as _prob_itm
+
+    itm = (
+        _prob_itm(spot, payload.strike, t_close, rate, iv, side_out)
+        if side_out in ("call", "put")
+        else None
+    )
+    pop_l = _pop_long(spot, preview.breakevens, t_close, rate, iv, side_out)
+    pop_s = None if pop_l is None else max(0.0, min(1.0, 1.0 - pop_l))
+
+    # Buying-power requirement per direction: the preview's legs are LONG
+    # (all buys); the short side is the same structure with actions flipped.
+    from calculations.margin import structure_requirement
+
+    _mkw = dict(
+        naked_pct=settings.margin_naked_pct,
+        naked_min_pct=settings.margin_naked_min_pct,
+    )
+    clean_legs = [{k: v for k, v in leg.items() if k != "_oi"} for leg in legs]
+    bp_long = structure_requirement(clean_legs, spot, **_mkw)
+    bp_short = structure_requirement(
+        [{**leg, "action": "sell"} for leg in clean_legs], spot, **_mkw
     )
 
     return ContractPreviewOut(
@@ -1573,7 +1959,11 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         spot=spot,
         iv=iv,
         expiry=table.expiry,
-        dte_label="0DTE",
+        dte_label=(
+            "0DTE"
+            if table.expiry_is_today
+            else f"{(date.fromisoformat(table.expiry) - datetime.now(_ET).date()).days}DTE"
+        ),
         entry_price=preview.entry_price,
         cost=preview.cost,
         open_interest=oi_out,
@@ -1584,6 +1974,134 @@ def preview_contract(payload: PreviewRequest) -> ContractPreviewOut:
         max_profit=preview.max_profit,
         max_loss=preview.max_loss,
         greeks=PreviewGreeks(**preview.greeks),
+        prob_itm=None if itm is None else round(itm, 4),
+        pop_long=None if pop_l is None else round(pop_l, 4),
+        pop_short=None if pop_s is None else round(pop_s, 4),
+        bp_requirement_long=bp_long,
+        bp_requirement_short=bp_short,
+    )
+
+
+class PreviewMultiRequest(BaseModel):
+    """Pre-trade preview for an arbitrary 2–6 leg structure AS SUBMITTED
+    (buys and sells at their stated ratios) — the builder's risk graph."""
+
+    symbol: str = Field(min_length=1, max_length=16, default="SPY")
+    contracts: int = Field(gt=0, le=100, default=1)
+    legs: list[MultiLegSpec] = Field(min_length=2, max_length=6)
+
+
+@router.post("/preview-multi", response_model=ContractPreviewOut)
+def preview_multi(payload: PreviewMultiRequest) -> ContractPreviewOut:
+    """Payoff / greeks / breakevens / POP for a hypothetical multi-leg
+    structure, priced off the same chain table as the ladder. Unlike
+    /preview (long-only single/straddle), this evaluates the structure AS
+    SUBMITTED — short legs negative — so credit spreads, condors and ratio
+    structures preview honestly. Max profit/loss are taken at the payoff's
+    critical points (S→0, each strike, and past the top strike), with the
+    unbounded sides flagged via net call exposure."""
+    from calculations.probability import pop_from_curve
+
+    sym = payload.symbol.upper().strip()
+    table = get_chain_table(symbol=sym, strikes=40)
+    spot = table.spot
+    iv = table.iv_used
+    t_close = table.t_years_to_close
+    try:
+        rate = latest_dgs3mo_rate()
+    except Exception:  # noqa: BLE001
+        rate = DEFAULT_RATE_FALLBACK
+
+    def _indicative(side: str, strike: float) -> float:
+        row = next((r for r in table.rows if r.strike == strike), None)
+        if row is not None:
+            px = row.call_price if side == "call" else row.put_price
+            if px and px > 0:
+                return float(px)
+        return float(bs_intraday(spot, strike, t_close, rate, iv, side))
+
+    legs = [
+        {
+            "side": spec.side,
+            "action": spec.action,
+            "strike": spec.strike,
+            "contracts": spec.ratio * payload.contracts,
+            "entry_price": _indicative(spec.side, spec.strike),
+        }
+        for spec in payload.legs
+    ]
+    preview = compute_contract_preview(
+        spot=spot, rate=rate, iv=iv, t_now=t_close, legs=legs
+    )
+
+    # Expiry payoff — the SHARED analytic evaluator (calculations/margin),
+    # the same function the margin gate and exact_breakevens root (review
+    # cleanup: this endpoint carried its own byte-identical copy).
+    from calculations.margin import payoff_at_expiry
+
+    def _sign(leg: dict) -> int:
+        return 1 if leg["action"] == "buy" else -1
+
+    def _payoff_at(s: float) -> float:
+        return payoff_at_expiry(legs, s)
+
+    # Bounded extremes live at the payoff's critical points: S→0, each
+    # strike, and anywhere past the top strike (the tail is flat unless net
+    # call exposure makes it unbounded).
+    net_calls = sum(_sign(l) * l["contracts"] for l in legs if l["side"] == "call")
+    strikes = sorted({float(l["strike"]) for l in legs})
+    critical = [0.0, *strikes, strikes[-1] * 1.5 + 1.0]
+    values = [_payoff_at(s) for s in critical]
+    max_profit = None if net_calls > 0 else round(max(values), 2)
+    max_loss = None if net_calls < 0 else round(min(values), 2)
+
+    # POP roots the payoff ANALYTICALLY (review wave 9, finding 9): the
+    # ±25% preview grid misses tail crossings, which hard-printed 1.0/0.0
+    # for structures whose breakevens sit outside it.
+    from calculations.margin import exact_breakevens
+
+    pop = pop_from_curve(spot, exact_breakevens(legs), t_close, rate, iv, _payoff_at)
+
+    # Buying-power requirement for the structure AS SUBMITTED — the number
+    # the margin gate will hold against the balance at open.
+    from calculations.margin import structure_requirement
+
+    bp_req = structure_requirement(
+        legs,
+        spot,
+        naked_pct=settings.margin_naked_pct,
+        naked_min_pct=settings.margin_naked_min_pct,
+    )
+
+    return ContractPreviewOut(
+        symbol=sym,
+        kind="multi",
+        side=None,
+        strike=strikes[0],
+        contracts=payload.contracts,
+        spot=spot,
+        iv=iv,
+        expiry=table.expiry,
+        dte_label=(
+            "0DTE"
+            if table.expiry_is_today
+            else f"{(date.fromisoformat(table.expiry) - datetime.now(_ET).date()).days}DTE"
+        ),
+        entry_price=preview.entry_price,
+        cost=preview.cost,
+        open_interest=None,
+        prices=preview.prices,
+        payoff_today=preview.payoff_today,
+        payoff_expiration=preview.payoff_expiration,
+        breakevens=preview.breakevens,
+        max_profit=max_profit,
+        max_loss=max_loss,
+        greeks=PreviewGreeks(**preview.greeks),
+        prob_itm=None,
+        pop_long=round(pop, 4),
+        pop_short=round(max(0.0, min(1.0, 1.0 - pop)), 4),
+        bp_requirement_long=bp_req,
+        bp_requirement_short=None,
     )
 
 
@@ -1698,7 +2216,7 @@ def reverse_positions(
     # account re-establish a full opposite-side book and bypass the prop-firm
     # rules every other open path enforces.) Per-position size is clamped to the
     # remaining scaling-cap below.
-    _require_tradeable(session, combine)
+    snap = _require_tradeable(session, combine)
     now = datetime.now(UTC)
     positions = _open_positions_for_combine(session, combine.id)
     # Reversing re-OPENS the opposite side of every held position, so each
@@ -1742,7 +2260,7 @@ def reverse_positions(
         # (the close above frees this position's own size). Scale every leg by
         # the same factor so multi-leg ratios are preserved.
         requested = sum(int(leg.get("contracts", 1) or 1) for leg in src_legs)
-        allowed = _clamp_contracts_to_cap(session, combine, requested)
+        allowed = _clamp_contracts_to_cap(session, combine, requested, snap=snap)
         scale = (allowed / requested) if requested > 0 else 1.0
 
         rev_legs: list[dict] = []
@@ -1768,6 +2286,16 @@ def reverse_positions(
                 }
             )
         net = compute_net_debit_credit([TradeLeg(**leg) for leg in rev_legs])
+        # MARGIN GATE — flipping a book can transform its requirement (a long
+        # straddle reverses into a naked short straddle). A reversed structure
+        # that doesn't fit the remaining buying power is SKIPPED (that position
+        # ends flat, never over-levered); the close above already booked.
+        try:
+            _require_buying_power(
+                session, combine, t.symbol, rev_legs, spot, snap=snap
+            )
+        except HTTPException:
+            continue
         rev = Trade(
             symbol=t.symbol,
             strategy=_reverse_strategy(t.strategy),
@@ -1790,6 +2318,182 @@ def reverse_positions(
 
     session.commit()
     return FlattenOut(closed=closed, opened=opened, realized=round(total, 2))
+
+
+class RollRequest(BaseModel):
+    """Roll an OPEN position to new strikes as ONE action — the core
+    management move on every real options platform (Tastytrade's one-click
+    roll, ToS right-click → Roll). 0DTE product → same-expiry STRIKE rolls:
+    every leg shifts by the same amount, preserving the structure's widths.
+
+    Exactly one of:
+      strike_shift — signed points to move every leg ("roll up 5");
+      to_atm=True  — shift so the anchor leg (the strike nearest the entry
+                     underlying; a straddle's shared strike) lands on the
+                     current ATM ("re-center").
+    """
+
+    trade_id: int
+    strike_shift: float | None = None
+    to_atm: bool = False
+
+
+class RollOut(BaseModel):
+    closed: int
+    opened: int
+    realized: float           # $ booked closing the old position
+    net_debit_credit: float   # the NEW position's net entry ($, signed)
+
+
+@router.post("/roll", response_model=RollOut)
+def roll_position(
+    payload: RollRequest,
+    combine: Combine = Depends(get_active_combine),
+    session: Session = Depends(get_session),
+) -> RollOut:
+    """Close the position at the live mark and reopen the same structure
+    (same sides/actions/sizes/expiry) at shifted strikes, atomically enough
+    that a refused roll leaves the position UNTOUCHED: every gate — market
+    open, tradeable, target strikes listed, margin after the swap — is
+    checked BEFORE the close books. Underlying-price brackets and any
+    resting close-limit are dropped (they priced the old strikes); premium
+    TP/SL multiples and trailing stops carry over (they re-anchor to the new
+    entry premium automatically)."""
+    _require_market_open()
+    snap = _require_tradeable(session, combine)
+
+    trade = session.get(Trade, payload.trade_id)
+    if trade is None or trade.combine_id != combine.id:
+        raise HTTPException(404, "no such position on the active combine")
+    if trade.status != "open":
+        raise HTTPException(409, "only an open position can be rolled")
+    if (payload.strike_shift is None) == (not payload.to_atm):
+        raise HTTPException(422, "specify exactly one of strike_shift / to_atm")
+    _require_symbol_tradeable(session, trade.symbol)
+
+    src_legs = trade.legs or []
+    if not src_legs:
+        raise HTTPException(422, "position has no usable legs")
+
+    spot = _spot_for_symbol(trade.symbol)
+    if spot is None:
+        raise HTTPException(503, f"{trade.symbol} quote unavailable — can't roll")
+
+    # Today's listed strikes for the target validation (+ ATM for re-center).
+    chain = get_chain_snapshot(trade.symbol, with_volume=False)
+    today = datetime.now(_ET).date()
+    listed = sorted({c.strike for c in chain if c.expiry == today})
+    if not listed:
+        raise HTTPException(409, f"No 0DTE for {trade.symbol} today — nothing to roll into.")
+
+    if payload.to_atm:
+        atm = min(listed, key=lambda k: abs(k - spot))
+        anchor = min(
+            (float(leg["strike"]) for leg in src_legs),
+            key=lambda k: abs(k - float(trade.entry_underlying_price)),
+        )
+        shift = atm - anchor
+        if shift == 0:
+            raise HTTPException(409, "position is already centered on the ATM strike")
+    else:
+        shift = float(payload.strike_shift or 0.0)
+        if shift == 0:
+            raise HTTPException(422, "strike_shift must be non-zero")
+
+    new_strikes = [float(leg["strike"]) + shift for leg in src_legs]
+    unlisted = [k for k in new_strikes if k not in listed]
+    if unlisted:
+        raise HTTPException(
+            422,
+            f"target strike(s) {', '.join(f'{k:g}' for k in unlisted)} are not "
+            f"listed for {trade.symbol} today — adjust the shift to the strike grid",
+        )
+
+    # Price the new legs at the crossed live quote (a roll's open half is a
+    # market fill like any other open), model-mid fallback per leg.
+    from services.order_monitor import _default_option_mark
+
+    now = datetime.now(UTC)
+    proto_legs = [
+        {**dict(leg), "strike": k} for leg, k in zip(src_legs, new_strikes, strict=True)
+    ]
+    live_qs = _live_leg_quotes(trade.symbol, proto_legs)
+    new_legs: list[dict] = []
+    for leg in proto_legs:
+        contracts = int(leg.get("contracts", 1) or 1)
+        q = _live_leg_quote(live_qs, leg)
+        px = (
+            _pick_fill_price(q, str(leg.get("action", "buy")), contracts)
+            if q is not None
+            else 0.0
+        )
+        if px <= 0:
+            one = dict(leg)
+            px = abs(_default_option_mark(_FakeTrade(trade.symbol, [one]), spot, now))
+        if px <= 0:
+            raise HTTPException(503, f"can't price {leg.get('side')} {leg['strike']:g}")
+        new_legs.append(
+            {
+                "side": leg["side"],
+                "action": leg.get("action", "buy"),
+                "strike": float(leg["strike"]),
+                "expiry": leg.get("expiry", today.isoformat()),
+                "contracts": contracts,
+                "entry_price": round(float(px), 4),
+            }
+        )
+
+    # MARGIN — the post-swap book must fit: committed − old requirement +
+    # new requirement ≤ balance. Checked BEFORE the close so a refused roll
+    # never leaves the trader flat. Same shared gate as every open path
+    # (review wave 10: the inline duplicate is gone) — release_legs credits
+    # the position being swapped out.
+    _require_buying_power(
+        session,
+        combine,
+        trade.symbol,
+        new_legs,
+        float(spot),
+        snap=snap,
+        release_legs=src_legs,
+    )
+
+    realized = _close_one(session, trade, spot, now, "manual")
+    if realized is None:
+        raise HTTPException(409, "position closed concurrently — nothing to roll")
+    trade.notes = (trade.notes or "") + f" · rolled {shift:+g}"
+
+    net = compute_net_debit_credit([TradeLeg(**leg) for leg in new_legs])
+    rolled = Trade(
+        symbol=trade.symbol,
+        strategy=trade.strategy,
+        entry_date=now,
+        entry_underlying_price=float(spot),
+        net_debit_credit=net,
+        status="open",
+        trail_amount=trade.trail_amount,
+        trail_pct=trade.trail_pct,
+        tp_premium_mult=trade.tp_premium_mult,
+        sl_premium_mult=trade.sl_premium_mult,
+        is_paper=True,
+        notes=f"rolled from #{trade.id} ({shift:+g})",
+        tier=combine.tier,
+        combine_id=combine.id,
+    )
+    rolled.legs = new_legs
+    rolled.tags = ["0dte", "rolled"]
+    rolled.mistake_tags = []
+    session.add(rolled)
+    session.flush()
+    mirror_open(session, combine, rolled)
+    session.commit()
+    session.refresh(rolled)
+    return RollOut(
+        closed=trade.id,
+        opened=rolled.id,
+        realized=float(realized),
+        net_debit_credit=float(rolled.net_debit_credit),
+    )
 
 
 class _FakeTrade:

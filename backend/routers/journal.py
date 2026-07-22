@@ -17,6 +17,7 @@ import json
 import logging
 from datetime import date, datetime, time, timezone
 from typing import Literal
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -53,6 +54,7 @@ from schemas.journal import (
     BracketsUpdate,
     EXPECTED_LEG_COUNT,
     MISTAKE_TAG_VOCABULARY,
+    PortfolioGreeksOut,
     ScaleOutRequest,
     TradeAnalyticsOut,
     TradeIn,
@@ -446,6 +448,13 @@ def scale_out_trade(
         leg["contracts"] = int(leg.get("contracts", 1) or 1) - payload.qty
     px = f"${payload.exit_underlying_price:.2f}" if payload.exit_underlying_price else "—"
     new_notes = (trade.notes or "") + f" · scaled out {payload.qty} @ {px}"
+    # Same structure-mutation rule as close-leg (review wave 8, finding 1):
+    # a resting close-limit is per-1× of the OLD leg ratios; an unbalanced
+    # scale-out shifts that unit, so the limit is pulled rather than left to
+    # trigger/book against a structure it never described. (Balanced books
+    # would survive, but one predictable rule beats a ratio-dependent one.)
+    if trade.close_limit_price is not None:
+        new_notes += " · resting close limit pulled (structure changed)"
 
     # RACE GUARD: write the slice through ONE conditional UPDATE claimed on
     # status='open'. The recompute above spans a network window (live mark,
@@ -460,6 +469,7 @@ def scale_out_trade(
         "legs_json": json.dumps(legs),
         "realized_pnl": func.coalesce(Trade.realized_pnl, 0.0) + slice_realized,
         "notes": new_notes,
+        "close_limit_price": None,
     }
     if payload.exit_underlying_price is not None:
         values["exit_underlying_price"] = payload.exit_underlying_price
@@ -484,6 +494,224 @@ def scale_out_trade(
     # P&L explicitly (trade.realized_pnl is the running accumulated total, which
     # would over-book followers on the 2nd+ scale-out).
     mirror_close(session, trade, closed_qty=payload.qty, slice_pnl=slice_realized)
+    return _to_out(trade)
+
+
+class CloseLegRequest(BaseModel):
+    """POST body for closing ONE leg of a multi-leg position. `qty` = None
+    closes the whole leg; a smaller qty reduces it (per-leg scale-out)."""
+
+    leg_index: int = Field(ge=0)
+    qty: int | None = Field(default=None, gt=0)
+
+
+def _single_leg_strategy(leg: dict) -> str:
+    side = str(leg.get("side", "call")).lower()
+    action = str(leg.get("action", "buy")).lower()
+    return f"{'long' if action == 'buy' else 'short'}_{side}"
+
+
+def _book_leg_close(
+    session: Session, trade: Trade, leg_index: int, qty: int, px: float
+) -> float | None:
+    """Book a per-leg close on ONE trade row at mark `px` — the shared core
+    for the lead AND its copy-followers. Slice realized = (mark − entry) ×
+    sign × qty × 100 − round-trip commission on the closed contracts − the
+    leg's spread-crossing friction; survivors keep riding with net/strategy
+    recomputed. Compare-and-swap on the exact legs blob (a concurrent
+    close/scale-out/other-leg-close loses nothing — rowcount 0 → None).
+    Returns the booked slice $ or None when the claim was lost. Caller owns
+    the commit."""
+    legs = trade.legs
+    if leg_index >= len(legs):
+        return None
+    old_json = trade.legs_json
+    leg = dict(legs[leg_index])
+    held = int(leg.get("contracts", 1) or 1)
+    qty = min(qty, held)
+    if qty <= 0:
+        return None
+
+    sign = 1.0 if str(leg.get("action", "buy")).lower() == "buy" else -1.0
+    entry_px = float(leg.get("entry_price", 0.0) or 0.0)
+    leg_unrealized = sign * qty * (px - entry_px) * CONTRACT_MULTIPLIER
+    commission = 2 * qty * settings.per_contract_fee
+    friction = close_friction(trade.symbol, [{**leg, "contracts": qty}])
+    slice_realized = round(leg_unrealized - commission - friction, 2)
+
+    new_legs = [dict(l_) for l_ in legs]
+    if qty == held:
+        new_legs.pop(leg_index)
+    else:
+        new_legs[leg_index]["contracts"] = held - qty
+    from schemas.journal import TradeLeg
+
+    new_net = compute_net_debit_credit([TradeLeg(**l_) for l_ in new_legs])
+    new_strategy = (
+        _single_leg_strategy(new_legs[0]) if len(new_legs) == 1 else "custom"
+    )
+    leg_desc = (
+        f"{leg.get('action')} {leg.get('strike'):g}"
+        f"{'C' if leg.get('side') == 'call' else 'P'}"
+    )
+    new_notes = (
+        (trade.notes or "") + f" · closed leg {leg_desc} ×{qty} @ ~{px:.2f}"
+    )
+    # A resting close-limit was signed against the OLD structure's per-1× net;
+    # after the legs change, its trigger threshold and pinned booking are
+    # meaningless (review wave 8, finding 1: a stale limit insta-fired and
+    # booked fabricated P&L on the remainder). Pull it — the trader re-rests
+    # against the new structure if they still want one.
+    if trade.close_limit_price is not None:
+        new_notes += " · resting close limit pulled (structure changed)"
+    claimed = session.execute(
+        update(Trade)
+        .where(
+            Trade.id == trade.id,
+            Trade.status == "open",
+            Trade.legs_json == old_json,
+        )
+        .values(
+            legs_json=json.dumps(new_legs),
+            strategy=new_strategy,
+            net_debit_credit=new_net,
+            close_limit_price=None,
+            realized_pnl=func.coalesce(Trade.realized_pnl, 0.0) + slice_realized,
+            notes=new_notes,
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        return None
+    return slice_realized
+
+
+@router.post("/trades/{trade_id}/close-leg", response_model=TradeOut)
+def close_leg(
+    trade_id: int,
+    payload: CloseLegRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Close ONE leg of an open multi-leg position at the live mark — buy back
+    the tested short of a condor and let the far side ride. The leg's slice
+    books like any close: (mark − entry) × sign × qty × 100 minus round-trip
+    commission on the closed contracts minus its spread-crossing friction.
+
+    The surviving structure keeps riding: legs shrink, the entry net is
+    recomputed over the remainder, and the strategy label degrades honestly
+    ("custom", or the single-leg name when one leg remains). A lead's leg
+    close CASCADES proportionally to open copy-followers (best-effort, like
+    every mirror_* path): same leg index, follower's own size, each booked
+    against its own entry fills at the same mark. A follower whose structure
+    drifted (different leg shape) is skipped rather than corrupted.
+    Single-leg positions use CLOSE / scale-out instead."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "open":
+        raise HTTPException(409, "can only close a leg of an OPEN position")
+    legs = trade.legs
+    if len(legs) < 2:
+        raise HTTPException(
+            409, "single-leg position — use close or scale-out instead"
+        )
+    if payload.leg_index >= len(legs):
+        raise HTTPException(422, f"leg_index {payload.leg_index} out of range")
+
+    leg = dict(legs[payload.leg_index])
+    held = int(leg.get("contracts", 1) or 1)
+    qty = payload.qty if payload.qty is not None else held
+    if qty > held:
+        raise HTTPException(400, f"qty {qty} exceeds the {held} held on this leg")
+
+    # Price the leg at the live mark (chain mid, BS fallback) — the same
+    # per-leg pricer every monitor exit uses.
+    from services.order_monitor import (
+        _leg_model_price,
+        _option_chain_rows,
+        _rate,
+    )
+
+    try:
+        q = get_quotes([trade.symbol]).get(trade.symbol)
+    except Exception:  # noqa: BLE001
+        q = None
+    if q is None:
+        raise HTTPException(503, f"{trade.symbol} quote unavailable — can't price the leg")
+    spot = float(q.price)
+    now = datetime.now(timezone.utc)
+    px = float(_leg_model_price(_option_chain_rows(trade.symbol), leg, spot, now, _rate()))
+
+    booked = _book_leg_close(session, trade, payload.leg_index, qty, px)
+    if booked is None:
+        session.rollback()
+        raise HTTPException(
+            409,
+            "position changed concurrently (close / scale-out / another leg"
+            " close) — refresh and retry",
+        )
+    session.commit()
+    session.refresh(trade)
+
+    # COPY CASCADE — mirror the leg close to follower copies at the same
+    # mark, proportional to each follower's own leg size (lead closed
+    # qty/held of the leg). Best-effort per follower: a drifted structure
+    # (leg shape no longer matches) or a lost CAS skips that follower —
+    # never corrupt, never fail the lead's booked close.
+    #
+    # Review wave 8, findings 3+4:
+    #   - WORKING followers are included and CANCELLED (mirror_close's
+    #     convention): letting a still-resting mirrored order fill AFTER the
+    #     lead changed shape strands the follower on a structure the lead no
+    #     longer has, permanently outside every future cascade.
+    #   - The proportional share rounds HALF-UP (floor(x + 0.5) — Python's
+    #     round() is banker's) and a share that rounds to ZERO skips the
+    #     follower instead of being floored to 1: max(1, …) force-closed a
+    #     1-lot follower's entire leg on a 10% lead trim.
+    followers = (
+        session.execute(
+            select(Trade).where(
+                Trade.copied_from_trade_id == trade.id,
+                Trade.status.in_(("open", "working")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for f in followers:
+        try:
+            if f.status == "working":
+                cancelled = session.execute(
+                    update(Trade)
+                    .where(Trade.id == f.id, Trade.status == "working")
+                    .values(status="cancelled")
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                if cancelled:
+                    f.status = "cancelled"
+                    f.close_reason = None
+                    f.notes = (f.notes or "") + " · cancelled (lead closed a leg before fill)"
+                    session.commit()
+                continue
+            f_legs = f.legs
+            if payload.leg_index >= len(f_legs):
+                continue
+            f_leg = f_legs[payload.leg_index]
+            if (
+                f_leg.get("side") != leg.get("side")
+                or float(f_leg.get("strike", 0) or 0) != float(leg.get("strike", 0) or 0)
+                or f_leg.get("action") != leg.get("action")
+            ):
+                continue  # structure drifted — don't touch it
+            f_held = int(f_leg.get("contracts", 1) or 1)
+            f_qty = min(f_held, int(f_held * qty / held + 0.5))
+            if f_qty <= 0:
+                continue  # share rounds to nothing — leave the follower whole
+            if _book_leg_close(session, f, payload.leg_index, f_qty, px) is not None:
+                session.commit()
+        except Exception:  # noqa: BLE001 — mirror is best-effort by convention
+            session.rollback()
+            log.exception("close-leg cascade failed for follower %s", f.id)
+
     return _to_out(trade)
 
 
@@ -530,6 +758,270 @@ def set_brackets(
     session.commit()
     session.refresh(trade)
     return _to_out(trade)
+
+
+@router.get("/portfolio/greeks", response_model=PortfolioGreeksOut)
+def portfolio_greeks(
+    user: User = Depends(get_current_user),
+    combine: Combine = Depends(get_active_combine),
+    session: Session = Depends(get_session),
+) -> PortfolioGreeksOut:
+    """Net Greek exposure across every OPEN execution position on the active
+    combine, plus the SPY-beta-weighted delta — the top-line book numbers a
+    multi-position options trader steers by. Live-priced per request off the
+    same intraday analytics engine the per-position panel uses; manual journal
+    rows are excluded (they carry no combine risk)."""
+    from calculations.portfolio_greeks import aggregate_portfolio_greeks
+
+    trades = (
+        session.execute(
+            select(Trade).where(
+                Trade.combine_id == combine.id,
+                Trade.status == "open",
+                Trade.origin == "execution",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    empty = PortfolioGreeksOut(
+        positions=0,
+        net=AnalyticsGreeks(delta=0.0, gamma=0.0, theta=0.0, vega=0.0),
+    )
+    if not trades:
+        return empty
+
+    symbols = sorted({t.symbol for t in trades} | {"SPY"})
+    try:
+        quotes = get_quotes(symbols)
+    except Exception as exc:  # noqa: BLE001 — feed cold → typed degrade
+        raise HTTPException(
+            503, "market data unavailable — portfolio greeks need live quotes"
+        ) from exc
+    try:
+        rate = latest_dgs3mo_rate()
+    except Exception:  # noqa: BLE001
+        rate = DEFAULT_RATE_FALLBACK
+
+    now = datetime.now(timezone.utc)
+    rows: list[dict] = []
+    for t in trades:
+        q = quotes.get(t.symbol)
+        if q is None:
+            continue  # cold symbol — skip rather than fabricate exposure
+        entry = t.entry_date or now
+        if entry.tzinfo is None:
+            entry = entry.replace(tzinfo=timezone.utc)
+        elapsed_hours = max(0.0, (now - entry).total_seconds() / 3600.0)
+        try:
+            resp = _intraday_analytics(
+                trade=t, spot=float(q.price), rate=rate, elapsed_hours=elapsed_hours
+            )
+        except HTTPException:
+            continue  # malformed stored legs — never poison the whole book
+        rows.append(
+            {
+                "symbol": t.symbol,
+                "spot": float(q.price),
+                "delta": resp.greeks.delta,
+                "gamma": resp.greeks.gamma,
+                "theta": resp.greeks.theta,
+                "vega": resp.greeks.vega,
+            }
+        )
+    if not rows:
+        return empty
+
+    spy_q = quotes.get("SPY")
+    agg = aggregate_portfolio_greeks(rows, float(spy_q.price) if spy_q else None)
+    return PortfolioGreeksOut(**agg)
+
+
+class CloseOrderRequest(BaseModel):
+    """POST body for placing/replacing a resting CLOSE-LIMIT on an open
+    position. `limit_price` is the SIGNED net premium per 1× structure —
+    the same convention as the multi-leg entry limit (debit positive /
+    credit negative): a long structure names the value to sell at (> 0);
+    a short structure names the buy-back cost as a negative (-0.30 =
+    'pay at most 0.30'). Sign/direction is validated in the handler."""
+
+    limit_price: float
+
+
+def _entry_net_1x(trade: Trade) -> tuple[float, int]:
+    """(signed net ENTRY premium per 1× structure, base size) — COMPOSED from
+    the order monitor's own helpers so the placement validator and the live
+    trigger literally share one unit definition (review cleanup: this was a
+    third hand-rolled copy of the gcd/net reduction)."""
+    from services.order_monitor import _entry_net_premium, _structure_base
+
+    base = _structure_base(trade)
+    return _entry_net_premium(trade) / base, base
+
+
+@router.post("/trades/{trade_id}/close-order", response_model=TradeOut)
+def set_close_order(
+    trade_id: int,
+    payload: CloseOrderRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Place (or replace) a resting close-limit on an OPEN position. The order
+    monitor fills it AT the limit — no spread friction, commission both sides —
+    when the live net mark reaches it (net_1x ≥ limit). The limit must be
+    NON-marketable at placement: an immediately-fillable close belongs to the
+    market CLOSE button, and booking a marketable limit at its own price would
+    fill the trader worse than the market they could have hit."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "open":
+        raise HTTPException(409, "a close order can only rest on an open position")
+
+    limit = float(payload.limit_price)
+    entry_net_1x, _base = _entry_net_1x(trade)
+    if entry_net_1x == 0.0:
+        raise HTTPException(422, "zero-net-premium structure: no close-limit scale")
+    if entry_net_1x > 0 and limit <= 0:
+        raise HTTPException(
+            422,
+            "this position was opened for a net debit — the close limit is the "
+            "value to sell it at and must be positive",
+        )
+    if entry_net_1x < 0 and limit >= 0:
+        raise HTTPException(
+            422,
+            "this position was opened for a net credit — the close limit is the "
+            "buy-back cost as a NEGATIVE net (e.g. -0.30 = pay at most 0.30)",
+        )
+
+    # Marketability guard on the live mid-based net (best-effort: a cold feed
+    # skips the check rather than blocking the placement).
+    try:
+        from services.order_monitor import _default_option_mark
+
+        q = get_quotes([trade.symbol]).get(trade.symbol)
+        if q is not None:
+            now = datetime.now(timezone.utc)
+            net_1x = _default_option_mark(trade, float(q.price), now) / _base
+            if net_1x >= limit:
+                raise HTTPException(
+                    422,
+                    f"close limit {limit:g} is already marketable (net mark "
+                    f"{net_1x:.2f}) — use the market close, or set the limit "
+                    "beyond the current mark",
+                )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 — feed cold → accept without the guard
+        log.debug("close-order: marketability check skipped for %s", trade.symbol)
+
+    trade.close_limit_price = round(limit, 4)
+    session.commit()
+    session.refresh(trade)
+    return _to_out(trade)
+
+
+@router.delete("/trades/{trade_id}/close-order", response_model=TradeOut)
+def clear_close_order(
+    trade_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradeOut:
+    """Pull the resting close-limit off an open position. No-op-safe on a
+    position without one (the field is simply already NULL); 409 once the
+    position is no longer open (nothing is resting anymore)."""
+    trade = _owned_trade(session, user, trade_id)
+    if trade.status != "open":
+        raise HTTPException(409, "no resting close order — the position is not open")
+    # RACE GUARD: clear only while still open, so a monitor fill that already
+    # booked the close (and its P&L at the limit) isn't half-unwound.
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id == trade.id, Trade.status == "open")
+        .values(close_limit_price=None)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed == 0:
+        session.rollback()
+        raise HTTPException(409, "position closed concurrently — nothing to pull")
+    trade.close_limit_price = None
+    session.commit()
+    session.refresh(trade)
+    return _to_out(trade)
+
+
+class OcoLinkRequest(BaseModel):
+    """Link 2–4 WORKING orders as an OCO group (one fill cancels the rest).
+    The monitor already honors oco_group on fills and bracket closes — this
+    endpoint is the missing user-facing way to create the pairing."""
+
+    trade_ids: list[int] = Field(min_length=2, max_length=4)
+
+
+@router.post("/orders/oco-link", response_model=TradesResponse)
+def oco_link(
+    payload: OcoLinkRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradesResponse:
+    """Group the given WORKING orders under one fresh oco_group. 409 when any
+    is no longer working (a filled/cancelled order can't be a sibling); an
+    order already in a group is re-homed to the new one (last link wins).
+
+    RACE GUARD (review wave 8, finding 6): the link is ONE conditional
+    UPDATE claimed on status='working' for ALL ids — all-or-nothing. The
+    old read-check-assign flow lost the race against a monitor fill: the
+    link landed on an already-filled order, the sibling kept resting with
+    no protection (double exposure), and the group later fired a bogus
+    delayed cancel when the filled position exited."""
+    if len(set(payload.trade_ids)) != len(payload.trade_ids):
+        raise HTTPException(422, "duplicate trade ids in the OCO link")
+    trades = [_owned_trade(session, user, tid) for tid in payload.trade_ids]
+    not_working = [t.id for t in trades if t.status != "working"]
+    if not_working:
+        raise HTTPException(
+            409,
+            f"only working orders can be OCO-linked — trade(s) {not_working} "
+            "are no longer working",
+        )
+    group = str(uuid4())
+    claimed = session.execute(
+        update(Trade)
+        .where(Trade.id.in_(payload.trade_ids), Trade.status == "working")
+        .values(
+            oco_group=group,
+            notes=func.coalesce(Trade.notes, "") + " · OCO linked",
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed != len(payload.trade_ids):
+        session.rollback()
+        raise HTTPException(
+            409,
+            "an order filled or was cancelled while linking — no OCO group "
+            "was created; refresh and re-link the survivors",
+        )
+    session.commit()
+    for t in trades:
+        session.refresh(t)
+    return TradesResponse(trades=[_to_out(t) for t in trades])
+
+
+@router.post("/orders/oco-unlink", response_model=TradesResponse)
+def oco_unlink(
+    payload: OcoLinkRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> TradesResponse:
+    """Dissolve the OCO pairing on the given orders (clears oco_group).
+    Tolerant of already-filled/cancelled members — unlinking is cleanup,
+    not risk-bearing."""
+    trades = [_owned_trade(session, user, tid) for tid in payload.trade_ids]
+    for t in trades:
+        t.oco_group = None
+    session.commit()
+    for t in trades:
+        session.refresh(t)
+    return TradesResponse(trades=[_to_out(t) for t in trades])
 
 
 @router.post("/trades/{trade_id}/cancel", response_model=TradeOut)
@@ -1168,6 +1660,33 @@ def _intraday_analytics(
         vega=float(g_total["vega"] * CONTRACT_MULTIPLIER),
     )
 
+    # POP FROM HERE (audit wave 7) — probability the position, held to
+    # expiry, ends profitable including the sunk entry fills (commission,
+    # ~a penny of breakeven shift, is ignored by the analytic curve): the
+    # sign regions of the expiration payoff weighed by the risk-neutral
+    # lognormal from the CURRENT spot/time. None when the clock has run
+    # out or IV is unusable. Breakevens and the payoff
+    # come ANALYTICALLY from the legs (review wave 9, finding 9): the ±25%
+    # display grid missed tail crossings and printed a hard 100%/0% for
+    # deep-ITM/OTM structures.
+    pop_value: float | None = None
+    t_pop = min((_leg_t(leg)[0] for leg in legs), default=0.0)
+    if t_pop > 0 and iv_used and iv_used > 0:
+        from calculations.margin import exact_breakevens, payoff_at_expiry
+        from calculations.probability import pop_from_curve
+
+        pop_value = round(
+            pop_from_curve(
+                float(spot),
+                exact_breakevens(legs),
+                float(t_pop),
+                float(rate),
+                float(iv_used),
+                lambda s: payoff_at_expiry(legs, s),
+            ),
+            4,
+        )
+
     return TradeAnalyticsOut(
         trade_id=trade.id,
         symbol=trade.symbol,
@@ -1192,6 +1711,7 @@ def _intraday_analytics(
         unlimited_gain=unlimited_gain,
         unlimited_loss=unlimited_loss,
         greeks=greeks,
+        pop=pop_value,
     )
 
 
@@ -1222,6 +1742,7 @@ def _to_out(trade: Trade) -> TradeOut:
         take_profit=trade.take_profit,
         tp_premium_mult=trade.tp_premium_mult,
         sl_premium_mult=trade.sl_premium_mult,
+        close_limit_price=trade.close_limit_price,
         close_reason=trade.close_reason,  # type: ignore[arg-type]
         time_in_force=trade.time_in_force,  # type: ignore[arg-type]
         combine_id=trade.combine_id,

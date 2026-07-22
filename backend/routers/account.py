@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from config import settings
 from database import get_session
 from models.combine import Combine
 from models.user import DLL_MODE_STRENGTH, User
@@ -142,6 +143,24 @@ class AccountStateOut(BaseModel):
             " equity. Fixed intraday; re-evaluates at the 5pm-PT settlement."
         ),
     )
+    # -- margin / buying power (audit wave 2) ----------------------------------
+    margin_used: float | None = Field(
+        default=None,
+        description=(
+            "$ requirement committed by the open + working execution book"
+            " (max loss for defined-risk structures, Reg-T-style for naked"
+            " sides — calculations/margin.py). None when margin enforcement"
+            " is disabled or the book can't be priced this instant."
+        ),
+    )
+    buying_power: float | None = Field(
+        default=None,
+        description=(
+            "Realized balance − margin_used, floored at 0. The capital"
+            " available for NEW opens (open URPL exposure is governed by the"
+            " live MLL/DLL gates, not folded in here)."
+        ),
+    )
     # -- funded-account lifecycle ---------------------------------------------
     funded: bool = Field(..., description="True once the eval passed (auto-funded).")
     payout_eligible: float = Field(
@@ -171,6 +190,19 @@ def get_account_state(
         .order_by(Combine.created_at.desc(), Combine.id.desc())
     ).scalars().all()
 
+    # Margin / buying power — best-effort (the header poll must never break on
+    # a cold quote; _book_margin_used falls back to entry underlyings anyway).
+    margin_used: float | None = None
+    buying_power: float | None = None
+    if settings.margin_enforcement_enabled:
+        try:
+            from routers.zerodte import _book_margin_used
+
+            margin_used = _book_margin_used(session, combine.id, {})
+            buying_power = round(max(0.0, snap.balance - margin_used), 2)
+        except Exception:  # noqa: BLE001 — leave both None; the UI shows "—"
+            margin_used = buying_power = None
+
     return AccountStateOut(
         active_tier=combine.tier,
         starting_balance=snap.starting_balance,
@@ -199,6 +231,8 @@ def get_account_state(
         profit_target=snap.profit_target,
         objective_progress=snap.objective_progress,
         max_contracts=snap.max_contracts,
+        margin_used=margin_used,
+        buying_power=buying_power,
         funded=snap.funded,
         payout_eligible=snap.payout_eligible,
         profit_split=snap.profit_split,

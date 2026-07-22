@@ -8,19 +8,27 @@ import {
 } from "@tanstack/react-query";
 
 import { BottomNewsFeedTabs } from "@/components/positions/BottomNewsFeedTabs";
+import { strikeStep } from "@/components/positions/tools/StrategyBuilder";
 import { useAccountState } from "@/hooks/useAccountState";
+import { useCachedChainTable } from "@/hooks/useChainTable";
+import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerAnnotations } from "@/hooks/useTickerChart";
 import { useTickerMetrics } from "@/hooks/useTickerMetrics";
 import { useTradeAnalytics } from "@/hooks/useTradeAnalytics";
 import { useTrades } from "@/hooks/useTrades";
 import {
   cancelOrder,
+  clearCloseOrder,
+  closeLeg,
   fetchTradeAnalytics,
+  rollTrade,
   scaleOutTrade,
+  setCloseOrder,
   updateTrade,
 } from "@/lib/api";
 import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
+import { tradingDayStartMs } from "@/lib/tradingDay";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import {
@@ -218,6 +226,12 @@ function KeyLevelsInline({ symbol }: { symbol: string | null }) {
       value: `${m.iv_rank.toFixed(0)}`,
       tooltip: LEVEL_TOOLTIP.IV,
     });
+  if (m?.pc_ratio != null)
+    items.push({
+      label: "P/C",
+      value: m.pc_ratio.toFixed(2),
+      tooltip: LEVEL_TOOLTIP["P/C"],
+    });
 
   return (
     <div
@@ -309,6 +323,7 @@ const LEVEL_TOOLTIP = {
   MP: TOOLTIPS.max_pain + VOL_PROXY_NOTE,
   GF: TOOLTIPS.gamma_flip + VOL_PROXY_NOTE,
   IV: TOOLTIPS.iv_rank,
+  "P/C": TOOLTIPS.pc_ratio,
 } as const;
 
 /**
@@ -350,20 +365,30 @@ function PillToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
 }
 
 function TodayInline({ trades }: { trades: Trade[] }) {
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const { net, count } = useMemo(() => {
-    let n = 0;
+  // ONE definition of "today": the backend's 5pm-PT accounting window — the
+  // same number the header RP&L, the DLL and settlement all use. The old
+  // UTC-calendar sum here could disagree with every money surface around it
+  // (the audit's two-todays reconciliation trap).
+  const { data: account } = useAccountState();
+  const net = account?.today_realized ?? 0;
+  const count = useMemo(() => {
+    const start = tradingDayStartMs();
+    const after = (iso: string | null | undefined) =>
+      iso != null && Date.parse(iso) >= start;
     let c = 0;
     for (const t of trades) {
-      if (t.status === "closed" && t.exit_date?.startsWith(todayIso)) {
-        n += t.realized_pnl ?? 0;
-        c += 1;
-      } else if (t.status === "open" && t.entry_date.startsWith(todayIso)) {
-        c += 1;
-      }
+      // SAME population as the net (review wave 9, finding 8): the backend's
+      // today_realized covers the ACTIVE combine's execution book only —
+      // counting copy-follower mirrors in other combines or manual journal
+      // rows beside it rebuilt the net-vs-count reconciliation mismatch.
+      if (account?.combine_id != null && t.combine_id !== account.combine_id)
+        continue;
+      if (t.origin !== "execution") continue;
+      if (t.status === "closed" && after(t.exit_date)) c += 1;
+      else if (t.status === "open" && after(t.entry_date)) c += 1;
     }
-    return { net: n, count: c };
-  }, [trades, todayIso]);
+    return c;
+  }, [trades, account?.combine_id]);
   const netCls =
     net > 0 ? "text-bullish" : net < 0 ? "text-bearish" : "text-fg-secondary";
   return (
@@ -371,7 +396,10 @@ function TodayInline({ trades }: { trades: Trade[] }) {
       className="flex items-center gap-3 px-3 tabular-nums"
       style={{ height: 36 }}
     >
-      <span className="text-tiny uppercase tracking-label-up text-fg-secondary shrink-0">
+      <span
+        className="text-tiny uppercase tracking-label-up text-fg-secondary shrink-0"
+        title="Realized P&L this trading day (5pm-PT accounting window) — the same window as the header RP&L, the daily loss limit and settlement."
+      >
         Today
       </span>
       <span className={`text-tiny ${netCls}`}>{formatSignedDollar(net)}</span>
@@ -575,6 +603,7 @@ function OpenPositionCol({
             {formatTimestamp(trade.entry_date)} ET ·{" "}
             {totalContracts(trade)} contract{totalContracts(trade) === 1 ? "" : "s"}
           </div>
+          <LegCloseList trade={trade} />
           {commissionSide > 0 && (
             <div
               className="text-fg-tertiary mt-0.5"
@@ -616,6 +645,9 @@ function OpenPositionCol({
             {held > 1 && (
               <QtyStepper qty={closeQty} max={held} onChange={setCloseQty} />
             )}
+            <RollRow trade={trade} />
+            <CloseLimitRow trade={trade} liveAnalytics={liveAnalytics} />
+            <AutoCloseCountdown />
             <CloseButton
               disabled={close.isPending || scaleOut.isPending}
               upl={isPartial ? sliceRealized : liveUpl}
@@ -923,6 +955,22 @@ function RiskRow({ analytics }: { analytics: TradeAnalytics }) {
   return (
     <div className="flex items-baseline justify-between mt-1 tabular-nums">
       <RiskItem label="MAX LOSS" value={loss} tone="bearish" />
+      {analytics.pop != null && (
+        <div
+          className="flex flex-col leading-tight"
+          title="Probability this position, held to expiry, ends profitable FROM HERE — entry fills and commission included. A model number (risk-neutral, ATM IV), not a forecast."
+        >
+          <span
+            className="uppercase tracking-label-up text-fg-tertiary-2"
+            style={{ fontSize: 11 }}
+          >
+            POP
+          </span>
+          <span className="text-tiny tabular-nums text-fg-primary">
+            {Math.round(analytics.pop * 100)}%
+          </span>
+        </div>
+      )}
       <RiskItem label="MAX GAIN" value={gain} tone="bullish" />
     </div>
   );
@@ -991,6 +1039,387 @@ function QtyStepper({
           +
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Expiration-day auto-close countdown (audit wave 5 — completing wave 1's
+ * policy). Far from the bell: a quiet static line stating the policy. Inside
+ * 20 minutes of the CUTOFF (session close − expiry_closeout_minutes, half-day
+ * aware via today_close): a live amber countdown; past the cutoff: red
+ * "imminent". The window comes off the market-status payload so the display
+ * always matches the enforced config. Ticks on a 15s clock — the flatten
+ * itself is server-side; this is advance warning, not the trigger.
+ */
+function AutoCloseCountdown() {
+  const { data: market } = useMarketStatus();
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const windowMin = market?.expiry_closeout_minutes ?? 10;
+  if (!windowMin || windowMin <= 0) return null; // policy disabled
+  const staticLine = (
+    <div
+      className="text-fg-tertiary"
+      style={{ fontSize: 10 }}
+      title="Expiration-day policy: rather than model OCC assignment, the desk force-flattens 0DTE books shortly before the bell (half-day aware). Working orders on dying contracts are pulled at the same cutoff."
+    >
+      0DTE policy · auto-close ~{Math.round(windowMin)} min before the bell
+    </div>
+  );
+  if (!market?.today_close || market.status !== "open") return staticLine;
+  const closeMs = Date.parse(market.today_close);
+  if (!Number.isFinite(closeMs)) return staticLine;
+  const cutoffMs = closeMs - windowMin * 60_000;
+  const remainMs = cutoffMs - nowMs;
+  if (remainMs > 20 * 60_000) return staticLine;
+
+  if (remainMs <= 0) {
+    return (
+      <div
+        className="px-1.5 py-0.5 border border-bearish/60 bg-tier-1 text-bearish uppercase tracking-label-up"
+        style={{ fontSize: 10 }}
+        role="alert"
+        title="The expiration-day close-out window is live — the desk is flattening 0DTE books and pulling working orders on dying contracts."
+      >
+        auto-close imminent — book is being flattened
+      </div>
+    );
+  }
+  const mins = Math.floor(remainMs / 60_000);
+  const secs = Math.floor((remainMs % 60_000) / 1000);
+  return (
+    <div
+      className="px-1.5 py-0.5 border border-warning/60 bg-tier-1 text-warning uppercase tracking-label-up"
+      style={{ fontSize: 10 }}
+      role="status"
+      title="Expiration-day policy: open 0DTE positions are force-flattened at this cutoff (half-day aware). Close or roll before it if you want to name your own exit."
+    >
+      auto-close in {mins}:{String(secs).padStart(2, "0")} — close or roll to
+      name your exit
+    </div>
+  );
+}
+
+/**
+ * Per-leg close — buy back the tested short of a condor and let the far
+ * side ride. Rendered only for multi-leg positions; each row is the leg
+ * tape with an arm→confirm ✕ (a leg close books realized P&L). The backend
+ * 409s while copy-followers mirror the trade; the toast surfaces that.
+ */
+function LegCloseList({ trade }: { trade: Trade }) {
+  const queryClient = useQueryClient();
+  const [armedIdx, setArmedIdx] = useState<number | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const close = useMutation({
+    mutationFn: (idx: number) => closeLeg(trade.id, idx),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+      queryClient.invalidateQueries({ queryKey: ["trade-analytics", trade.id] });
+    },
+    onError: (e) => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      toast.error((e as Error)?.message || "Could not close leg");
+    },
+    onSettled: () => setArmedIdx(null),
+  });
+  if (trade.legs.length < 2) return null;
+
+  const fire = (idx: number) => {
+    if (close.isPending) return;
+    if (armedIdx !== idx) {
+      setArmedIdx(idx);
+      if (armTimer.current) clearTimeout(armTimer.current);
+      armTimer.current = setTimeout(() => setArmedIdx(null), 3000);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    close.mutate(idx);
+  };
+
+  return (
+    <div className="flex flex-col mt-0.5" style={{ gap: 1 }}>
+      {trade.legs.map((leg, i) => (
+        <div
+          key={`${leg.side}-${leg.strike}-${i}`}
+          className="flex items-center gap-1.5 tabular-nums text-fg-tertiary-2"
+          style={{ fontSize: 11 }}
+        >
+          <span className={leg.action === "buy" ? "text-bullish" : "text-bearish"}>
+            {leg.action === "buy" ? "+" : "−"}
+            {(leg.contracts ?? 1) > 1 ? `${leg.contracts}×` : ""}
+            {leg.strike}
+            {leg.side === "call" ? "C" : "P"}
+          </span>
+          <span>@ {(leg.entry_price ?? 0).toFixed(2)}</span>
+          <button
+            type="button"
+            onClick={() => fire(i)}
+            disabled={close.isPending}
+            className={[
+              "ml-auto px-1 leading-none uppercase tracking-label-up disabled:opacity-40",
+              armedIdx === i
+                ? "text-warning"
+                : "text-fg-tertiary hover:text-bearish",
+            ].join(" ")}
+            style={{ fontSize: 10 }}
+            title="Close JUST this leg at the live mark — the rest of the structure keeps riding (press twice)"
+            aria-label={`close leg ${leg.strike} ${leg.side}`}
+          >
+            {armedIdx === i ? "confirm ✕" : "✕ leg"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Roll row — the core management action on every real options platform:
+ * close + reopen the same structure at shifted strikes as ONE action.
+ * [↓ step] shifts every leg down one grid step, [atm] re-centers the anchor
+ * leg on the current ATM, [↑ step] shifts up. Strike step comes from the
+ * cached chain the ladder already polls (no extra request). Two-press arm
+ * like the C-C close — a roll books realized P&L.
+ */
+function RollRow({ trade }: { trade: Trade }) {
+  const queryClient = useQueryClient();
+  const setActiveTradeId = useActivePosition((s) => s.setTradeId);
+  const chain = useCachedChainTable(trade.symbol);
+  const step = useMemo(
+    () => strikeStep((chain?.rows ?? []).map((r) => r.strike).sort((a, b) => a - b)),
+    [chain],
+  );
+  const [armed, setArmed] = useState<"down" | "atm" | "up" | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const roll = useMutation({
+    mutationFn: (opts: { strikeShift?: number; toAtm?: boolean }) =>
+      rollTrade(trade.id, opts),
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
+      setActiveTradeId(r.opened);
+      toast.success(
+        `Rolled · realized ${formatSignedDollar(r.realized)} · new net ${formatSignedDollar(r.net_debit_credit)}`,
+      );
+    },
+    onError: (e) => {
+      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+      toast.error((e as Error)?.message || "Could not roll");
+    },
+    onSettled: () => setArmed(null),
+  });
+
+  const fire = (which: "down" | "atm" | "up") => {
+    if (roll.isPending) return;
+    if (armed !== which) {
+      setArmed(which);
+      if (armTimer.current) clearTimeout(armTimer.current);
+      armTimer.current = setTimeout(() => setArmed(null), 3000);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    if (which === "atm") roll.mutate({ toAtm: true });
+    else roll.mutate({ strikeShift: which === "up" ? step : -step });
+  };
+
+  const btn = (which: "down" | "atm" | "up", label: string, title: string) => (
+    <button
+      type="button"
+      onClick={() => fire(which)}
+      disabled={roll.isPending}
+      className={[
+        "flex-1 h-6 border uppercase tracking-label-up disabled:opacity-40",
+        armed === which
+          ? "border-warning text-warning bg-tier-2"
+          : "border-hairline text-fg-tertiary-2 hover:text-fg-secondary hover:bg-tier-2",
+      ].join(" ")}
+      style={{ fontSize: 10, borderRadius: 0 }}
+      title={title}
+    >
+      {armed === which ? "confirm" : label}
+    </button>
+  );
+
+  return (
+    <div className="flex items-center gap-1">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2 shrink-0"
+        style={{ fontSize: 10 }}
+        title="Roll: close this position at the live mark and reopen the same structure at shifted strikes as one action. Premium TP/SL and trailing stops carry over; stale underlying brackets are dropped."
+      >
+        roll
+      </span>
+      {btn("down", `↓ ${step}`, `Shift every leg DOWN ${step} (press twice)`)}
+      {btn("atm", "atm", "Re-center the anchor leg on the current ATM (press twice)")}
+      {btn("up", `↑ ${step}`, `Shift every leg UP ${step} (press twice)`)}
+    </div>
+  );
+}
+
+/** Base size of the structure = gcd of the leg quantities — the unit the
+ *  backend's close_limit_price is quoted in (signed net premium per 1×). */
+function structureBase(trade: Trade): number {
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  let base = 0;
+  for (const leg of trade.legs) base = gcd(base, Math.max(1, leg.contracts ?? 1));
+  return Math.max(1, base);
+}
+
+/** Signed net ENTRY premium per 1× structure (debit positive / credit
+ *  negative) — decides which way the close-limit points. */
+function entryNet1x(trade: Trade): number {
+  let net = 0;
+  for (const leg of trade.legs) {
+    const sign = leg.action === "buy" ? 1 : -1;
+    net += sign * (leg.contracts ?? 1) * (leg.entry_price ?? 0);
+  }
+  return net / structureBase(trade);
+}
+
+/**
+ * Resting close-limit — the take-profit half of the order lifecycle. A
+ * net-debit position names the value to SELL at; a net-credit position
+ * names the buy-back cost. The user always types a positive premium; the
+ * sign convention (credit = negative net) is applied before the API call.
+ * While one rests, the row collapses to a working chip with a cancel ✕.
+ */
+function CloseLimitRow({
+  trade,
+  liveAnalytics,
+}: {
+  trade: Trade;
+  liveAnalytics: TradeAnalytics | null;
+}) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [raw, setRaw] = useState("");
+
+  const isCredit = entryNet1x(trade) < 0;
+  const base = structureBase(trade);
+  // Live per-1× net premium magnitude — the natural seed for the input.
+  const liveNet1x =
+    liveAnalytics != null
+      ? Math.abs(liveAnalytics.current_value) / 100 / base
+      : null;
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
+  };
+  const place = useMutation({
+    mutationFn: async (limit1x: number) =>
+      setCloseOrder(trade.id, isCredit ? -Math.abs(limit1x) : Math.abs(limit1x)),
+    onSuccess: () => {
+      invalidate();
+      setEditing(false);
+      setRaw("");
+    },
+    onError: (e) =>
+      toast.error((e as Error)?.message || "Could not place close limit"),
+  });
+  const pull = useMutation({
+    mutationFn: async () => clearCloseOrder(trade.id),
+    onSuccess: invalidate,
+    onError: (e) => {
+      invalidate(); // 409 → filled/closed underneath; reconcile
+      toast.error((e as Error)?.message || "Could not cancel close limit");
+    },
+  });
+
+  const resting = trade.close_limit_price;
+  if (resting != null) {
+    return (
+      <div
+        className="flex items-center justify-between gap-2 px-1.5 py-1 border border-amber/50 bg-tier-2 text-tiny tabular-nums"
+        style={{ borderRadius: 0 }}
+      >
+        <span className="text-amber uppercase" style={{ fontSize: 11 }}>
+          {isCredit ? "Buy back ≤" : "Close ≥"} ${Math.abs(resting).toFixed(2)}{" "}
+          · working
+        </span>
+        <button
+          type="button"
+          onClick={() => pull.mutate()}
+          disabled={pull.isPending}
+          className="text-fg-tertiary-2 hover:text-bearish disabled:opacity-40 px-1"
+          aria-label="cancel resting close limit"
+          title="Cancel the resting close limit"
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setEditing(true);
+          if (liveNet1x != null && liveNet1x > 0) setRaw(liveNet1x.toFixed(2));
+        }}
+        className="w-full h-6 border border-hairline text-fg-tertiary-2 hover:text-fg-secondary hover:bg-tier-2 uppercase tracking-label-up"
+        style={{ fontSize: 11, borderRadius: 0 }}
+        title={
+          isCredit
+            ? "Rest a buy-back limit: closes when the premium decays to your price"
+            : "Rest a closing limit: closes at your price when the mark reaches it"
+        }
+      >
+        + close at limit
+      </button>
+    );
+  }
+
+  const parsed = Number.parseFloat(raw);
+  const valid = Number.isFinite(parsed) && parsed > 0;
+  return (
+    <div className="flex items-center gap-1 text-tiny tabular-nums">
+      <span
+        className="uppercase tracking-label-up text-fg-tertiary-2 shrink-0"
+        style={{ fontSize: 11 }}
+      >
+        {isCredit ? "Buy back ≤" : "Close ≥"}
+      </span>
+      <input
+        value={raw}
+        onChange={(e) => setRaw(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && valid && !place.isPending) place.mutate(parsed);
+          if (e.key === "Escape") setEditing(false);
+        }}
+        inputMode="decimal"
+        placeholder={liveNet1x != null ? liveNet1x.toFixed(2) : "0.00"}
+        className="w-full min-w-0 h-6 px-1 bg-tier-1 border border-hairline text-fg-primary"
+        style={{ fontSize: 12, borderRadius: 0 }}
+        autoFocus
+        aria-label="close limit net premium per 1x structure"
+      />
+      <button
+        type="button"
+        onClick={() => place.mutate(parsed)}
+        disabled={!valid || place.isPending}
+        className="h-6 px-2 border border-amber/60 text-amber hover:bg-tier-2 disabled:opacity-40 uppercase"
+        style={{ fontSize: 11, borderRadius: 0 }}
+      >
+        rest
+      </button>
+      <button
+        type="button"
+        onClick={() => setEditing(false)}
+        className="h-6 px-1 text-fg-tertiary-2 hover:text-fg-secondary"
+        style={{ fontSize: 12 }}
+        aria-label="cancel editing close limit"
+      >
+        ✕
+      </button>
     </div>
   );
 }
@@ -1395,6 +1824,11 @@ function KeyLevelsCol({ symbol }: { symbol: string | null }) {
               : `${m.iv_rank.toFixed(0)}${m.iv_rank_status ? ` · ${m.iv_rank_status}` : ""}`
           }
           tooltip={LEVEL_TOOLTIP.IV}
+        />
+        <LevelRow
+          label="P/C"
+          value={m?.pc_ratio == null ? "—" : m.pc_ratio.toFixed(2)}
+          tooltip={LEVEL_TOOLTIP["P/C"]}
         />
         {allEmpty && (
           <span

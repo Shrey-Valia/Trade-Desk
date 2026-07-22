@@ -12,9 +12,15 @@ A single-trader desktop web app:
 
 - A chart-first execution surface with the option chain on the right, the breakeven of any active position painted on the price axis in magenta, and an entry marker placed on the bar the trade fired.
 - A combine-tier account model — three fixed sizes (50K / 100K / 150K) with industry-standard trailing-drawdown math (Topstep / Apex convention), a daily loss limit display, and a high-water-mark that walks the MLL up monotonically as the account grows.
-- A real journal: every paper open, every close, full leg-level state, P&L attribution, calendar view, tags, notes, mistake vocabulary, thesis log, screenshot URL field, planned-exit field.
+- A real journal: every paper open, every close, full leg-level state, P&L attribution, calendar view, tags, notes, mistake vocabulary, thesis log, screenshot URL field, planned-exit field. Two CSV exports: the flat trade ledger and a per-execution fills report.
 - Live intraday timeframes (1m / 5m / 15m / 1h / 4h / 1D) backed by Alpaca bars.
-- A curated 30-symbol universe of liquid 0DTE-tradeable names — ETFs (SPY/QQQ/IWM/DIA) plus mega-cap tech, crypto-adjacent, and high-beta retail single names.
+- A curated 30-symbol universe of liquid 0DTE-tradeable names — ETFs (SPY/QQQ/IWM/DIA) plus mega-cap tech, crypto-adjacent, and high-beta retail single names. The chain browses ANY listed expiration (term-structure visibility); opening remains strictly 0DTE.
+
+**Execution mechanics** (trader-audit waves, 2026-07): market/limit/stop/stop-limit entries with DAY/GTC, atomic multi-leg structures with signed net-premium limits, resting close-limits (fill AT your price, passive side), one-click strike **rolls** (`/api/zerodte/roll`), per-leg closes (with copy-follower cascade), OCO pairing, trailing stops, premium-multiple TP/SL, draggable + right-clickable chart brackets, and an arm-to-confirm fat-finger layer (price-away, notional, duplicate-order). The order monitor runs on a 5s cadence; working SELL entries require a genuine two-sided live NBBO at fill time.
+
+**Risk & margin**: a buying-power model gates every open — defined-risk structures require their max loss, naked short sides carry a Reg-T-style requirement — on top of the prop-firm floors (trailing MLL, daily loss limit, scaling cap). Expiration day force-flattens 0DTE books ~10 minutes before the bell (half-day aware) with a live countdown in the position panel.
+
+**Decision support**: portfolio Greeks with SPY-beta-weighted delta, POP/prob-ITM pre-trade AND live on open positions, buying-power requirement shown before you fire, ATM IV term structure (contango/backwardation), per-contract IV on the ladder, a self-upgrading IV Rank (percentile → true 252-day rank as history accrues), payoff risk graphs on the multi-leg builder, and a pre-trade "what-if clock" that decays the T+0 curve toward the bell. Server-side price alerts fire with no tab open.
 
 ## What this is not
 
@@ -51,7 +57,22 @@ No `shadcn/ui`, no `lucide-react`, no `d3` — the v1 spec listed them but the l
 - `pandas` + `numpy` + `scipy` + `pandas-market-calendars`
 - `torch`, `scikit-learn`, `catboost` are declared but currently dormant — see above
 
-**Tests:** pytest. ~280 tests; pure-math, journal CRUD, account-state math, search filtering, chain-availability, regime classifier, vol-edge, monte-carlo coverage.
+**Tests:** pytest, ~1,100 backend + ~210 frontend (vitest). Pure-math, journal CRUD, account-state math, order-monitor fills/exits, margin requirements, roll/close-leg/close-limit lifecycles, probability metrics, chain/expiry resolution, admin surface.
+
+## Trading-engine configuration
+
+The knobs an operator actually tunes (all env-overridable via pydantic-settings, `backend/config.py`):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `order_monitor_interval_s` | `5.0` | Seconds between trigger passes (working fills, brackets, trailing/premium exits, close-limits, liquidation). 5s is the floor for the polled data plane. |
+| `margin_enforcement_enabled` | `true` | Buying-power gate on every open: defined-risk = max loss; naked sides = Reg-T-style. Off = legacy (no capital check). |
+| `margin_naked_pct` / `margin_naked_min_pct` | `0.20` / `0.10` | Naked-requirement rates: pct·spot − OTM, floored at min_pct·spot (calls) / min_pct·strike (puts), + short premium. |
+| `expiry_closeout_minutes` | `10.0` | Force-flatten 0DTE books this many minutes before the bell (half-day aware); pulls working orders on dying contracts. `0` disables. |
+| `working_sell_fill_requires_quote` | `true` | A working SELL entry needs a genuine two-sided live NBBO at fill time (anti-exploitation); rests through cold ticks. |
+| `zero_dte_universe` | `SPY,QQQ,IWM` | The openable symbols. Browsing/search covers the curated 30. |
+| `per_contract_fee` | `0.69` | Simulated commission + regulatory fee, per contract per side. |
+| `max_spot_staleness_s` | `300` | Refuse opens against an underlying print older than this (halt/illiquidity proxy). |
 
 ---
 

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { PayoffCurveSvg } from "@/components/analytics/PayoffCurveSvg";
 import { useChainTable } from "@/hooks/useChainTable";
 import { useMarketStatus } from "@/hooks/useMarket";
+import { useMultiLegPreview } from "@/hooks/useMultiLegPreview";
 import { useOpenZeroDteMultiLeg } from "@/hooks/useOpenZeroDteMultiLeg";
 import { premiumExitForDirection, useTradeTicket } from "@/stores/tradeTicket";
 import type {
@@ -21,7 +23,13 @@ import type {
  * market fill and gates via the scaling cap, so this is a pure builder UI.
  */
 
-type Preset = "vertical" | "iron_condor" | "butterfly" | "custom";
+type Preset =
+  | "vertical"
+  | "put_spread"
+  | "strangle"
+  | "iron_condor"
+  | "butterfly"
+  | "custom";
 
 interface Props {
   symbol: string;
@@ -75,8 +83,21 @@ export function StrategyBuilder({ symbol }: Props) {
     setLimitPrice(netPremium != null ? +netPremium.toFixed(2) : null);
   }, [orderMode, netPremium, limitDirty]);
 
+  // Live risk graph for the structure AS SUBMITTED (short legs negative):
+  // payoff curves, breakevens, max profit/loss, POP — the missing half of
+  // every builder that shows a leg list and fires blind.
+  const preview = useMultiLegPreview(symbol, legs, contracts);
+
+  // A no-0DTE day serves the NEAREST upcoming expiry (server fallback) —
+  // fine for BROWSING, but this builder opens strictly-0DTE structures, so
+  // firing would only 409 at the server after showing a live risk graph
+  // (review wave 9, finding 10: the old chain 409 disabled the builder with
+  // a reason; the fallback regressed that to fire-then-fail).
+  const chainIsToday = chain?.expiry_is_today !== false;
+
   const canFire =
     marketOpen &&
+    chainIsToday &&
     atm != null &&
     legs.length >= 2 &&
     !openMulti.isPending &&
@@ -117,7 +138,16 @@ export function StrategyBuilder({ symbol }: Props) {
 
       {/* Preset selector */}
       <div className="flex flex-wrap" style={{ gap: 4 }}>
-        {(["vertical", "iron_condor", "butterfly", "custom"] as const).map((p) => (
+        {(
+          [
+            "vertical",
+            "put_spread",
+            "strangle",
+            "iron_condor",
+            "butterfly",
+            "custom",
+          ] as const
+        ).map((p) => (
           <button
             key={p}
             type="button"
@@ -175,6 +205,66 @@ export function StrategyBuilder({ symbol }: Props) {
           </button>
         )}
       </div>
+
+      {/* Risk graph — payoff at expiry + today, POP, extremes. */}
+      {preview.data && (
+        <div className="flex flex-col gap-0.5 border border-hairline bg-tier-1 px-1.5 pt-1 pb-1.5">
+          <div style={{ height: 96 }}>
+            <PayoffCurveSvg
+              prices={preview.data.prices}
+              payoffExpiration={preview.data.payoff_expiration}
+              payoffToday={preview.data.payoff_today}
+              breakevens={preview.data.breakevens}
+              spot={preview.data.spot}
+            />
+          </div>
+          <div
+            className="flex items-center justify-between tabular-nums text-fg-secondary"
+            style={{ fontSize: 11 }}
+          >
+            <span
+              title="Probability of profit at expiry for the structure as submitted — risk-neutral Black-Scholes at the ATM IV."
+            >
+              POP{" "}
+              <span className="text-fg-primary">
+                {preview.data.pop_long != null
+                  ? `${Math.round(preview.data.pop_long * 100)}%`
+                  : "—"}
+              </span>
+            </span>
+            <span className="text-bullish" title="Max profit at expiry">
+              max{" "}
+              {preview.data.max_profit == null
+                ? "unl"
+                : `+$${Math.abs(preview.data.max_profit).toFixed(0)}`}
+            </span>
+            <span className="text-bearish" title="Max loss at expiry">
+              risk{" "}
+              {preview.data.max_loss == null
+                ? "unl"
+                : `−$${Math.abs(preview.data.max_loss).toFixed(0)}`}
+            </span>
+            <span
+              className="text-position"
+              title="Breakeven underlying price(s) at expiry"
+            >
+              BE{" "}
+              {preview.data.breakevens.length
+                ? preview.data.breakevens.map((b) => b.toFixed(0)).join("/")
+                : "—"}
+            </span>
+            <span
+              className="text-fg-secondary"
+              title="Buying power this structure holds against your balance (margin model: max loss for defined-risk, Reg-T-style for naked sides). The open gate enforces it."
+            >
+              BP{" "}
+              {preview.data.bp_requirement_long == null
+                ? "—"
+                : `$${Math.round(preview.data.bp_requirement_long).toLocaleString()}`}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Order type: MARKET fills now; NET LIMIT rests at a net-premium price */}
       <div className="flex flex-col gap-0.5">
@@ -282,6 +372,12 @@ export function StrategyBuilder({ symbol }: Props) {
       {!marketOpen && (
         <span className="text-warning" style={{ fontSize: 11 }}>
           Market closed — structures open during the regular session.
+        </span>
+      )}
+      {marketOpen && !chainIsToday && (
+        <span className="text-warning" style={{ fontSize: 11 }}>
+          No 0DTE for {symbol} today — the chain shows exp {chain?.expiry} for
+          reference; structures open on today&rsquo;s expiry only.
         </span>
       )}
       {openMulti.isError && (
@@ -415,6 +511,19 @@ export function presetLegs(preset: Preset, atm: number, step: number): MultiLegS
       return [
         { side: "call", action: "buy", strike: atm, ratio: 1 },
         { side: "call", action: "sell", strike: atm + w, ratio: 1 },
+      ];
+    case "put_spread":
+      // Bull put CREDIT spread: sell the 1-strike-OTM put, buy the wing
+      // below — the most-traded defined-risk premium-selling structure.
+      return [
+        { side: "put", action: "sell", strike: atm - w, ratio: 1 },
+        { side: "put", action: "buy", strike: atm - 2 * w, ratio: 1 },
+      ];
+    case "strangle":
+      // Long strangle: OTM call + OTM put — the straddle's cheaper cousin.
+      return [
+        { side: "call", action: "buy", strike: atm + w, ratio: 1 },
+        { side: "put", action: "buy", strike: atm - w, ratio: 1 },
       ];
     case "iron_condor":
       // Short put + call spreads bracketing ATM.

@@ -63,8 +63,21 @@ export const TradeOutSchema = z.object({
   // payloads from before the backend started echoing them.
   tp_premium_mult: z.number().nullable().optional(),
   sl_premium_mult: z.number().nullable().optional(),
+  // Resting close-limit on an OPEN position: signed net premium per 1×
+  // structure (debit positive / credit negative). The monitor fills it AT
+  // the limit when the live net mark reaches it. null = none resting.
+  close_limit_price: z.number().nullable().optional(),
   close_reason: z
-    .enum(["manual", "stop_loss", "take_profit", "expiry", "liquidation", "copy"])
+    .enum([
+      "manual",
+      "stop_loss",
+      "take_profit",
+      "expiry",
+      "liquidation",
+      "copy",
+      "limit",
+      "expiry_closeout",
+    ])
     .nullable()
     .optional(),
   // Phase 2 metadata.
@@ -81,6 +94,35 @@ export const TradeOutSchema = z.object({
   updated_at: z.string(),
 });
 export type Trade = z.infer<typeof TradeOutSchema>;
+
+// Portfolio-level Greek book (backend /api/journal/portfolio/greeks) —
+// net exposure across every OPEN execution position on the active combine.
+// delta/gamma are share-equivalents; theta/vega position dollars;
+// beta_weighted_delta is SPY-share equivalents (null when SPY spot is cold).
+export const PortfolioGreeksSchema = z.object({
+  positions: z.number().int(),
+  net: z.object({
+    delta: z.number(),
+    gamma: z.number(),
+    theta: z.number(),
+    vega: z.number(),
+  }),
+  beta_weighted_delta: z.number().nullable(),
+  spy_spot: z.number().nullable(),
+  by_symbol: z.array(
+    z.object({
+      symbol: z.string(),
+      beta: z.number(),
+      spot: z.number(),
+      delta: z.number(),
+      gamma: z.number(),
+      theta: z.number(),
+      vega: z.number(),
+      beta_weighted_delta: z.number().nullable(),
+    }),
+  ),
+});
+export type PortfolioGreeks = z.infer<typeof PortfolioGreeksSchema>;
 
 // Mirror of MISTAKE_TAG_VOCABULARY in backend schemas/journal.py — used
 // as autocomplete suggestions in the close-position UI. Custom strings
@@ -145,6 +187,10 @@ export const TradeAnalyticsSchema = z.object({
   unlimited_gain: z.boolean(),
   unlimited_loss: z.boolean(),
   greeks: AnalyticsGreeksSchema,
+  /** Probability the position held to expiry ends profitable from here
+   *  (model number — entry fills + commission included). null once the
+   *  clock runs out or when IV is unusable. */
+  pop: z.number().nullable().optional(),
 });
 export type TradeAnalytics = z.infer<typeof TradeAnalyticsSchema>;
 

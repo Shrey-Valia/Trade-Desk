@@ -44,6 +44,10 @@ export const ChainStrikeRowSchema = z.object({
   call_theta: z.number().default(0),
   put_delta: z.number().default(0),
   put_theta: z.number().default(0),
+  // Per-contract implied vol back-solved from the quote mid (smile/skew
+  // visibility). null/absent on BS-fallback sides and older payloads.
+  call_iv: z.number().nullable().optional(),
+  put_iv: z.number().nullable().optional(),
   // Per-side NBBO + session volume. nullable().optional() so the UI works
   // both before and after the backend starts sending them; null = no live
   // quote on that side (the mid/model price above is the fallback).
@@ -66,6 +70,9 @@ export const ChainTableSchema = z.object({
   rows: z.array(ChainStrikeRowSchema),
   t_years_to_close: z.number(),
   session_close_iso: z.string(),
+  /** False when the table shows a LATER expiration than today (multi-expiry
+   *  browsing): cells are display-only — opening remains strictly 0DTE. */
+  expiry_is_today: z.boolean().default(true),
   indicative: z.boolean(),
   notice: z.string(),
   /** Quote timestamp (ISO) — when the chain's prices were sourced. */
@@ -73,11 +80,56 @@ export const ChainTableSchema = z.object({
 });
 export type ChainTable = z.infer<typeof ChainTableSchema>;
 
+// -- IV term structure (ATM IV per listed expiration) -----------------------
+
+export const TermStructureSchema = z.object({
+  symbol: z.string(),
+  spot: z.number(),
+  points: z.array(
+    z.object({
+      expiry: z.string(),
+      dte: z.number().int(),
+      atm_strike: z.number(),
+      atm_iv: z.number().nullable(),
+    }),
+  ),
+  /** far ATM IV − near ATM IV over the covered window; null <2 solved points. */
+  slope: z.number().nullable(),
+  shape: z.enum(["contango", "backwardation", "flat"]).nullable(),
+});
+export type TermStructure = z.infer<typeof TermStructureSchema>;
+
+// -- Roll (atomic close + reopen at shifted strikes) ------------------------
+
+export const RollOutSchema = z.object({
+  closed: z.number().int(),
+  opened: z.number().int(),
+  /** $ booked closing the old position. */
+  realized: z.number(),
+  /** The NEW position's net entry ($, signed — debit positive). */
+  net_debit_credit: z.number(),
+});
+export type RollOut = z.infer<typeof RollOutSchema>;
+
+// -- Expirations (the chain browser's expiry selector) ----------------------
+
+export const ExpirationsSchema = z.object({
+  symbol: z.string(),
+  expirations: z.array(
+    z.object({
+      expiry: z.string(), // ISO date
+      dte: z.number().int(),
+      is_today: z.boolean(),
+    }),
+  ),
+});
+export type Expirations = z.infer<typeof ExpirationsSchema>;
+
 // -- Contract preview (the detail panel: payoff + greeks) -------------------
 
 export const ContractPreviewSchema = z.object({
   symbol: z.string(),
-  kind: z.enum(["leg", "straddle"]),
+  kind: z.enum(["leg", "straddle", "multi"]),
   side: z.enum(["call", "put"]).nullable(),
   strike: z.number(),
   contracts: z.number().int(),
@@ -100,13 +152,27 @@ export const ContractPreviewSchema = z.object({
   breakevens: z.array(z.number()),
   /** null = unbounded upside. */
   max_profit: z.number().nullable(),
-  max_loss: z.number(),
+  /** null = unbounded downside (net short calls — multi-leg preview only). */
+  max_loss: z.number().nullable(),
   greeks: z.object({
     delta: z.number(),
     gamma: z.number(),
     theta: z.number(),
     vega: z.number(),
   }),
+  // Closed-form model probabilities (risk-neutral lognormal, ATM IV).
+  // prob_itm: finishes ITM at expiry (null for a straddle). pop_long /
+  // pop_short: probability of profit at expiry per direction.
+  // nullable().optional(): tolerant of payloads from before the backend
+  // computed them.
+  prob_itm: z.number().nullable().optional(),
+  pop_long: z.number().nullable().optional(),
+  pop_short: z.number().nullable().optional(),
+  // Buying-power requirement per direction (margin model): long = the
+  // debit; short = the Reg-T-style requirement. multi fills _long with the
+  // as-submitted structure's requirement.
+  bp_requirement_long: z.number().nullable().optional(),
+  bp_requirement_short: z.number().nullable().optional(),
 });
 export type ContractPreview = z.infer<typeof ContractPreviewSchema>;
 
@@ -116,6 +182,9 @@ export interface ContractPreviewInput {
   side?: "call" | "put";
   strike: number;
   contracts: number;
+  /** Pre-trade time scrubber: what-if minutes-to-close for the T+0 curve
+   *  and greeks (entry pricing stays at the real now). Omitted = now. */
+  minutes_to_close?: number | null;
 }
 
 // -- WS5: multi-leg strategy builder ----------------------------------------

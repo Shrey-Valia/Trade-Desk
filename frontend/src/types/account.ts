@@ -83,6 +83,12 @@ export const AccountStateSchema = z.object({
   objective_progress: z.number().optional(),
   /** Scaling-plan cap: max contracts per position at the current built equity. */
   max_contracts: z.number().int().default(1),
+  /** $ requirement committed by the open + working book (defined-risk max
+   *  loss / Reg-T-style for naked sides). null = enforcement off or the book
+   *  couldn't be priced this instant. */
+  margin_used: z.number().nullable().optional(),
+  /** Realized balance − margin_used, floored at 0 — capital for NEW opens. */
+  buying_power: z.number().nullable().optional(),
   /** True once the eval passed (auto-funded). */
   funded: z.boolean().default(false),
   /** Trader's split of realized profit (0 until activated; Payouts page nets requests). */

@@ -304,11 +304,18 @@ def test_stop_limit_arms_then_rests_when_limit_unmet(auth_client, session_factor
     s.close()
 
 
-def test_sell_stop_uses_per_share_premium_not_signed_mark(auth_client, session_factory):
+def test_sell_stop_uses_per_share_premium_not_signed_mark(
+    auth_client, session_factory, monkeypatch
+):
     """A SELL working order arms against the POSITIVE per-share premium, not the
     SIGNED mark (which is NEGATIVE for a short). Regression: the pre-fix code
     passed the raw mark, so `negative ≤ positive_stop` armed every sell order on
-    the first tick and booked a $0.01 fill from max(0.01, negative_mark)."""
+    the first tick and booked a $0.01 fill from max(0.01, negative_mark).
+
+    The fill-time quote gate is OFF here on purpose: this test exists to pin
+    the MID-FALLBACK trigger math, which only runs quoteless (the gate has
+    its own suite in test_working_fill_quote_gate)."""
+    monkeypatch.setattr(settings, "working_sell_fill_requires_quote", False)
     c = make_combine(auth_client, "50K")
     sell_leg = [{
         "side": "call", "action": "sell", "strike": 100.0,

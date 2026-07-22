@@ -25,20 +25,29 @@ import {
 import {
   ChainTableSchema,
   ContractPreviewSchema,
+  ExpirationsSchema,
   MonteCarloResultSchema,
+  RollOutSchema,
+  TermStructureSchema,
   ZeroDteChainSchema,
   type ChainTable,
   type ContractPreview,
   type ContractPreviewInput,
+  type Expirations,
   type MonteCarloInput,
   type MonteCarloResult,
+  type MultiLegSpec,
   type OpenMultiLegInput,
+  type RollOut,
+  type TermStructure,
   type ZeroDteChain,
 } from "@/types/zerodte";
 import {
+  PortfolioGreeksSchema,
   TradeAnalyticsSchema,
   TradeOutSchema,
   TradesResponseSchema,
+  type PortfolioGreeks,
   type Trade,
   type TradeAnalytics,
   type TradeInput,
@@ -609,6 +618,53 @@ export const setBrackets = (
 export const cancelOrder = (id: number): Promise<Trade> =>
   mutate(`/api/journal/trades/${id}/cancel`, TradeOutSchema, { method: "POST" });
 
+/** Place (or replace) a resting CLOSE-LIMIT on an open position. The limit is
+ *  the SIGNED net premium per 1× structure — positive = value to sell a
+ *  net-debit position at; negative = buy-back cost for a net-credit position
+ *  (-0.30 = pay at most 0.30). 422 when the sign doesn't match the position's
+ *  direction or the limit is already marketable (use the market close then). */
+export const setCloseOrder = (id: number, limitPrice: number): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/close-order`, TradeOutSchema, {
+    method: "POST",
+    body: JSON.stringify({ limit_price: limitPrice }),
+  });
+
+/** Pull the resting close-limit off an open position. */
+export const clearCloseOrder = (id: number): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/close-order`, TradeOutSchema, {
+    method: "DELETE",
+  });
+
+/** Close ONE leg of an open multi-leg position at the live mark (buy back
+ *  the tested short, let the rest ride). qty omitted = the whole leg. The
+ *  surviving legs keep riding; strategy label degrades to "custom" (or the
+ *  single-leg name when one leg remains). 409 while copy-followers mirror
+ *  the trade (per-leg closes don't cascade yet). */
+export const closeLeg = (
+  id: number,
+  legIndex: number,
+  qty?: number,
+): Promise<Trade> =>
+  mutate(`/api/journal/trades/${id}/close-leg`, TradeOutSchema, {
+    method: "POST",
+    body: JSON.stringify({ leg_index: legIndex, qty: qty ?? null }),
+  });
+
+/** Link 2–4 WORKING orders as an OCO group — when one fills, the monitor
+ *  cancels the rest. 409 when any is no longer working. */
+export const linkOcoOrders = (tradeIds: number[]): Promise<TradesResponse> =>
+  mutate("/api/journal/orders/oco-link", TradesResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ trade_ids: tradeIds }),
+  });
+
+/** Dissolve the OCO pairing on the given orders. */
+export const unlinkOcoOrders = (tradeIds: number[]): Promise<TradesResponse> =>
+  mutate("/api/journal/orders/oco-unlink", TradesResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ trade_ids: tradeIds }),
+  });
+
 /** Modify a WORKING (unfilled) order in place — trigger price(s) and/or TIF.
  *  409 when the order is no longer working (filled/cancelled underneath the
  *  form); the backend's detail is surfaced verbatim on the thrown error. */
@@ -652,6 +708,11 @@ export interface AnalyticsParams {
   elapsedHours?: number | null;
 }
 
+/** Net Greek exposure across every OPEN execution position on the active
+ *  combine + SPY-beta-weighted delta. 503 while the quote feed is cold. */
+export const fetchPortfolioGreeks = (): Promise<PortfolioGreeks> =>
+  request("/api/journal/portfolio/greeks", PortfolioGreeksSchema);
+
 export const fetchTradeAnalytics = (
   id: number,
   params: AnalyticsParams = {},
@@ -689,21 +750,69 @@ export const fetchZeroDteChain = (
   );
 
 /** Windowed chain table for the trading-ticket UI — strikes around ATM
- * with call+put prices (live quote or BS fallback) and open interest. */
+ * with call+put prices (live quote or BS fallback) and open interest.
+ * `expiry` (ISO date) browses a LATER expiration read-only; omitted =
+ * today's 0DTE, else the nearest upcoming expiry. */
 export const fetchChainTable = (
   symbol: string,
   strikes: number = 15,
+  expiry?: string | null,
 ): Promise<ChainTable> =>
   request(
-    `/api/zerodte/chain/table?symbol=${encodeURIComponent(symbol)}&strikes=${strikes}`,
+    `/api/zerodte/chain/table?symbol=${encodeURIComponent(symbol)}&strikes=${strikes}` +
+      (expiry ? `&expiry=${encodeURIComponent(expiry)}` : ""),
     ChainTableSchema,
   );
+
+/** Listed expirations (today or later) for the chain's expiry selector. */
+export const fetchExpirations = (symbol: string): Promise<Expirations> =>
+  request(
+    `/api/zerodte/expirations?symbol=${encodeURIComponent(symbol)}`,
+    ExpirationsSchema,
+  );
+
+/** ATM implied-vol term structure — one point per listed expiration. */
+export const fetchTermStructure = (symbol: string): Promise<TermStructure> =>
+  request(
+    `/api/zerodte/term?symbol=${encodeURIComponent(symbol)}`,
+    TermStructureSchema,
+  );
+
+/** Roll an open position: close at the live mark and reopen the same
+ *  structure at shifted strikes as ONE action. Exactly one of strikeShift
+ *  (signed points, whole structure moves together) or toAtm (re-center the
+ *  anchor leg on the current ATM). A refused roll leaves the position
+ *  untouched — every gate runs before the close books. */
+export const rollTrade = (
+  tradeId: number,
+  opts: { strikeShift?: number; toAtm?: boolean },
+): Promise<RollOut> =>
+  mutate("/api/zerodte/roll", RollOutSchema, {
+    method: "POST",
+    body: JSON.stringify({
+      trade_id: tradeId,
+      strike_shift: opts.strikeShift ?? null,
+      to_atm: opts.toAtm ?? false,
+    }),
+  });
 
 /** Pre-trade payoff + greeks for the selected contract (detail panel). */
 export const fetchContractPreview = (
   input: ContractPreviewInput,
 ): Promise<ContractPreview> =>
   mutate("/api/zerodte/preview", ContractPreviewSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+/** Pre-trade payoff/POP for an arbitrary 2–6 leg structure AS SUBMITTED
+ *  (short legs negative) — the strategy builder's risk graph. */
+export const fetchMultiLegPreview = (input: {
+  symbol: string;
+  contracts: number;
+  legs: MultiLegSpec[];
+}): Promise<ContractPreview> =>
+  mutate("/api/zerodte/preview-multi", ContractPreviewSchema, {
     method: "POST",
     body: JSON.stringify(input),
   });

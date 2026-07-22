@@ -102,3 +102,35 @@ def test_healthy_trade_still_computes(client_and_session):
     assert body["trade_id"] == tid
     # Quote fetch is monkeypatched offline — spot falls back to entry.
     assert body["spot"] == pytest.approx(218.0)
+
+
+def test_intraday_pop_computed_from_here(client_and_session):
+    """POP on an open position (audit wave 7): the intraday engine reports
+    the probability the position ends profitable at expiry from the current
+    spot/clock. Driven directly (tomorrow's expiry → time strictly > 0 at
+    any wall-clock hour) so the assertion is deterministic."""
+    from datetime import datetime, timezone
+
+    from routers.journal import _intraday_analytics
+
+    t = Trade(
+        symbol="SPY",
+        strategy="long_call",
+        entry_date=datetime.now(timezone.utc),
+        entry_underlying_price=100.0,
+        net_debit_credit=110.0,
+        is_paper=True,
+        tier="50K",
+        status="open",
+    )
+    t.id = 999_001  # unsaved row — analytics only echoes the id
+    t.legs = [{
+        "side": "call", "action": "buy", "strike": 100.0,
+        "expiry": (date.today() + timedelta(days=1)).isoformat(),
+        "contracts": 1, "entry_price": 1.1,
+    }]
+    out = _intraday_analytics(trade=t, spot=100.0, rate=0.045, elapsed_hours=0.0)
+    assert out.pop is not None
+    # ATM long call needs a move past BE ≈ 101.1 → strictly under a coin flip,
+    # but with a day on the clock comfortably above zero.
+    assert 0.0 < out.pop < 0.5
