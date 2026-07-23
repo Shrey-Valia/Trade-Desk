@@ -50,6 +50,15 @@ def test_quantize_decimal_input_is_stable():
     assert quantize_money(Decimal("12.349")) == Decimal("12.35")
 
 
+def test_quantize_rejects_non_finite():
+    # A degenerate upstream calc must fail loud at the storage boundary, never
+    # persist a silent NaN or raise a bare InvalidOperation deeper in a write.
+    for bad in (float("nan"), float("inf"), float("-inf"),
+                Decimal("NaN"), Decimal("Infinity")):
+        with pytest.raises(ValueError):
+            quantize_money(bad)
+
+
 # ---------------------------------------------------------------------------
 # Money column — exact DB round-trip, float on read
 # ---------------------------------------------------------------------------

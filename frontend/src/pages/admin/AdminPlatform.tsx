@@ -95,7 +95,9 @@ export function AdminPlatform() {
 
   const setMode = (next: TradingMode) => {
     if (next === mode || put.isPending) return;
-    if (next === "halted") {
+    // Both restrictive modes stop new opens platform-wide — confirm either. Only
+    // a return to "normal" (loosening) fires directly.
+    if (next === "halted" || next === "close_only") {
       setConfirmMode(next);
       return;
     }
@@ -272,14 +274,24 @@ export function AdminPlatform() {
       </Panel>
 
       <ActionModal
-        open={confirmMode === "halted"}
+        open={confirmMode === "halted" || confirmMode === "close_only"}
         onClose={() => setConfirmMode(null)}
-        title="Halt all trading?"
-        description="Every open AND close is rejected platform-wide, and the order monitor stops filling entries, until an operator restores normal or close-only mode. Use close-only unless positions themselves are the hazard."
-        confirmLabel="Halt trading"
+        title={
+          confirmMode === "close_only"
+            ? "Switch to close-only?"
+            : "Halt all trading?"
+        }
+        description={
+          confirmMode === "close_only"
+            ? "Every new open is rejected platform-wide (exits still allowed) until an operator restores normal mode."
+            : "Every open AND close is rejected platform-wide, and the order monitor stops filling entries, until an operator restores normal or close-only mode. Use close-only unless positions themselves are the hazard."
+        }
+        confirmLabel={confirmMode === "close_only" ? "Close-only mode" : "Halt trading"}
         confirmKind="danger"
         pending={put.isPending}
-        onConfirm={() => put.mutate({ trading_mode: "halted" })}
+        onConfirm={() =>
+          put.mutate({ trading_mode: confirmMode ?? "halted" })
+        }
       />
     </div>
   );

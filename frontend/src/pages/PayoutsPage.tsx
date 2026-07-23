@@ -23,6 +23,7 @@ import {
   errorCode,
   fetchLegalStatus,
 } from "@/lib/legalApi";
+import { COUNTRIES } from "@/lib/countries";
 import { splitPct, splitTokenFromValue } from "@/lib/pricing";
 import {
   CRYPTO_NETWORKS,
@@ -438,38 +439,6 @@ function StepCard({
   );
 }
 
-// Common countries for the KYC / tax selects (ISO-3166 alpha-2).
-const COMMON_COUNTRIES: Array<[string, string]> = [
-  ["US", "United States"],
-  ["CA", "Canada"],
-  ["GB", "United Kingdom"],
-  ["AU", "Australia"],
-  ["NZ", "New Zealand"],
-  ["IE", "Ireland"],
-  ["DE", "Germany"],
-  ["FR", "France"],
-  ["ES", "Spain"],
-  ["IT", "Italy"],
-  ["PT", "Portugal"],
-  ["NL", "Netherlands"],
-  ["BE", "Belgium"],
-  ["CH", "Switzerland"],
-  ["AT", "Austria"],
-  ["SE", "Sweden"],
-  ["NO", "Norway"],
-  ["DK", "Denmark"],
-  ["PL", "Poland"],
-  ["JP", "Japan"],
-  ["SG", "Singapore"],
-  ["HK", "Hong Kong"],
-  ["AE", "United Arab Emirates"],
-  ["IN", "India"],
-  ["BR", "Brazil"],
-  ["MX", "Mexico"],
-  ["AR", "Argentina"],
-  ["ZA", "South Africa"],
-];
-
 const INPUT_CLS =
   "h-8 px-2 bg-tier-2 border border-tier-3 rounded-btn text-fg-primary focus:border-amber focus:outline-none";
 
@@ -614,7 +583,7 @@ function KycForm({ resubmit }: { resubmit: boolean }) {
             className={INPUT_CLS}
             style={{ fontSize: 13 }}
           >
-            {COMMON_COUNTRIES.map(([code, name]) => (
+            {COUNTRIES.map(([code, name]) => (
               <option key={code} value={code}>
                 {name}
               </option>
@@ -771,7 +740,7 @@ function TaxForm({ onSubmitted }: { onSubmitted: () => void }) {
             style={{ fontSize: 13 }}
           >
             {formType === "W8BEN" && <option value="">Select…</option>}
-            {COMMON_COUNTRIES.filter(
+            {COUNTRIES.filter(
               ([code]) => formType === "W9" || code !== "US",
             ).map(([code, name]) => (
               <option key={code} value={code}>

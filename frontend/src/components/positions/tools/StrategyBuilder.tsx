@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { PayoffCurveSvg } from "@/components/analytics/PayoffCurveSvg";
 import { useChainTable } from "@/hooks/useChainTable";
@@ -103,8 +103,13 @@ export function StrategyBuilder({ symbol }: Props) {
     !openMulti.isPending &&
     (orderMode === "market" || limitPrice != null);
 
+  // Synchronous double-submit guard: openMulti.isPending only flips on the next
+  // render, so two fast clicks would both pass canFire and fire two identical
+  // multi-leg orders (doubling exposure). The ref blocks the second click in
+  // the same tick — same pattern as TradeTicket / QuickOrder.
+  const submittingRef = useRef(false);
   const fire = () => {
-    if (!canFire) return;
+    if (submittingRef.current || !canFire) return;
     const exits =
       netPremium != null
         ? premiumExitForDirection(premiumExit, netPremium >= 0)
@@ -120,7 +125,12 @@ export function StrategyBuilder({ symbol }: Props) {
       sl: exits.sl,
     });
     if (!payload) return;
-    openMulti.mutate(payload);
+    submittingRef.current = true;
+    openMulti.mutate(payload, {
+      onSettled: () => {
+        submittingRef.current = false;
+      },
+    });
   };
 
   const netLabel = describeLegs(legs);

@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
 
 import { Modal } from "@/components/ui/Modal";
 import { BOTTOM_ITEMS, TOP_ITEMS } from "@/components/layout/LeftRail";
-import { flattenPositions } from "@/lib/zerodteOpen";
 import { useCommandPalette } from "@/stores/commandPalette";
 import { useHotkeyActions } from "@/stores/hotkeyActions";
 import { useOnboarding } from "@/stores/onboarding";
-import { toast } from "@/stores/toast";
 
 interface Command {
   id: string;
@@ -29,26 +26,9 @@ export function CommandPalette() {
   const open = useCommandPalette((s) => s.open);
   const setOpen = useCommandPalette((s) => s.setOpen);
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const setHelpOpen = useOnboarding((s) => s.setHelpOpen);
   const openTour = useOnboarding((s) => s.openTour);
   const request = useHotkeyActions((s) => s.request);
-
-  // Bulk "close all" — flatten every open position on the active combine.
-  // Lives in the palette (and as FLATTEN ALL in the position panel); the
-  // mutation invalidates the trade + account caches so the UI reflects it.
-  const closeAll = async () => {
-    try {
-      const r = await flattenPositions();
-      queryClient.invalidateQueries({ queryKey: ["journal", "trades"] });
-      queryClient.invalidateQueries({ queryKey: ["account", "state"] });
-      toast.success(
-        `Flattened ${r.closed.length} position${r.closed.length === 1 ? "" : "s"}.`,
-      );
-    } catch (e) {
-      toast.error((e as Error)?.message || "Could not close all positions");
-    }
-  };
 
   const [q, setQ] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -84,7 +64,10 @@ export function CommandPalette() {
         id: "act:closeall",
         label: "Close all positions (flatten)",
         hint: "flatten bulk exit all",
-        run: () => closeAll(),
+        // Route through the hotkey bus so the position strip's F-F arm/confirm
+        // guard runs — flattening every position must never fire on a single
+        // action. (First invoke arms + toasts "Press F again to FLATTEN".)
+        run: () => request("flattenAll"),
       },
       {
         id: "act:buy",

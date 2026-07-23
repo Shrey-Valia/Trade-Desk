@@ -1166,7 +1166,7 @@ def _auto_liquidate(
                 # personal triggers don't run.
                 liquidated += _personal_triggers(
                     session, combine, snap, positions, marks, urpl,
-                    dll_active, now, unrealized_for,
+                    dll_active, now, unrealized_for, open_realized,
                 )
                 continue
 
@@ -1269,6 +1269,7 @@ def _personal_triggers(
     dll_active: bool,
     now: datetime,
     unrealized_for,
+    open_realized: float = 0.0,
 ) -> int:
     """PERSONAL (junior) risk triggers for one combine — run only on a tick
     where no FIRM floor fired (the tier-default DLL day-lock, the live DLL
@@ -1292,9 +1293,16 @@ def _personal_triggers(
 
     closed = 0
 
+    # `open_realized` = P&L already booked by scale-outs onto still-OPEN rows.
+    # It's in neither snap.today_realized (closed-trades only) nor `urpl` (prices
+    # only the REMAINING contracts), so — exactly as _auto_liquidate folds it into
+    # the firm gate — both personal triggers must fold it in too, else a trader
+    # who scales 9/10 lots out at a loss and holds 1 near breakeven never trips
+    # their own daily-loss limit or profit target despite the real day P&L.
+
     # 1) Personal daily profit target.
     if snap.profit_target_amount is not None and not snap.profit_locked:
-        day_pnl = snap.today_realized + urpl
+        day_pnl = snap.today_realized + open_realized + urpl
         if day_pnl >= snap.profit_target_amount:
             if snap.profit_target_lock:
                 _flatten_book(
@@ -1322,7 +1330,9 @@ def _personal_triggers(
         and snap.personal_dll_amount is not None
         and snap.personal_dll_mode in ("alert", "liquidate")
     ):
-        live_day_loss = snap.dll_used + max(0.0, -urpl)
+        live_day_loss = (
+            snap.dll_used + max(0.0, -open_realized) + max(0.0, -urpl)
+        )
         if live_day_loss >= snap.personal_dll_amount:
             if snap.personal_dll_mode == "alert":
                 if not event_recorded_today(session, combine.id, "personal_dll", now):

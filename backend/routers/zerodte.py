@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from calculations.intraday_analytics import (
@@ -1050,6 +1050,21 @@ def _live_combine_urpl(session: Session, combine: Combine) -> float:
     return total
 
 
+def _lock_combine_row(session: Session, combine_id: int) -> None:
+    """Take a real write lock on the combine row, held until this transaction
+    commits. `with_for_update()` is a documented NO-OP on SQLite (the shipped
+    default deploy), so a bare `SELECT ... FOR UPDATE` would NOT serialize
+    concurrent opens there. An UPDATE travels the write path that DOES take the
+    lock: on SQLite the second writer waits on busy_timeout until the first
+    commits; on Postgres it takes the row lock. Writing a column to itself
+    changes nothing but still acquires the lock. Mirrors combines.request_payout."""
+    session.execute(
+        update(Combine)
+        .where(Combine.id == combine_id)
+        .values(settled_hwm=Combine.settled_hwm)
+    )
+
+
 def _require_tradeable(
     session: Session,
     combine: Combine,
@@ -1094,7 +1109,15 @@ def _require_tradeable(
     if symbol is not None:
         _require_symbol_tradeable(session, symbol)
 
+    # Snapshot FIRST (it may COMMIT a pending settlement, which would release any
+    # lock we already held), then acquire the write lock for the read-decide-open
+    # below. Everything from here through the caller's booking commit is now
+    # serialized per combine, so two concurrent opens (a double-click dispatched
+    # across the FastAPI threadpool, a retry, a second tab) can't both read the
+    # same open-contract count / balance and both slip past the scaling cap or
+    # MLL/DLL gate. Same pattern the payout path uses (combines.request_payout).
     snap = combine_snapshot(session, combine)
+    _lock_combine_row(session, combine.id)
     if snap.outcome == "failed":
         raise HTTPException(
             status_code=403,

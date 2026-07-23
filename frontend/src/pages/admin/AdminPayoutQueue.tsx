@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relativeTime } from "@/components/positions/panelChrome";
@@ -276,6 +276,32 @@ function ReviewPane({
   onDecide: (decision: PayoutDecision) => void;
 }) {
   const actions = actionsFor(item.state);
+  // Money-moving decisions get a click-to-confirm (approve books the payout;
+  // mark-paid closes it as disbursed) — a misclick in the expanded row must not
+  // instantly move money. Deny already routes through its own modal; hold/resume
+  // are reversible workflow states and fire directly.
+  const NEEDS_CONFIRM: PayoutDecision[] = ["approve", "mark-paid"];
+  const [armed, setArmed] = useState<PayoutDecision | null>(null);
+  const armTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (armTimer.current) window.clearTimeout(armTimer.current);
+    },
+    [],
+  );
+  const handleDecide = (d: PayoutDecision) => {
+    if (NEEDS_CONFIRM.includes(d)) {
+      if (armed !== d) {
+        setArmed(d);
+        if (armTimer.current) window.clearTimeout(armTimer.current);
+        armTimer.current = window.setTimeout(() => setArmed(null), 4000);
+        return;
+      }
+      if (armTimer.current) window.clearTimeout(armTimer.current);
+      setArmed(null);
+    }
+    onDecide(d);
+  };
   return (
     <div className="flex flex-col gap-3" style={{ fontSize: 12 }}>
       <div className="grid gap-x-6 gap-y-1.5 grid-cols-2 sm:grid-cols-4">
@@ -321,10 +347,10 @@ function ReviewPane({
               disabled={pending}
               onClick={(e) => {
                 e.stopPropagation();
-                onDecide(d);
+                handleDecide(d);
               }}
             >
-              {DECISION_LABEL[d]}
+              {armed === d ? `Confirm — ${DECISION_LABEL[d]}` : DECISION_LABEL[d]}
             </Btn>
           ))}
         </div>
