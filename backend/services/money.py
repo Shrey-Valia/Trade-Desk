@@ -74,6 +74,13 @@ def quantize_money(value: float | int | Decimal | str | None) -> Decimal | None:
             dec = Decimal(value)
         except (InvalidOperation, TypeError, ValueError) as exc:  # pragma: no cover
             raise ValueError(f"not a money value: {value!r}") from exc
+    # Reject NaN/±Inf explicitly. Without this a degenerate upstream calc (a
+    # Greeks/P&L divide-by-zero producing nan/inf) would either persist a silent
+    # NaN into the ledger (NaN.quantize returns NaN, no error) or raise a bare
+    # InvalidOperation deep inside a write — both corrupt money integrity. Fail
+    # loud at the boundary instead so the bad value never reaches the column.
+    if not dec.is_finite():
+        raise ValueError(f"not a finite money value: {value!r}")
     return dec.quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
