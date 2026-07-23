@@ -433,15 +433,21 @@ function CloseForm({
     setCustomMistake("");
   };
 
+  // Require an EXPLICIT realized P&L: a blank field previously booked 0
+  // silently, corrupting win-rate / R-multiple stats. Typing "0" for a true
+  // scratch is fine — a forgotten blank is not.
+  const pnlEntered = pnl.trim() !== "" && Number.isFinite(Number(pnl));
+  const canSaveClose = !!exitPrice && pnlEntered && !updateTrade.isPending;
+
   const submit = async () => {
-    if (!exitPrice) return;
+    if (!exitPrice || !pnlEntered) return;
     await updateTrade.mutateAsync({
       id: trade.id,
       patch: {
         status: "closed",
         exit_date: new Date().toISOString(),
         exit_underlying_price: Number(exitPrice),
-        realized_pnl: pnl ? Number(pnl) : 0,
+        realized_pnl: Number(pnl),
         mistake_tags: mistakes,
         review_note: review.trim() || undefined,
       },
@@ -475,7 +481,7 @@ function CloseForm({
                 step="0.01"
                 value={pnl}
                 onChange={(e) => setPnl(e.target.value)}
-                placeholder="0"
+                placeholder="required"
                 className="h-6 w-24 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right placeholder:text-fg-tertiary"
                 style={{ borderRadius: 0 }}
               />
@@ -483,7 +489,7 @@ function CloseForm({
             <button
               type="button"
               onClick={submit}
-              disabled={updateTrade.isPending || !exitPrice}
+              disabled={!canSaveClose}
               className="h-6 px-2 uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
               style={{ borderRadius: 0 }}
             >

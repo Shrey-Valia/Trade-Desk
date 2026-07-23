@@ -1440,25 +1440,64 @@ function CloseButton({
   totalQty?: number;
   onClick: () => void;
 }) {
+  // SAFETY: a mouse click realizes round-trip P&L, so — like the C-C keyboard
+  // close and the FLATTEN ALL button — a single click must NOT fire. The first
+  // click ARMS (escalated "CLICK AGAIN" label); a confirming second click
+  // within 3s closes. Auto-disarms after 3s, and whenever the button goes
+  // disabled (a close already fired) or the close size changes under the arm.
+  const [armed, setArmed] = useState(false);
+  const armTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (armTimer.current) window.clearTimeout(armTimer.current);
+    },
+    [],
+  );
+  useEffect(() => {
+    setArmed(false);
+  }, [disabled, partialQty, totalQty]);
+
+  const label = partialQty != null ? `SCALE OUT ${partialQty}/${totalQty}` : "CLOSE";
+  const handleClick = () => {
+    if (!armed) {
+      setArmed(true);
+      if (armTimer.current) window.clearTimeout(armTimer.current);
+      armTimer.current = window.setTimeout(() => setArmed(false), 3000);
+      return;
+    }
+    if (armTimer.current) window.clearTimeout(armTimer.current);
+    setArmed(false);
+    onClick();
+  };
+
   // Filled bearish-red treatment to match the SELL action button —
   // smaller (h-8) since CLOSE doesn't need to compete with BUY/SELL
   // for visual weight, just sit beside them with the same chrome.
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={handleClick}
       disabled={disabled}
+      title="Realizes round-trip P&L. Click twice to confirm."
       className={[
         "w-full h-8 rounded-btn font-semibold tabular-nums uppercase",
         "transition-colors duration-100",
         disabled
           ? "bg-tier-1 text-fg-disabled cursor-not-allowed"
-          : "bg-action-sell hover:bg-action-sell-hover active:bg-action-sell-active text-white",
+          : armed
+            ? "bg-action-sell-active text-white ring-1 ring-inset ring-white/40"
+            : "bg-action-sell hover:bg-action-sell-hover active:bg-action-sell-active text-white",
       ].join(" ")}
       style={{ fontSize: 12, letterSpacing: "0.04em" }}
     >
-      {partialQty != null ? `SCALE OUT ${partialQty}/${totalQty}` : "CLOSE"} · realize{" "}
-      <span className="ml-1">{upl == null ? "—" : formatSignedDollar(upl)}</span>
+      {armed ? (
+        `CLICK AGAIN — ${label}`
+      ) : (
+        <>
+          {label} · realize{" "}
+          <span className="ml-1">{upl == null ? "—" : formatSignedDollar(upl)}</span>
+        </>
+      )}
     </button>
   );
 }

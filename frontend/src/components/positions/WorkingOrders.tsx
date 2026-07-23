@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useCancelOrder, useTrades } from "@/hooks/useTrades";
@@ -319,13 +319,20 @@ function EditOrderForm({ order, onClose }: { order: Trade; onClose: () => void }
   const stopOk = !hasStop || (stopPrice != null && stopPrice > 0);
   const canSave = limitOk && stopOk && !mutation.isPending;
 
+  // Synchronous double-submit guard — mutation.isPending only flips next render,
+  // so two fast clicks would both pass canSave and send two modify requests.
+  const submittingRef = useRef(false);
   const save = () => {
-    if (!canSave || limitPrice == null) return;
-    mutation.mutate({
-      limit_price: limitPrice,
-      ...(hasStop && stopPrice != null ? { stop_price: stopPrice } : {}),
-      time_in_force: tif,
-    });
+    if (submittingRef.current || !canSave || limitPrice == null) return;
+    submittingRef.current = true;
+    mutation.mutate(
+      {
+        limit_price: limitPrice,
+        ...(hasStop && stopPrice != null ? { stop_price: stopPrice } : {}),
+        time_in_force: tif,
+      },
+      { onSettled: () => (submittingRef.current = false) },
+    );
   };
 
   const limitLabel = multiLeg

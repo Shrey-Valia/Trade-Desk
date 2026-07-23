@@ -47,6 +47,10 @@ export function TradeEntryModal({ open, onClose }: Props) {
   const { data: detail } = useTickerDetail(selected ?? null);
   const createTrade = useCreateTrade();
   const uploadScreenshot = useUploadScreenshot();
+  // Synchronous double-submit guard — createTrade.isPending only flips on the
+  // next render, so a double-click / double-Enter would log two identical
+  // journal trades before the disabled state applies.
+  const submittingRef = useRef(false);
 
   const [symbol, setSymbol] = useState(selected ?? "");
   const [strategy, setStrategy] = useState<string>("long_call");
@@ -141,6 +145,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    if (submittingRef.current) return;
     if (!symbol.trim()) {
       setFormError("Symbol is required.");
       return;
@@ -154,6 +159,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
       setFormError("Entry underlying price must be > 0.");
       return;
     }
+    submittingRef.current = true;
     try {
       const created = await createTrade.mutateAsync({
         symbol: symbol.toUpperCase().trim(),
@@ -183,6 +189,8 @@ export function TradeEntryModal({ open, onClose }: Props) {
       onClose();
     } catch (err) {
       setFormError((err as Error).message);
+    } finally {
+      submittingRef.current = false;
     }
   };
 

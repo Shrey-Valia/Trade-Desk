@@ -859,6 +859,20 @@ def request_payout(
         .values(settled_hwm=Combine.settled_hwm)
     )
 
+    # Re-snapshot UNDER the lock so balance / mll / payout_eligible reflect any
+    # loss booked (a trade close, an auto-liquidation) between the pre-lock
+    # snapshot above and the lock — without this the MLL-floor check below could
+    # pass against a stale, higher balance. The pre-lock snapshot already
+    # persisted any pending settlement, so this recompute is normally clean; but
+    # a state transition it detects could still commit and release the lock, so
+    # re-acquire it immediately after.
+    snap = combine_snapshot(session, combine)
+    session.execute(
+        update(Combine)
+        .where(Combine.id == combine.id)
+        .values(settled_hwm=Combine.settled_hwm)
+    )
+
     now = datetime.now(timezone.utc)
 
     # Idempotency: a recent payout on this combine is treated as a duplicate.
