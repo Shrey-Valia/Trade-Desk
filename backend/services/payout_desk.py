@@ -154,9 +154,16 @@ def decide(
     reviewer_id: int | None,
     reason_code: str | None = None,
     note: str | None = None,
+    commit: bool = True,
 ) -> PayoutRequest:
     """Apply one reviewer action to a payout request (strict state machine —
-    see module docstring). Commits. Returns the updated row.
+    see module docstring). Commits (unless ``commit=False``). Returns the
+    updated row.
+
+    Pass ``commit=False`` when the caller needs the decision and its audit row
+    to land in ONE transaction: committing here first would leave a window where
+    a crash lands the payout decision — the most money-sensitive admin action —
+    with no audit trail (the admin router stages the audit row and commits).
 
     approve → 'payout_approved' event (same amount; bookkeeping only — the
     debit stayed booked from request time). deny → 'payout_denied' event
@@ -260,8 +267,11 @@ def decide(
     # resume_review / mark_paid: the CAS state change is the whole action.
 
     db.add(req)
-    db.commit()
-    db.refresh(req)
+    if commit:
+        db.commit()
+        db.refresh(req)
+    else:
+        db.flush()
     return req
 
 

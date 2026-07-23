@@ -13,6 +13,41 @@ from services.copy_trade import mirror_close, mirror_open
 from tests.conftest import make_combine
 
 
+def _lead_ratio_trade(session, combine: Combine, ratios: list[int]) -> Trade:
+    """A multi-leg lead trade whose legs carry the given per-leg contract counts
+    (a ratio structure, e.g. [1, 2, 1] for a butterfly)."""
+    t = Trade(
+        symbol="SPY",
+        strategy="butterfly",
+        entry_date=datetime.now(timezone.utc),
+        entry_underlying_price=500.0,
+        net_debit_credit=-1000.0,
+        status="open",
+        order_type="market",
+        is_paper=True,
+        notes="ratio structure",
+        tier=combine.tier,
+        combine_id=combine.id,
+    )
+    t.legs = [
+        {
+            "side": "call",
+            "action": "buy" if i != 1 else "sell",
+            "strike": 500.0 + i * 5,
+            "expiry": "2026-06-19",
+            "contracts": n,
+            "entry_price": 2.0,
+        }
+        for i, n in enumerate(ratios)
+    ]
+    t.tags = ["0dte"]
+    t.mistake_tags = []
+    session.add(t)
+    session.commit()
+    session.refresh(t)
+    return t
+
+
 def _lead_trade(
     session,
     combine: Combine,
@@ -127,6 +162,46 @@ def test_mirror_clamps_to_follower_cap_and_tags(auth_client, session_factory):
             assert "copy" in mt.tags
             assert mt.copied_from_trade_id == trade.id
             assert "copied from Lead" in (mt.notes or "")
+
+
+def test_mirror_preserves_ratio_and_skips_rather_than_distorts(
+    auth_client, session_factory
+):
+    """A ratio structure must mirror ratio-intact when it fits, and be SKIPPED
+    (not per-leg clamped into a different position) when a leg overflows the
+    follower's cap. 50K cap = 5 contracts."""
+    lead = make_combine(auth_client, "50K", name="Lead")
+    fits = make_combine(auth_client, "50K", name="Fits")
+    over = make_combine(auth_client, "50K", name="Over")
+
+    # Case 1: [1,2,1] total 4 ≤ cap → mirrors ratio-intact.
+    _set_config(auth_client, lead["id"], [(fits["id"], 1.0)])
+    with session_factory() as s:
+        lead_c = s.get(Combine, lead["id"])
+        trade = _lead_ratio_trade(s, lead_c, [1, 2, 1])
+        result = mirror_open(s, lead_c, trade)
+        assert fits["id"] in result.mirrored
+        mt = s.execute(
+            select(Trade).where(Trade.combine_id == fits["id"])
+        ).scalars().one()
+        assert [leg["contracts"] for leg in mt.legs] == [1, 2, 1]  # ratio intact
+
+    # Case 2: [1,6,1] has a leg (6) over the cap → would distort to [1,5,1]
+    # under the old per-leg clamp; must be SKIPPED instead.
+    _set_config(auth_client, lead["id"], [(over["id"], 1.0)])
+    with session_factory() as s:
+        lead_c = s.get(Combine, lead["id"])
+        big = _lead_ratio_trade(s, lead_c, [1, 6, 1])
+        result = mirror_open(s, lead_c, big)
+        assert over["id"] not in result.mirrored  # skipped, not distorted
+        assert any(fid == over["id"] for fid, _ in result.skipped)
+        # No mirrored trade was created for the overflowing structure.
+        assert (
+            s.execute(
+                select(Trade).where(Trade.combine_id == over["id"])
+            ).scalars().first()
+            is None
+        )
 
 
 def test_mirror_applies_multiplier(auth_client, session_factory):

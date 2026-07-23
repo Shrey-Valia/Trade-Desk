@@ -677,11 +677,14 @@ def kyc_decide(
     db: Session = Depends(get_session),
 ) -> KycDecideOut:
     """Human KYC decision — delegates to verification.decide_kyc (which owns
-    the state machine and commits), then lands the audit row."""
+    the state machine), stages the audit row, then commits both together so a
+    crash can't land the decision with no audit trail."""
     before_status = db.execute(
         select(KycVerification.status).where(KycVerification.user_id == user_id)
     ).scalar_one_or_none()
-    row = decide_kyc(db, user_id, payload.approve, payload.reason)  # 404s if none
+    # commit=False: the decision stays uncommitted until the audit row is staged,
+    # so the single db.commit() below lands both atomically.
+    row = decide_kyc(db, user_id, payload.approve, payload.reason, commit=False)
     audit(
         db,
         admin,
@@ -1102,6 +1105,9 @@ def decide_payout(
     body = payload or PayoutDecisionIn()
     before_row = db.get(PayoutRequest, request_id)
     before_state = before_row.state if before_row is not None else None
+    # commit=False: the decision stays uncommitted until the audit row is staged,
+    # so the single db.commit() below lands both atomically — no window where a
+    # crash leaves the payout decided with no audit trail.
     updated = payout_decide(
         db,
         request_id,
@@ -1109,6 +1115,7 @@ def decide_payout(
         reviewer_id=admin.id,
         reason_code=body.reason_code,
         note=body.note,
+        commit=False,
     )
     audit(
         db,
@@ -1154,6 +1161,7 @@ def get_platform(db: Session = Depends(get_session)) -> PlatformOut:
 class PlatformIn(BaseModel):
     trading_mode: str | None = None
     banned_symbols: list[str] | None = None
+    reason: str | None = Field(default=None, max_length=300)
 
 
 @router.put("/platform", response_model=PlatformOut)
@@ -1191,6 +1199,7 @@ def set_platform(
         None,
         before=before,
         after=after,
+        reason=payload.reason,
     )
     db.commit()
     return _platform_out(db)

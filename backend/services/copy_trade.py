@@ -139,11 +139,25 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
 
         mult = f.copy_multiplier or 1.0
         legs = copy.deepcopy(lead_legs)
-        for leg in legs:
-            # Apply the follower's multiplier, then clamp to its cap. Always
-            # at least 1 contract for an enabled follower.
-            scaled = max(1, round(int(leg.get("contracts", 1)) * mult))
-            leg["contracts"] = min(scaled, cap)
+        # Apply the follower's multiplier per leg (always ≥1 contract for an
+        # enabled follower).
+        scaled = [max(1, round(int(leg.get("contracts", 1)) * mult)) for leg in legs]
+        if len(legs) == 1:
+            # Single leg: no inter-leg ratio to distort — clamp to the cap and
+            # mirror a smaller size, the intended proportional-copy behavior.
+            scaled[0] = min(scaled[0], cap)
+        elif any(s > cap for s in scaled):
+            # MULTI-LEG: clamping only the larger leg of a ratio structure (e.g.
+            # a 1-2-1 butterfly) silently turns it into a DIFFERENT position with
+            # a different risk profile than the lead traded. Skip the whole mirror
+            # (same skip-not-fail convention as the gates around it) rather than
+            # distort the structure. (A structure that fits under the cap is
+            # mirrored ratio-intact; one that overflows is caught here or by the
+            # aggregate check below — neither path clamps an individual leg.)
+            result.skipped.append((f.id, "structure exceeds contract allowance"))
+            continue
+        for leg, s in zip(legs, scaled):
+            leg["contracts"] = s
         # AGGREGATE cap, same convention as the direct open path: the scaling
         # plan limits TOTAL contracts across all legs of all open+working
         # positions, not each leg in isolation (the per-leg clamp above lets a

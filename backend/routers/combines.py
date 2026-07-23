@@ -602,6 +602,21 @@ def reset_combine(
         # it would burn a reset credit (or book a fee) and clear its recorded
         # outcome, polluting the ledger. Cancel/resume/activate all guard this.
         raise HTTPException(409, "an archived combine cannot be reset")
+    # Serialize the reset per combine before the read-decide-write below. Without
+    # the lock two concurrent resets (double-click / retry) both read
+    # outcome=="failed" and reset_credits==1, then both spend the same credit (a
+    # free extra reset — a lost update) or both book a paid reset (a double
+    # charge). Under the lock the loser refreshes, sees the winner already flipped
+    # outcome to "active", and 409s. `with_for_update()` is a no-op on SQLite, so
+    # an UPDATE (write path) is what actually takes the lock. Mirrors
+    # request_payout / the order-open gate.
+    session.execute(
+        update(Combine)
+        .where(Combine.id == combine.id)
+        .values(settled_hwm=Combine.settled_hwm)
+    )
+    session.refresh(combine)
+    session.refresh(user)
     if combine.outcome != "failed":
         raise HTTPException(409, "only a failed combine can be reset")
     if has_open_book(session, combine.id):
@@ -971,10 +986,22 @@ def activate_account(
     # Per-user throttle: activation charges a fee + writes a payment row.
     enforce_user(financial_limiter, user.id, "activation")
     combine = _owned_combine(session, user, combine_id)
+    # Snapshot FIRST (it may COMMIT a pending settlement, releasing any lock we
+    # held), THEN lock the row so the charge-and-stamp below is serialized per
+    # combine. Without it a double-click both reads activation_required and both
+    # charges the $149 fee. The refreshed funded_activated_at is the idempotency
+    # guard: the loser sees the winner already stamped it and 409s. `for_update`
+    # is a no-op on SQLite, so an UPDATE (write path) is what takes the lock.
     snap = combine_snapshot(session, combine)
+    session.execute(
+        update(Combine)
+        .where(Combine.id == combine.id)
+        .values(settled_hwm=Combine.settled_hwm)
+    )
+    session.refresh(combine)
     if not snap.funded:
         raise HTTPException(409, "account is not funded")
-    if not snap.activation_required:
+    if combine.funded_activated_at is not None:
         raise HTTPException(409, "funded account is already activated")
     # Flat book required: the funded epoch counts trades opened at/after it,
     # so an open position's eventual P&L would straddle the two accountings.

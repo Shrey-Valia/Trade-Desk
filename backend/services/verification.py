@@ -147,12 +147,21 @@ def submit_kyc(
 
 
 def decide_kyc(
-    db: Session, user_id: int, approve: bool, reason: str | None = None
+    db: Session,
+    user_id: int,
+    approve: bool,
+    reason: str | None = None,
+    commit: bool = True,
 ) -> KycVerification:
     """Human decision on a submission — the admin router (C2) calls this.
 
     Not limited to 'pending': an operator may also overturn a sim decision
     (e.g. reject an auto-verified identity on manual review).
+
+    Pass ``commit=False`` when the caller needs the decision and its audit row
+    to land in ONE transaction: committing here first would leave a window where
+    a crash lands the KYC decision with no audit trail (the router stages the
+    audit row and commits after this returns).
     """
     row = db.execute(
         select(KycVerification).where(KycVerification.user_id == user_id)
@@ -166,8 +175,11 @@ def decide_kyc(
         row.status = "rejected"
         row.reject_reason = reason or "Identity verification was declined."
     row.decided_at = _now()
-    db.commit()
-    db.refresh(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()
     return row
 
 

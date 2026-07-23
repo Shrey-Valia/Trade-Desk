@@ -57,8 +57,11 @@ def _seed_closed_trade(session, combine_id: int, realized: float) -> None:
     session.commit()
 
 
-def _seed_open_position(session_factory, combine_id: int) -> int:
-    """A bracket-less OPEN position — only the liquidation pass can act on it."""
+def _seed_open_position(
+    session_factory, combine_id: int, realized: float | None = None
+) -> int:
+    """A bracket-less OPEN position — only the liquidation pass can act on it.
+    `realized` seeds a scale-out P&L already booked onto the still-open row."""
     s = session_factory()
     t = Trade(
         symbol="SPY",
@@ -71,6 +74,7 @@ def _seed_open_position(session_factory, combine_id: int) -> int:
         notes="seed",
         tier="50K",
         combine_id=combine_id,
+        realized_pnl=realized,
     )
     t.legs = [
         {"side": "call", "action": "buy", "strike": 100.0,
@@ -142,6 +146,28 @@ def test_alert_mode_records_event_but_does_not_flatten_or_lock(
     _run(session_factory, unrealized_for=lambda t, s: -900.0)
     s = session_factory()
     assert len(_events(s, c["id"], "personal_dll")) == 1
+    s.close()
+
+
+def test_alert_mode_counts_scaleout_loss_booked_on_open_row(
+    auth_client, session_factory
+):
+    """A loss locked in by scaling out of a still-open position lives on the
+    open row's realized_pnl — not in closed-trade realized nor in URPL. The
+    personal DLL must still count it, else a trader scales 9/10 lots out at a
+    loss, holds 1 near breakeven, and never trips their own limit."""
+    c = make_combine(auth_client, "50K")
+    _put_overrides(
+        auth_client, {"overrides": {"50K": {"amount": 800, "mode": "alert"}}}
+    )
+    # -$900 already booked via scale-out on the still-open row; URPL ~ 0.
+    tid = _seed_open_position(session_factory, c["id"], realized=-900.0)
+    summary = _run(session_factory, unrealized_for=lambda t, s: 0.0)
+    assert summary["liquidated"] == 0  # alert never flattens
+
+    s = session_factory()
+    assert s.get(Trade, tid).status == "open"
+    assert len(_events(s, c["id"], "personal_dll")) == 1  # limit tripped
     s.close()
 
 
