@@ -50,6 +50,21 @@ pg = [
     "psycopg[binary]>=3.2",
 ]
 
+# Torch is used for CPU inference only — there is no GPU in the deploy target.
+# The default PyPI torch wheel bundles ~5GB of NVIDIA CUDA libraries on Linux
+# (62 nvidia-* packages, all `sys_platform == 'linux'`), which bloats the deploy
+# image and exhausts the CI runner's disk during `docker build` (the "Docker
+# image (build only)" job). Redirect ONLY the Linux torch to PyTorch's CPU wheel
+# index; macOS/dev resolves torch from PyPI as before (already CPU-only there),
+# so this is a Linux-scoped change with no cross-platform churn.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
