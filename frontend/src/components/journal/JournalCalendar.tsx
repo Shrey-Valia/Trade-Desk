@@ -83,8 +83,7 @@ function CalendarHeader({
         <button
           type="button"
           onClick={() => onCursorChange(shiftMonth(monthCursor, -1))}
-          className="h-7 w-7 flex items-center justify-center border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
-          style={{ borderRadius: 0 }}
+          className="h-7 w-7 flex items-center justify-center border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary rounded-btn"
           aria-label="Previous month"
           title="Previous month"
         >
@@ -93,16 +92,14 @@ function CalendarHeader({
         <button
           type="button"
           onClick={() => onCursorChange(currentMonth())}
-          className="h-7 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
-          style={{ borderRadius: 0 }}
+          className="h-7 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary rounded-btn"
         >
           Today
         </button>
         <button
           type="button"
           onClick={() => onCursorChange(shiftMonth(monthCursor, +1))}
-          className="h-7 w-7 flex items-center justify-center border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
-          style={{ borderRadius: 0 }}
+          className="h-7 w-7 flex items-center justify-center border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary rounded-btn"
           aria-label="Next month"
           title="Next month"
         >

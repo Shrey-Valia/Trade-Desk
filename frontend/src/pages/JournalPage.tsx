@@ -198,7 +198,7 @@ function Toolbar({
   return (
     <div className="flex items-center gap-3 px-4 py-2 border-b border-hairline bg-tier-0 shrink-0">
       {/* View toggle */}
-      <div className="flex items-stretch border border-hairline" style={{ borderRadius: 0 }}>
+      <div className="flex items-stretch border border-hairline rounded-btn overflow-hidden">
         {(["calendar", "list"] as View[]).map((v) => (
           <button
             key={v}
@@ -224,12 +224,11 @@ function Toolbar({
             type="button"
             onClick={() => onPaperScopeChange(opt)}
             className={[
-              "h-6 px-2 text-tiny uppercase tracking-label-up border",
+              "h-6 px-2 text-tiny uppercase tracking-label-up border rounded-btn",
               paperScope === opt
                 ? "border-amber text-amber bg-tier-1"
                 : "border-hairline text-fg-tertiary hover:bg-tier-2",
             ].join(" ")}
-            style={{ borderRadius: 0 }}
           >
             {opt}
           </button>
@@ -238,7 +237,7 @@ function Toolbar({
       <div className="ml-auto flex items-center gap-2">
         <CombineSwitcher />
         {/* Account scope — ACTIVE (the switcher's combine) vs ALL accounts. */}
-        <div className="flex items-stretch border border-hairline" style={{ borderRadius: 0 }}>
+        <div className="flex items-stretch border border-hairline rounded-btn overflow-hidden">
           {(["active", "all"] as AccountScope[]).map((opt, i) => (
             <button
               key={opt}
@@ -270,8 +269,7 @@ function Toolbar({
               ? "Nothing to export yet"
               : "Download the closed trades shown (respects the account + paper/live filters) as CSV"
           }
-          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ borderRadius: 0 }}
+          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-50 disabled:cursor-not-allowed rounded-btn"
         >
           Export CSV
         </button>
@@ -284,16 +282,14 @@ function Toolbar({
               ? "Nothing to export yet"
               : "Download an EXECUTIONS report — one row per leg fill (price, size, underlying, timestamp) plus a close row per position. The reconciliation-grade view."
           }
-          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ borderRadius: 0 }}
+          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary disabled:opacity-50 disabled:cursor-not-allowed rounded-btn"
         >
           Export Fills
         </button>
         <button
           type="button"
           onClick={onAddTrade}
-          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2"
-          style={{ borderRadius: 0 }}
+          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 rounded-btn"
         >
           + Log Trade
         </button>

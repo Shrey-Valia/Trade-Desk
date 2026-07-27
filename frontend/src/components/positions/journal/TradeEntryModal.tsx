@@ -229,16 +229,14 @@ export function TradeEntryModal({ open, onClose }: Props) {
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}
               spellCheck={false}
               autoComplete="off"
-              className="w-full h-7 px-2 text-xs2 font-mono uppercase bg-tier-1 border border-hairline text-fg-primary"
-              style={{ borderRadius: 0 }}
+              className="w-full h-7 px-2 text-xs2 font-mono uppercase bg-tier-1 border border-hairline text-fg-primary rounded-btn"
             />
           </Field>
           <Field label="Strategy">
             <select
               value={strategy}
               onChange={(e) => onStrategyChange(e.target.value)}
-              className="w-full h-7 px-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary"
-              style={{ borderRadius: 0 }}
+              className="w-full h-7 px-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary rounded-btn"
             >
               {STRATEGY_KEYS.map((key) => (
                 <option key={key} value={key}>
@@ -253,8 +251,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
               step="0.01"
               value={entryUnderlying}
               onChange={(e) => setEntryUnderlying(e.target.value)}
-              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary"
-              style={{ borderRadius: 0 }}
+              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary rounded-btn"
             />
           </Field>
           <Field label="Paper / live">
@@ -267,8 +264,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
                   isPaper
                     ? "border-cyan text-cyan bg-tier-1"
                     : "border-hairline text-fg-tertiary hover:bg-tier-2",
-                ].join(" ")}
-                style={{ borderRadius: 0 }}
+                ].join(" ") + " rounded-btn"}
               >
                 Paper
               </button>
@@ -280,8 +276,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
                   !isPaper
                     ? "border-amber text-amber bg-tier-1"
                     : "border-hairline text-fg-tertiary hover:bg-tier-2",
-                ].join(" ")}
-                style={{ borderRadius: 0 }}
+                ].join(" ") + " rounded-btn"}
               >
                 Live
               </button>
@@ -310,8 +305,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
               value={netOverride}
               onChange={(e) => setNetOverride(e.target.value)}
               placeholder={String(computedNet)}
-              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
-              style={{ borderRadius: 0 }}
+              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary rounded-btn"
             />
             <div className="text-tiny text-fg-tertiary mt-0.5">
               Will save as {formatCost(displayedNet)}.
@@ -327,8 +321,8 @@ export function TradeEntryModal({ open, onClose }: Props) {
                 {tags.map((t) => (
                   <span
                     key={t}
-                    className="inline-flex items-center gap-1 px-1.5 py-px text-tiny border border-hairline bg-tier-1 text-fg-secondary"
-                    style={{ borderRadius: 0, fontSize: 12 }}
+                    className="inline-flex items-center gap-1 px-1.5 py-px text-tiny border border-hairline bg-tier-1 text-fg-secondary rounded-hair"
+                    style={{ fontSize: 12 }}
                   >
                     {t}
                     <button
@@ -354,14 +348,12 @@ export function TradeEntryModal({ open, onClose }: Props) {
                     }
                   }}
                   placeholder="earnings, momentum…"
-                  className="flex-1 h-7 px-2 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
-                  style={{ borderRadius: 0 }}
+                  className="flex-1 h-7 px-2 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary rounded-btn"
                 />
                 <button
                   type="button"
                   onClick={addTag}
-                  className="h-7 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2"
-                  style={{ borderRadius: 0 }}
+                  className="h-7 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 rounded-btn"
                 >
                   add
                 </button>
@@ -380,8 +372,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
                     confidence != null && n <= confidence
                       ? "border-amber text-amber bg-tier-1"
                       : "border-hairline text-fg-tertiary hover:bg-tier-2",
-                  ].join(" ")}
-                  style={{ borderRadius: 0 }}
+                  ].join(" ") + " rounded-btn"}
                   aria-label={`Confidence ${n}`}
                 >
                   {n}
@@ -400,8 +391,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
             onChange={(e) => setThesis(e.target.value)}
             rows={2}
             placeholder="Why this setup, right now?"
-            className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none"
-            style={{ borderRadius: 0 }}
+            className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none rounded-btn"
           />
         </Field>
 
@@ -411,8 +401,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
             onChange={(e) => setPlannedExit(e.target.value)}
             rows={2}
             placeholder="At what level / event do you close?"
-            className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none"
-            style={{ borderRadius: 0 }}
+            className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none rounded-btn"
           />
         </Field>
 
@@ -426,8 +415,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
               value={riskAmount}
               onChange={(e) => setRiskAmount(e.target.value)}
               placeholder="500"
-              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
-              style={{ borderRadius: 0 }}
+              className="w-full h-7 px-2 text-xs2 font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary placeholder:text-fg-tertiary rounded-btn"
             />
             <div className="text-tiny text-fg-tertiary mt-0.5">
               Drives R-multiple on close.
@@ -438,8 +426,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={2}
-              className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary resize-none"
-              style={{ borderRadius: 0 }}
+              className="w-full px-2 py-1 text-xs2 bg-tier-1 border border-hairline text-fg-primary resize-none rounded-btn"
             />
           </Field>
           <Field label="Screenshot (PNG / JPEG, ≤ 5 MB)" className="col-span-2">
@@ -454,8 +441,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="h-7 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2"
-                style={{ borderRadius: 0 }}
+                className="h-7 px-2 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 rounded-btn"
               >
                 {screenshot ? "Change…" : "Attach image…"}
               </button>
@@ -492,16 +478,14 @@ export function TradeEntryModal({ open, onClose }: Props) {
           <button
             type="button"
             onClick={onClose}
-            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2"
-            style={{ borderRadius: 0 }}
+            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 rounded-btn"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={createTrade.isPending || uploadScreenshot.isPending}
-            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 disabled:opacity-50"
-            style={{ borderRadius: 0 }}
+            className="h-7 px-3 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 disabled:opacity-50 rounded-btn"
           >
             {uploadScreenshot.isPending
               ? "Uploading…"
@@ -574,8 +558,7 @@ function LegEditor({
             <select
               value={leg.side}
               onChange={(e) => updateLeg(i, { side: e.target.value as TradeLeg["side"] })}
-              className="h-7 text-tiny bg-tier-1 border border-hairline text-fg-primary"
-              style={{ borderRadius: 0 }}
+              className="h-7 text-tiny bg-tier-1 border border-hairline text-fg-primary rounded-btn"
             >
               <option value="call">CALL</option>
               <option value="put">PUT</option>
@@ -583,8 +566,7 @@ function LegEditor({
             <select
               value={leg.action}
               onChange={(e) => updateLeg(i, { action: e.target.value as TradeLeg["action"] })}
-              className="h-7 text-tiny bg-tier-1 border border-hairline text-fg-primary"
-              style={{ borderRadius: 0 }}
+              className="h-7 text-tiny bg-tier-1 border border-hairline text-fg-primary rounded-btn"
             >
               <option value="buy">BUY</option>
               <option value="sell">SELL</option>
@@ -594,15 +576,13 @@ function LegEditor({
               step="0.5"
               value={leg.strike || ""}
               onChange={(e) => updateLeg(i, { strike: Number(e.target.value) })}
-              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right"
-              style={{ borderRadius: 0 }}
+              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right rounded-btn"
             />
             <input
               type="date"
               value={leg.expiry}
               onChange={(e) => updateLeg(i, { expiry: e.target.value })}
-              className="h-7 px-1 text-tiny bg-tier-1 border border-hairline text-fg-primary"
-              style={{ borderRadius: 0 }}
+              className="h-7 px-1 text-tiny bg-tier-1 border border-hairline text-fg-primary rounded-btn"
             />
             <input
               type="number"
@@ -610,8 +590,7 @@ function LegEditor({
               min="1"
               value={leg.contracts}
               onChange={(e) => updateLeg(i, { contracts: Number(e.target.value) || 1 })}
-              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right"
-              style={{ borderRadius: 0 }}
+              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right rounded-btn"
             />
             <input
               type="number"
@@ -619,8 +598,7 @@ function LegEditor({
               min="0"
               value={leg.entry_price || ""}
               onChange={(e) => updateLeg(i, { entry_price: Number(e.target.value) })}
-              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right"
-              style={{ borderRadius: 0 }}
+              className="h-7 px-1 text-tiny font-mono tabular-nums bg-tier-1 border border-hairline text-fg-primary text-right rounded-btn"
             />
           </div>
         ))}
