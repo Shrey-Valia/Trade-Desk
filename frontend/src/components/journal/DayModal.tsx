@@ -238,8 +238,7 @@ function NoteEditor({ trade }: { trade: Trade }) {
             type="button"
             onClick={save}
             disabled={update.isPending}
-            className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
-            style={{ borderRadius: 0 }}
+            className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50 rounded-btn"
           >
             Save
           </button>

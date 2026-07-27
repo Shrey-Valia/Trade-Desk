@@ -83,8 +83,7 @@ export function TradeList({
               <button
                 type="button"
                 onClick={onRetry}
-                className="h-6 px-2 uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
-                style={{ borderRadius: 0 }}
+                className="h-6 px-2 uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary rounded-btn"
               >
                 Retry
               </button>
@@ -240,8 +239,7 @@ function Header({
         <button
           type="button"
           onClick={onAddTrade}
-          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2"
-          style={{ borderRadius: 0 }}
+          className="h-6 px-2 text-tiny uppercase tracking-label-up border border-amber text-amber bg-tier-1 hover:bg-tier-2 rounded-btn"
         >
           + Log Trade
         </button>
@@ -470,8 +468,7 @@ function CloseForm({
                 step="0.01"
                 value={exitPrice}
                 onChange={(e) => setExitPrice(e.target.value)}
-                className="h-6 w-20 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right"
-                style={{ borderRadius: 0 }}
+                className="h-6 w-20 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right rounded-btn"
               />
             </label>
             <label className="flex items-center gap-1">
@@ -482,16 +479,14 @@ function CloseForm({
                 value={pnl}
                 onChange={(e) => setPnl(e.target.value)}
                 placeholder="required"
-                className="h-6 w-24 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right placeholder:text-fg-tertiary"
-                style={{ borderRadius: 0 }}
+                className="h-6 w-24 px-1 font-mono tabular-nums bg-tier-0 border border-hairline text-fg-primary text-right placeholder:text-fg-tertiary rounded-btn"
               />
             </label>
             <button
               type="button"
               onClick={submit}
               disabled={!canSaveClose}
-              className="h-6 px-2 uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50"
-              style={{ borderRadius: 0 }}
+              className="h-6 px-2 uppercase tracking-label-up border border-amber text-amber hover:bg-tier-2 disabled:opacity-50 rounded-btn"
             >
               Save close
             </button>
@@ -521,8 +516,9 @@ function CloseForm({
                       on
                         ? "border-amber text-amber bg-tier-2"
                         : "border-hairline text-fg-tertiary hover:bg-tier-2",
+                      "rounded-btn",
                     ].join(" ")}
-                    style={{ borderRadius: 0, fontSize: 12 }}
+                    style={{ fontSize: 12 }}
                   >
                     {tag}
                   </button>
@@ -540,8 +536,8 @@ function CloseForm({
                   }
                 }}
                 placeholder="+ custom"
-                className="h-6 w-24 px-1 text-tiny bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary"
-                style={{ borderRadius: 0, fontSize: 12 }}
+                className="h-6 w-24 px-1 text-tiny bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary rounded-btn"
+                style={{ fontSize: 12 }}
               />
             </div>
           </div>
@@ -555,8 +551,8 @@ function CloseForm({
                 .map((m) => (
                   <span
                     key={m}
-                    className="inline-flex items-center gap-1 px-1.5 py-px border border-amber text-amber"
-                    style={{ borderRadius: 0, fontSize: 12 }}
+                    className="inline-flex items-center gap-1 px-1.5 py-px border border-amber text-amber rounded-hair"
+                    style={{ fontSize: 12 }}
                   >
                     {m}
                     <button
@@ -581,8 +577,7 @@ function CloseForm({
               onChange={(e) => setReview(e.target.value)}
               rows={2}
               placeholder="Post-trade note — what would you do differently?"
-              className="flex-1 px-1 py-0.5 text-tiny bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none"
-              style={{ borderRadius: 0 }}
+              className="flex-1 px-1 py-0.5 text-tiny bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary resize-none rounded-btn"
             />
           </label>
         </div>
