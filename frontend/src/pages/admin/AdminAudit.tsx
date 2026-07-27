@@ -129,6 +129,15 @@ export function AdminAudit() {
                       onClick={() =>
                         setExpandedId(expandedId === a.id ? null : a.id)
                       }
+                      onKeyDown={(e) => {
+                        // Keyboard-operable expand toggle (matches role="button").
+                        if (e.key !== "Enter" && e.key !== " ") return;
+                        e.preventDefault();
+                        setExpandedId(expandedId === a.id ? null : a.id);
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-expanded={expandedId === a.id}
                       className={`cursor-pointer ${
                         expandedId === a.id ? "bg-tier-2" : "hover:bg-tier-2"
                       }`}

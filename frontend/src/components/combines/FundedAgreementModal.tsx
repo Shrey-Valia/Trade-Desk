@@ -57,10 +57,20 @@ export function FundedAgreementModal({
     sign.mutate(name);
   };
 
+  // While a signature/activation is in flight the dialog can't be dismissed —
+  // but a silent no-op leaves an Escape/backdrop press feeling broken. Tell the
+  // user why instead.
+  const blockedClose = () =>
+    toast.info(
+      sign.isPending
+        ? "Recording your signature — please wait."
+        : "Activating your account — please wait.",
+    );
+
   return (
     <Modal
       open={open}
-      onClose={pending ? () => undefined : onClose}
+      onClose={pending ? blockedClose : onClose}
       labelledBy={TITLE_ID}
       panelClassName="w-full max-w-lg"
     >

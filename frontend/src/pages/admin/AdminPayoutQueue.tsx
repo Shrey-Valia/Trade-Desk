@@ -151,6 +151,15 @@ export function AdminPayoutQueue() {
                       onClick={() =>
                         setExpandedId(expandedId === item.id ? null : item.id)
                       }
+                      onKeyDown={(e) => {
+                        // Keyboard-operable expand toggle (matches role="button").
+                        if (e.key !== "Enter" && e.key !== " ") return;
+                        e.preventDefault();
+                        setExpandedId(expandedId === item.id ? null : item.id);
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-expanded={expandedId === item.id}
                       className={`cursor-pointer ${
                         expandedId === item.id ? "bg-tier-2" : "hover:bg-tier-2"
                       }`}

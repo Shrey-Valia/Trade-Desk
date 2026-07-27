@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { Modal } from "@/components/ui/Modal";
 import { useTickerDetail } from "@/hooks/useTickerDetail";
 import { useCreateTrade, useUploadScreenshot } from "@/hooks/useTrades";
 import { useSelectedTicker } from "@/stores/selectedTicker";
@@ -195,22 +196,19 @@ export function TradeEntryModal({ open, onClose }: Props) {
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Log a trade"
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      open={open}
+      onClose={onClose}
+      labelledBy="trade-entry-title"
+      align="top"
+      panelClassName="w-[640px] max-h-[80vh] overflow-y-auto bg-tier-0 border border-hairline-strong"
     >
-      <form
-        onSubmit={onSubmit}
-        className="mt-16 w-[640px] max-h-[80vh] overflow-y-auto bg-tier-0 border border-hairline-strong"
-        style={{ borderRadius: 0 }}
-      >
+      <form onSubmit={onSubmit} style={{ borderRadius: 0 }}>
         <header className="flex items-center justify-between px-4 py-2 border-b border-hairline bg-tier-1">
-          <span className="text-xs2 uppercase tracking-label-up text-fg-primary">
+          <span
+            id="trade-entry-title"
+            className="text-xs2 uppercase tracking-label-up text-fg-primary"
+          >
             Log a trade
           </span>
           <button
@@ -513,7 +511,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
           </button>
         </footer>
       </form>
-    </div>
+    </Modal>
   );
 }
 
