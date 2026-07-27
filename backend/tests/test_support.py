@@ -165,6 +165,47 @@ def test_admin_queue_status_filter(auth_client, admin_client):
     assert [t["id"] for t in res.json()["tickets"]] == [closing["id"]]
 
 
+def test_admin_queue_paginates(auth_client, admin_client):
+    made = [_create_ticket(auth_client, subject=f"t{i}") for i in range(3)]
+    ids_newest_first = [t["id"] for t in reversed(made)]
+
+    p1 = admin_client.get(
+        "/api/support/admin/tickets", params={"page": 1, "page_size": 2}
+    ).json()
+    assert p1["total"] == 3
+    assert p1["page"] == 1
+    assert [t["id"] for t in p1["tickets"]] == ids_newest_first[:2]
+
+    p2 = admin_client.get(
+        "/api/support/admin/tickets", params={"page": 2, "page_size": 2}
+    ).json()
+    assert p2["total"] == 3  # total is the full filtered count, not the page size
+    assert p2["page"] == 2
+    assert [t["id"] for t in p2["tickets"]] == ids_newest_first[2:]
+
+
+def test_admin_queue_search_by_subject_and_email(
+    auth_client, second_user_client, admin_client
+):
+    mine = _create_ticket(auth_client, subject="refund please")
+    rivals = _create_ticket(second_user_client, subject="cannot log in")
+
+    # Subject substring, case-insensitive.
+    res = admin_client.get("/api/support/admin/tickets", params={"q": "REFUND"}).json()
+    assert [t["id"] for t in res["tickets"]] == [mine["id"]]
+    assert res["total"] == 1
+
+    # Owner-email substring.
+    res = admin_client.get("/api/support/admin/tickets", params={"q": "rival"}).json()
+    assert [t["id"] for t in res["tickets"]] == [rivals["id"]]
+
+    # Search composes with the status filter.
+    res = admin_client.get(
+        "/api/support/admin/tickets", params={"q": "log in", "status": "open"}
+    ).json()
+    assert [t["id"] for t in res["tickets"]] == [rivals["id"]]
+
+
 # -- admin update: audit + notification -----------------------------------------------
 
 

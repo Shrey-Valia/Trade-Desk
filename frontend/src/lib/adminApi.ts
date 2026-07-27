@@ -121,7 +121,8 @@ export const adminKeys = {
   actions: (targetType: string, targetId: string, page: number) =>
     ["admin", "actions", targetType, targetId, page] as const,
   actionsPrefix: ["admin", "actions"] as const,
-  tickets: (status?: string) => ["admin", "tickets", status ?? "all"] as const,
+  tickets: (status: string | undefined, q: string, page: number) =>
+    ["admin", "tickets", status ?? "all", q, page] as const,
   ticketsPrefix: ["admin", "tickets"] as const,
 };
 
@@ -634,17 +635,31 @@ export const AdminTicketSchema = z.object({
 });
 export type AdminTicket = z.infer<typeof AdminTicketSchema>;
 
-const AdminTicketsResponseSchema = z.object({
+export const AdminTicketsResponseSchema = z.object({
   tickets: z.array(AdminTicketSchema),
+  total: z.number().int(),
+  page: z.number().int(),
 });
+export type AdminTicketsPage = z.infer<typeof AdminTicketsResponseSchema>;
+
+export const ADMIN_TICKETS_PAGE_SIZE = 25;
 
 export const fetchAdminTickets = (
-  status?: TicketStatus,
-): Promise<AdminTicket[]> =>
-  requestJson(
-    `/api/support/admin/tickets${status ? `?status=${status}` : ""}`,
+  status: TicketStatus | undefined,
+  q: string,
+  page: number,
+  pageSize: number = ADMIN_TICKETS_PAGE_SIZE,
+): Promise<AdminTicketsPage> => {
+  const p = new URLSearchParams();
+  if (status) p.set("status", status);
+  if (q) p.set("q", q);
+  p.set("page", String(page));
+  p.set("page_size", String(pageSize));
+  return requestJson(
+    `/api/support/admin/tickets?${p.toString()}`,
     AdminTicketsResponseSchema,
-  ).then((r) => r.tickets);
+  );
+};
 
 /** Work a ticket: set status and/or the admin reply note. A set/changed
  *  non-empty note also notifies the ticket's owner in-app. */
