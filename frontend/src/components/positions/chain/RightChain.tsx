@@ -342,6 +342,18 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
   const filteredOut = (data?.rows.length ?? 0) - filteredRows.length;
   // ── end WS5
 
+  // Live indicative premium for the OPEN quick-order cell, re-derived on every
+  // 10s chain refetch so the popover's seed price can't go stale while it sits
+  // open (the open-time snapshot in `quickTarget.price` freezes otherwise).
+  // Null when the row momentarily drops out; QuickOrder falls back to the snap.
+  const quickLivePrice = useMemo(() => {
+    if (!quickTarget || !data) return null;
+    const row = data.rows.find((r) => r.strike === quickTarget.strike);
+    if (!row) return null;
+    const p = quickTarget.side === "call" ? row.call_price : row.put_price;
+    return p > 0 ? p : null;
+  }, [quickTarget, data]);
+
   return (
     <section className="flex flex-col bg-tier-0">
       <Header
@@ -440,6 +452,7 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
       {quickTarget && (
         <QuickOrder
           target={quickTarget}
+          livePrice={quickLivePrice}
           maxContracts={remainingCap}
           onClose={() => setQuickTarget(null)}
           onFired={() => flashRow(quickTarget.strike)}

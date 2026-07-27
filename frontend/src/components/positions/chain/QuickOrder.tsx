@@ -30,6 +30,10 @@ export interface QuickOrderTarget {
 
 interface Props {
   target: QuickOrderTarget;
+  /** Live indicative premium for this cell, refreshed by the parent on each
+   *  chain refetch. Falls back to `target.price` (the open-time snapshot) when
+   *  null. Keeps the seed from going stale while the popover sits open. */
+  livePrice: number | null;
   /** Remaining contracts allowed by the scaling cap (clamps qty + presets). */
   maxContracts: number;
   onClose: () => void;
@@ -44,19 +48,45 @@ const ORDER_TYPES: Array<{ key: TicketOrderType; label: string }> = [
   { key: "stop", label: "stop" },
 ];
 
-export function QuickOrder({ target, maxContracts, onClose, onFired }: Props) {
+export function QuickOrder({
+  target,
+  livePrice,
+  maxContracts,
+  onClose,
+  onFired,
+}: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const open = useOpenZeroDteLeg();
 
+  // The freshest indicative premium — live quote when the parent has one, else
+  // the open-time snapshot. Drives the auto-seed AND the display-only entry
+  // price we send (server re-prices market fills anyway, but be honest).
+  const currentPrice = livePrice ?? target.price;
+
   const cap = Math.max(1, maxContracts);
   const [contracts, setContracts] = useState(1);
   const [orderType, setOrderType] = useState<TicketOrderType>("market");
-  const [trigger, setTrigger] = useState<number | null>(target.price);
+  const [trigger, setTrigger] = useState<number | null>(currentPrice);
+  // Once the user types a trigger, stop auto-tracking the live price so we
+  // never clobber their chosen limit; until then the seed follows the market.
+  const [triggerDirty, setTriggerDirty] = useState(false);
   const submittingRef = useRef(false);
+
+  // Re-seed the (unedited) trigger to the live premium as the chain refetches,
+  // so a limit/stop placed without touching the field defaults to the CURRENT
+  // price, not the premium from whenever the popover happened to open.
+  useEffect(() => {
+    if (!triggerDirty && currentPrice > 0) setTrigger(currentPrice);
+  }, [currentPrice, triggerDirty]);
 
   const needsTrigger = orderType !== "market";
   const triggerOk = !needsTrigger || (trigger != null && trigger > 0);
+  // Surface how far a user-set trigger has drifted from the live premium.
+  const triggerDrift =
+    needsTrigger && triggerDirty && trigger != null && currentPrice > 0
+      ? trigger - currentPrice
+      : null;
 
   // Clamp qty to the live scaling cap (mirrors the TradeTicket clamp so a
   // quick order can never exceed the remaining size the server would accept).
@@ -104,7 +134,7 @@ export function QuickOrder({ target, maxContracts, onClose, onFired }: Props) {
         side: target.side,
         action,
         strike: target.strike,
-        entry_price: target.price,
+        entry_price: currentPrice,
         contracts,
         order_type: orderType,
         limit_price: needsTrigger ? trigger : null,
@@ -175,7 +205,8 @@ export function QuickOrder({ target, maxContracts, onClose, onFired }: Props) {
                 onClick={() => {
                   setOrderType(t.key);
                   if (t.key !== "market" && trigger == null) {
-                    setTrigger(target.price);
+                    setTrigger(currentPrice);
+                    setTriggerDirty(false);
                   }
                 }}
                 aria-pressed={active}
@@ -205,6 +236,7 @@ export function QuickOrder({ target, maxContracts, onClose, onFired }: Props) {
               step={0.01}
               value={trigger ?? ""}
               onChange={(e) => {
+                setTriggerDirty(true);
                 const v = parseFloat(e.target.value);
                 setTrigger(Number.isFinite(v) ? v : null);
               }}
@@ -213,6 +245,19 @@ export function QuickOrder({ target, maxContracts, onClose, onFired }: Props) {
               className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
               style={{ width: 64, height: 22, fontSize: 12 }}
             />
+            <span
+              className="text-fg-tertiary-2 tabular-nums"
+              style={{ fontSize: 11 }}
+              title="Live indicative premium — the seed tracks this until you type your own."
+            >
+              live {currentPrice.toFixed(2)}
+              {triggerDrift != null && Math.abs(triggerDrift) >= 0.01 && (
+                <span className="text-warning ml-1">
+                  ({triggerDrift > 0 ? "+" : "−"}
+                  {Math.abs(triggerDrift).toFixed(2)})
+                </span>
+              )}
+            </span>
           </label>
         )}
 
