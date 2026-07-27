@@ -18,13 +18,9 @@ dependencies = [
     "scipy>=1.14",
     "pandas-market-calendars>=4.4",
     "httpx>=0.27",
-    "catboost>=1.2",
     # yfinance scrapes Yahoo's HTML; pin tightly because it breaks every
     # ~6 months when Yahoo redesigns. Bump explicitly when we re-test.
     "yfinance==1.3.0",  # tested 2026-05-15 (0.2.40 was broken against current Yahoo)
-    "torch>=2.4",
-    "scikit-learn>=1.5",
-    "pyarrow>=17.0",  # parquet for OOS prediction stacking
     "bcrypt>=4.1",
     "stripe>=11.0",  # payments (opt-in; imported lazily — see services/payments.py)
     # Error tracking (opt-in). Inert unless SENTRY_DSN is set — main.py's
@@ -49,21 +45,6 @@ dev = [
 pg = [
     "psycopg[binary]>=3.2",
 ]
-
-# Torch is used for CPU inference only — there is no GPU in the deploy target.
-# The default PyPI torch wheel bundles ~5GB of NVIDIA CUDA libraries on Linux
-# (62 nvidia-* packages, all `sys_platform == 'linux'`), which bloats the deploy
-# image and exhausts the CI runner's disk during `docker build` (the "Docker
-# image (build only)" job). Redirect ONLY the Linux torch to PyTorch's CPU wheel
-# index; macOS/dev resolves torch from PyPI as before (already CPU-only there),
-# so this is a Linux-scoped change with no cross-platform churn.
-[tool.uv.sources]
-torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
 
 [build-system]
 requires = ["setuptools>=68"]
