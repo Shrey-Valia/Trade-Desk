@@ -417,8 +417,14 @@ function TodayInline({ trades }: { trades: Trade[] }) {
 }
 
 function Column({ children }: { children: React.ReactNode }) {
+  // overflow-y-auto (not hidden): inside the fixed 280px strip, a tall column —
+  // e.g. an open position stacking roll + close-limit + auto-close-countdown +
+  // close + bulk rows — used to be silently CLIPPED. Auto keeps the layout
+  // identical when content fits and adds a scrollbar only when it overflows, so
+  // nothing is ever hidden. overflow-x stays clipped to avoid a spurious
+  // horizontal bar from full-width children.
   return (
-    <div className="border-r border-hairline last:border-r-0 flex flex-col min-h-0 overflow-hidden">
+    <div className="border-r border-hairline last:border-r-0 flex flex-col min-h-0 overflow-y-auto overflow-x-hidden">
       {children}
     </div>
   );
