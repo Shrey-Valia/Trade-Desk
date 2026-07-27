@@ -59,6 +59,39 @@ const GRID = `${CALL_W}px ${STRIKE_W}px ${PUT_W}px`;
 /** Strike-span choices (± strikes around ATM) — feeds useChainTable. */
 const SPAN_OPTIONS = [5, 10, 20] as const;
 
+/** Quotes are refetched every 10s; a source timestamp older than this (≈3
+ *  missed cycles) means the feed has stalled and prices may be out of date. */
+export const STALE_QUOTE_SECONDS = 30;
+
+/** Pure staleness decision for a quote timestamp, given the current time and
+ *  whether the session is open. Exported for testing (the chain component it
+ *  drives is behind auth). Staleness only applies during market hours — quotes
+ *  are legitimately old when closed. */
+export function quoteStaleness(
+  asOfIso: string | null,
+  nowMs: number,
+  marketOpen: boolean,
+): { stale: boolean; ageSec: number | null } {
+  const asOfMs = asOfIso ? Date.parse(asOfIso) : NaN;
+  if (!Number.isFinite(asOfMs)) return { stale: false, ageSec: null };
+  const ageSec = Math.max(0, (nowMs - asOfMs) / 1000);
+  return { stale: marketOpen && ageSec > STALE_QUOTE_SECONDS, ageSec };
+}
+
+/** A clock that re-renders the caller every `intervalMs` while `enabled`, so a
+ *  time-based state (quote staleness) updates even when no new data arrives.
+ *  Returns Date.now(); the interval is torn down when disabled/unmounted. */
+function useNowTick(intervalMs: number, enabled: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs, enabled]);
+  return now;
+}
+
 /** Above this many strikes the ladder is windowed (only on-screen rows
  *  mount). The default chain pulls ~11 rows, so day-to-day rendering is the
  *  plain path and unchanged; only wide chains (deep strike spans) virtualize. */
@@ -318,6 +351,7 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
         atm={showChain ? data?.atm_strike ?? null : null}
         iv={showChain ? data?.iv_used ?? null : null}
         asOf={showChain ? data?.as_of ?? null : null}
+        marketOpen={marketOpen}
         expirations={expirations?.expirations ?? []}
         onSelectExpiry={(iso, isToday) => setExpiry(isToday ? null : iso)}
       />
@@ -683,6 +717,7 @@ function Header({
   atm,
   iv,
   asOf,
+  marketOpen = false,
   expirations = [],
   onSelectExpiry,
 }: {
@@ -693,11 +728,20 @@ function Header({
   iv: number | null;
   /** Quote timestamp (ISO) — when the chain's prices were sourced. */
   asOf: string | null;
+  /** Only flag staleness while the session is open — quotes are legitimately
+   *  old when the market is closed (the closed-market banner already says so). */
+  marketOpen?: boolean;
   /** Listed expirations for the browser dropdown (≤1 → static label). */
   expirations?: { expiry: string; dte: number; is_today: boolean }[];
   onSelectExpiry?: (iso: string, isToday: boolean) => void;
 }) {
   const asOfLabel = asOf ? formatClockEtSeconds(asOf) : null;
+  // Staleness: the chain refetches every 10s, so a quote timestamp older than
+  // STALE_QUOTE_SECONDS (3 missed cycles) means the feed has stalled. The tick
+  // re-evaluates on a clock so the flag appears even when NO new data arrives
+  // (a silent stall is exactly the case a plain timestamp hides).
+  const now = useNowTick(5_000, marketOpen && !!asOf);
+  const { stale, ageSec } = quoteStaleness(asOf, now, marketOpen);
   const expiryLabel = (e: { expiry: string; dte: number; is_today: boolean }) =>
     e.is_today ? `today · 0DTE` : `${e.expiry} · ${e.dte}DTE`;
   return (
@@ -731,11 +775,26 @@ function Header({
           </span>
         )}
         <span
-          className="ml-auto text-fg-tertiary-2"
+          className={`ml-auto ${stale ? "text-warning font-medium" : "text-fg-tertiary-2"}`}
           style={{ fontSize: 12 }}
-          title={asOfLabel ? `Quotes sourced ${asOfLabel} ET` : undefined}
+          role="status"
+          title={
+            asOfLabel
+              ? stale
+                ? `Quotes last updated ${asOfLabel} ET — the feed appears stalled (${Math.round(
+                    ageSec ?? 0,
+                  )}s ago). Prices may be out of date.`
+                : `Quotes sourced ${asOfLabel} ET`
+              : undefined
+          }
         >
-          {asOfLabel ? `quotes ${asOfLabel} · ` : ""}indicative pricing
+          {stale && (
+            <span aria-hidden className="mr-1">
+              ⚠
+            </span>
+          )}
+          {asOfLabel ? `quotes ${asOfLabel}${stale ? " · STALE" : ""} · ` : ""}
+          indicative pricing
         </span>
       </div>
       <div className="flex items-baseline gap-3 px-3 pb-1 tabular-nums">
