@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
+import { Modal } from "@/components/ui/Modal";
 import { useUpdateTrade } from "@/hooks/useTrades";
 import { colors } from "@/lib/design";
 import { STRATEGY_LABELS, type Trade, type TradeLeg } from "@/types/journal";
@@ -27,14 +28,6 @@ interface Props {
  * snapshots). We show the net move rather than fabricating a curve.
  */
 export function DayModal({ date, trades, onClose }: Props) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const net = trades.reduce((sum, t) => sum + (t.realized_pnl ?? 0), 0);
   // Win = strictly positive P&L, matching the backend's win-rate
   // definition (journal_analytics) so this modal and ANALYTICS agree.
@@ -42,24 +35,20 @@ export function DayModal({ date, trades, onClose }: Props) {
   const winRate = trades.length ? Math.round((wins / trades.length) * 100) : 0;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-6"
-      style={{ background: "rgba(10,12,18,0.66)" }}
-      onClick={onClose}
+    <Modal
+      open
+      onClose={onClose}
+      labelledBy="day-modal-title"
+      panelClassName="flex flex-col overflow-hidden bg-tier-1 border border-hairline-strong w-[760px] max-w-full max-h-[88vh] rounded"
     >
-      <div
-        className="flex flex-col overflow-hidden bg-tier-1 border border-hairline-strong"
-        style={{ width: 760, maxWidth: "100%", maxHeight: "88vh", borderRadius: 4 }}
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Trades for ${date}`}
-      >
-        {/* head */}
-        <header className="flex items-center gap-4 px-4 py-3 border-b border-hairline shrink-0">
-          <span className="text-medium font-medium text-fg-primary">
-            {formatLongDate(date)}
-          </span>
+      {/* head */}
+      <header className="flex items-center gap-4 px-4 py-3 border-b border-hairline shrink-0">
+        <span
+          id="day-modal-title"
+          className="text-medium font-medium text-fg-primary"
+        >
+          {formatLongDate(date)}
+        </span>
           <span className="text-tiny uppercase tracking-label-up text-fg-tertiary">
             {formatWeekday(date)}
           </span>
@@ -83,17 +72,16 @@ export function DayModal({ date, trades, onClose }: Props) {
           </button>
         </header>
 
-        {/* body */}
-        <div className="overflow-y-auto min-h-0">
-          {trades.map((t) => (
-            <div key={t.id}>
-              <TradeHead trade={t} />
-              <TradeDetail trade={t} />
-            </div>
-          ))}
-        </div>
+      {/* body */}
+      <div className="overflow-y-auto min-h-0">
+        {trades.map((t) => (
+          <div key={t.id}>
+            <TradeHead trade={t} />
+            <TradeDetail trade={t} />
+          </div>
+        ))}
       </div>
-    </div>
+    </Modal>
   );
 }
 

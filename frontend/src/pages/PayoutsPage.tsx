@@ -1211,31 +1211,43 @@ function PayoutRow({
               : "Activate — free"}
         </button>
       ) : (
-        // The wrapping span carries the tooltip — a disabled button doesn't
-        // reliably fire hover in every browser.
-        <span
-          className="shrink-0"
-          title={
-            gateBlocked
-              ? gateHint
-              : available <= 0
-                ? "No payout available yet."
-                : undefined
-          }
-        >
-          <button
-            type="button"
-            disabled={available <= 0 || gateBlocked}
-            onClick={() => {
-              payout.reset();
-              setConfirmOpen(true);
-            }}
-            className="h-8 px-3 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{ borderRadius: 0 }}
-          >
-            Request payout
-          </button>
-        </span>
+        // A disabled button is unfocusable, so a `title` tooltip alone hides the
+        // blocking reason from keyboard + screen-reader users. Surface it as
+        // visible text (everyone sees it) and wire it as the button's
+        // aria-description so it's announced with the button.
+        (() => {
+          const reason = gateBlocked
+            ? gateHint
+            : available <= 0
+              ? "No payout available yet."
+              : undefined;
+          return (
+            <span className="shrink-0 flex flex-col items-end gap-0.5" title={reason}>
+              <button
+                type="button"
+                disabled={available <= 0 || gateBlocked}
+                onClick={() => {
+                  payout.reset();
+                  setConfirmOpen(true);
+                }}
+                aria-describedby={reason ? `payout-reason-${combine.id}` : undefined}
+                className="h-8 px-3 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ borderRadius: 0 }}
+              >
+                Request payout
+              </button>
+              {reason && (
+                <span
+                  id={`payout-reason-${combine.id}`}
+                  className="text-fg-tertiary-2 text-right"
+                  style={{ fontSize: 11, maxWidth: 220 }}
+                >
+                  {reason}
+                </span>
+              )}
+            </span>
+          );
+        })()
       )}
       {confirmOpen && (
         <PayoutConfirmDialog

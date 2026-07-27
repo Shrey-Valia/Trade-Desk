@@ -134,6 +134,16 @@ export function AdminUsers() {
                     <tr
                       key={u.id}
                       onClick={() => setSelectedId(u.id)}
+                      onKeyDown={(e) => {
+                        // Keyboard-operable: Enter/Space opens the user drawer
+                        // (matches role="button").
+                        if (e.key !== "Enter" && e.key !== " ") return;
+                        e.preventDefault();
+                        setSelectedId(u.id);
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-haspopup="dialog"
                       className="cursor-pointer hover:bg-tier-2"
                     >
                       <td className={`${TD_CLS} ${NUM_CLS}`}>{u.id}</td>

@@ -197,6 +197,18 @@ export function PositionBracketsLayer({ chartRef, seriesRef, brackets }: Props) 
     });
   };
 
+  // Keyboard nudge for the slider grab strip — arrow keys move the level by
+  // `delta` and commit, the keyboard analog of the drag. Floors at 0.01.
+  const nudge = (kind: Kind) => (delta: number) => {
+    const cur = displayed(kind);
+    if (cur == null) return;
+    const next = round2(Math.max(0.01, cur + delta));
+    brackets.onChange({
+      stop_loss: kind === "sl" ? next : brackets.stopLoss,
+      take_profit: kind === "tp" ? next : brackets.takeProfit,
+    });
+  };
+
   const pnlAt = (x: number) => interpolate(brackets.prices, brackets.payoffToday, x);
 
   // While a drawing tool is armed (or a drawing is selected), the grab strips
@@ -214,7 +226,9 @@ export function PositionBracketsLayer({ chartRef, seriesRef, brackets }: Props) 
           price={displayed("sl") as number}
           pnl={pnlAt(displayed("sl") as number)}
           onPointerDown={startDrag("sl")}
+          onNudge={nudge("sl")}
           onClear={clear("sl")}
+          spot={brackets.spot}
           grabDisabled={drawingActive}
         />
       )}
@@ -226,7 +240,9 @@ export function PositionBracketsLayer({ chartRef, seriesRef, brackets }: Props) 
           price={displayed("tp") as number}
           pnl={pnlAt(displayed("tp") as number)}
           onPointerDown={startDrag("tp")}
+          onNudge={nudge("tp")}
           onClear={clear("tp")}
+          spot={brackets.spot}
           grabDisabled={drawingActive}
         />
       )}
@@ -287,7 +303,9 @@ function BracketRow({
   price,
   pnl,
   onPointerDown,
+  onNudge,
   onClear,
+  spot,
   grabDisabled,
 }: {
   rowRef: React.Ref<HTMLDivElement>;
@@ -296,7 +314,9 @@ function BracketRow({
   price: number;
   pnl: number | null;
   onPointerDown: (e: React.PointerEvent) => void;
+  onNudge: (delta: number) => void;
   onClear: () => void;
+  spot: number;
   grabDisabled: boolean;
 }) {
   const pnlText = pnl == null ? "" : `${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(0)}`;
@@ -310,7 +330,26 @@ function BracketRow({
           everywhere else along the chart. */}
       <div
         onPointerDown={onPointerDown}
-        className="absolute left-0 right-0"
+        onKeyDown={(e) => {
+          // Keyboard analog of the drag: arrows nudge ±0.05 (±1.00 with Shift),
+          // Page keys jump ±1.00. Makes the role="slider" promise real.
+          const step = e.shiftKey ? 1 : 0.05;
+          if (e.key === "ArrowUp" || e.key === "ArrowRight") {
+            e.preventDefault();
+            onNudge(step);
+          } else if (e.key === "ArrowDown" || e.key === "ArrowLeft") {
+            e.preventDefault();
+            onNudge(-step);
+          } else if (e.key === "PageUp") {
+            e.preventDefault();
+            onNudge(1);
+          } else if (e.key === "PageDown") {
+            e.preventDefault();
+            onNudge(-1);
+          }
+        }}
+        tabIndex={0}
+        className="absolute left-0 right-0 outline-none focus-visible:ring-1 focus-visible:ring-amber"
         style={{
           top: -6,
           height: 12,
@@ -318,8 +357,11 @@ function BracketRow({
           pointerEvents: grabDisabled ? "none" : "auto",
         }}
         role="slider"
-        aria-label={`${label} bracket at ${price.toFixed(2)}`}
+        aria-label={`${label} bracket`}
         aria-valuenow={price}
+        aria-valuemin={0}
+        aria-valuemax={Math.max(spot * 2, price)}
+        aria-valuetext={`${label} ${price.toFixed(2)}`}
       />
       <div
         className="absolute left-0 right-0"
