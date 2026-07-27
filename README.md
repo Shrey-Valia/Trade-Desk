@@ -55,7 +55,6 @@ No `shadcn/ui`, no `lucide-react`, no `d3` — the v1 spec listed them but the l
 - `fredapi` via `httpx` for risk-free-rate (DGS3MO)
 - `apscheduler` for cron jobs (watchlist refresh, chain collection, catalog refresh)
 - `pandas` + `numpy` + `scipy` + `pandas-market-calendars`
-- `torch`, `scikit-learn`, `catboost` are declared but currently dormant — see above
 
 **Tests:** pytest, ~1,100 backend + ~210 frontend (vitest). Pure-math, journal CRUD, account-state math, order-monitor fills/exits, margin requirements, roll/close-leg/close-limit lifecycles, probability metrics, chain/expiry resolution, admin surface.
 
@@ -521,7 +520,7 @@ These are the truthful gaps; they're not embarrassments but they shape what the 
 - **Drawing tools on the chart**: not implemented. A TradingView Lightweight Charts swap was attempted to inherit their drawing toolbar; the free TV widget doesn't expose price-axis coordinates to host code, so the swap was reverted. The on-disk artifact `screenshots/tradingview_phase1_attempt.png` is evidence of the exploration, not a live build.
 - **No real OPRA**: paper trades only. The whole product is honest about being a paper terminal; profit targets, the funded stage, and the payout flow are all simulated on top of the indicative feed.
 - **Simulated payments**: the combine purchase / activation / reset / monthly-renewal money is simulated. A Stripe webhook + checkout path exists on the backend (signature-verified, idempotent) but the default purchase flow is the free placeholder — real charging is not wired on the frontend.
-- **Dormant ML signals**: backend routes (`/api/models`, `/api/signal`) and deps (`torch`, `catboost`, `scikit-learn`) are present but no trained artifacts ship; cells are not mounted in the active UI.
+- **No ML signals**: an earlier draft aspired to model-driven signals (LSTM vol forecast, GBM stacking). That was never wired up — no routes, no code imports, no trained artifacts shipped — so the heavyweight ML deps (`torch`, `catboost`, `scikit-learn`, `pyarrow`) that were declared for it have been removed. The pure-math options analytics (`calculations/`, on `numpy`/`scipy`) are the live signal layer.
 
 > **Enforcement, multi-user, and payouts now SHIP** (they were listed as gaps in earlier drafts of this README): the trade-open path is gated against the MLL/DLL/scaling-cap/day-lock (`services/order_monitor` auto-liquidates at the floor; `routers/zerodte._require_tradeable`); auth + sessions are real (`routers/auth`, per-user scoping throughout); and the funded stage + payout request/review desk are live (`routers/combines`, `jobs/settle_combines`). See the [Rules & enforcement](#) sections above.
 
