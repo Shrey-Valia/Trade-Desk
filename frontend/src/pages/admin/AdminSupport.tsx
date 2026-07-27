@@ -1,9 +1,15 @@
-import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import { relativeTime } from "@/components/positions/panelChrome";
 import { LoadError } from "@/components/ui/LoadError";
 import {
+  ADMIN_TICKETS_PAGE_SIZE,
   adminKeys,
   errorMessage,
   fetchAdminTickets,
@@ -19,7 +25,9 @@ import {
   Field,
   FilterChips,
   fmtDateTime,
+  INPUT_CLS,
   NUM_CLS,
+  Pager,
   Panel,
   SELECT_CLS,
   TEXTAREA_CLS,
@@ -44,14 +52,27 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 export function AdminSupport() {
   const [filter, setFilter] = useState<Filter>("open");
+  const [input, setInput] = useState("");
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  // Debounced search — typing shouldn't fire a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQ(input.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [input]);
 
   const status = filter === "all" ? undefined : filter;
   const tickets = useQuery({
-    queryKey: adminKeys.tickets(status),
-    queryFn: () => fetchAdminTickets(status),
+    queryKey: adminKeys.tickets(status, q, page),
+    queryFn: () => fetchAdminTickets(status, q, page),
     staleTime: 15_000,
     refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
   });
 
   return (
@@ -61,20 +82,31 @@ export function AdminSupport() {
           Ticket queue{" "}
           {tickets.data && (
             <span className={`${NUM_CLS} text-fg-tertiary-2 normal-case`}>
-              · {tickets.data.length}
+              · {tickets.data.total}
             </span>
           )}
         </>
       }
       actions={
-        <FilterChips
-          options={FILTERS}
-          value={filter}
-          onChange={(f) => {
-            setFilter(f);
-            setExpandedId(null);
-          }}
-        />
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <input
+            type="search"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Search subject or email…"
+            className={`${INPUT_CLS} w-56 max-w-full`}
+            style={{ fontSize: 12 }}
+          />
+          <FilterChips
+            options={FILTERS}
+            value={filter}
+            onChange={(f) => {
+              setFilter(f);
+              setPage(1);
+              setExpandedId(null);
+            }}
+          />
+        </div>
       }
     >
       {tickets.isPending ? (
@@ -83,13 +115,18 @@ export function AdminSupport() {
         </div>
       ) : tickets.isError ? (
         <LoadError subject="the ticket queue" onRetry={tickets.refetch} />
-      ) : tickets.data.length === 0 ? (
+      ) : tickets.data.tickets.length === 0 ? (
         <div className="px-3 py-6 text-tiny text-fg-tertiary-2">
-          {filter === "open" ? "Inbox zero — no open tickets." : "No tickets here."}
+          {q
+            ? `No tickets match “${q}”.`
+            : filter === "open"
+              ? "Inbox zero — no open tickets."
+              : "No tickets here."}
         </div>
       ) : (
+        <>
         <ul className="flex flex-col">
-          {tickets.data.map((t) => (
+          {tickets.data.tickets.map((t) => (
             <li key={t.id} className="border-b border-hairline last:border-b-0">
               <button
                 type="button"
@@ -118,6 +155,16 @@ export function AdminSupport() {
             </li>
           ))}
         </ul>
+        <Pager
+          page={tickets.data.page}
+          total={tickets.data.total}
+          pageSize={ADMIN_TICKETS_PAGE_SIZE}
+          onPage={(p) => {
+            setPage(p);
+            setExpandedId(null);
+          }}
+        />
+        </>
       )}
     </Panel>
   );

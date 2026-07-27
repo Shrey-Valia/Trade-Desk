@@ -14,9 +14,9 @@ import json
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from database import get_session
@@ -76,6 +76,8 @@ class AdminTicketOut(TicketOut):
 
 class AdminTicketsResponse(BaseModel):
     tickets: list[AdminTicketOut]
+    total: int
+    page: int
 
 
 class AdminTicketUpdate(BaseModel):
@@ -180,19 +182,38 @@ def list_own_tickets(
 @router.get("/admin/tickets", response_model=AdminTicketsResponse)
 def admin_list_tickets(
     status: Literal["open", "replied", "closed"] | None = None,
+    q: str = "",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_session),
 ) -> AdminTicketsResponse:
-    stmt = (
-        select(SupportTicket, User.email)
-        .join(User, User.id == SupportTicket.user_id)
-        .order_by(SupportTicket.created_at.desc(), SupportTicket.id.desc())
+    """Support queue, newest first, PAGINATED (mirrors /admin/users) so the
+    payload stays bounded as tickets accumulate. Optional status filter plus a
+    case-insensitive search over the ticket subject and the owner's email."""
+    stmt = select(SupportTicket, User.email).join(
+        User, User.id == SupportTicket.user_id
     )
     if status is not None:
         stmt = stmt.where(SupportTicket.status == status)
-    rows = db.execute(stmt).all()
+    needle = q.strip()
+    if needle:
+        like = f"%{needle}%"
+        stmt = stmt.where(
+            or_(User.email.ilike(like), SupportTicket.subject.ilike(like))
+        )
+    total = db.execute(
+        select(func.count()).select_from(stmt.subquery())
+    ).scalar_one()
+    rows = db.execute(
+        stmt.order_by(SupportTicket.created_at.desc(), SupportTicket.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
     return AdminTicketsResponse(
-        tickets=[_to_admin_out(t, email) for t, email in rows]
+        tickets=[_to_admin_out(t, email) for t, email in rows],
+        total=int(total),
+        page=page,
     )
 
 
