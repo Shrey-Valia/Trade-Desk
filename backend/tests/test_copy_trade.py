@@ -204,6 +204,45 @@ def test_mirror_preserves_ratio_and_skips_rather_than_distorts(
         )
 
 
+def test_mirror_fractional_multiplier_skips_ratio_distortion(
+    auth_client, session_factory
+):
+    """A FRACTIONAL multiplier that rounds an asymmetric structure into a
+    different reduced ratio must be SKIPPED, not mirrored as a distorted
+    position — even when the distorted total fits under the cap. 50K cap = 5."""
+    lead = make_combine(auth_client, "50K", name="Lead")
+    sym = make_combine(auth_client, "50K", name="Symmetric")
+    asym = make_combine(auth_client, "50K", name="Asymmetric")
+
+    # Symmetric [1,1] at 1.5x -> [2,2]: reduced ratio (1,1) unchanged -> mirrors.
+    _set_config(auth_client, lead["id"], [(sym["id"], 1.5)])
+    with session_factory() as s:
+        lead_c = s.get(Combine, lead["id"])
+        straddle = _lead_ratio_trade(s, lead_c, [1, 1])
+        result = mirror_open(s, lead_c, straddle)
+        assert sym["id"] in result.mirrored
+        mt = s.execute(
+            select(Trade).where(Trade.combine_id == sym["id"])
+        ).scalars().one()
+        assert [leg["contracts"] for leg in mt.legs] == [2, 2]
+
+    # Asymmetric [1,2] at 1.5x -> [2,3]: reduced ratio (1,2) -> (2,3) changed.
+    # Total 5 == cap, so ONLY the ratio guard (not the cap) can catch it.
+    _set_config(auth_client, lead["id"], [(asym["id"], 1.5)])
+    with session_factory() as s:
+        lead_c = s.get(Combine, lead["id"])
+        ratio_spread = _lead_ratio_trade(s, lead_c, [1, 2])
+        result = mirror_open(s, lead_c, ratio_spread)
+        assert asym["id"] not in result.mirrored
+        assert (asym["id"], "multiplier distorts structure ratio") in result.skipped
+        assert (
+            s.execute(
+                select(Trade).where(Trade.combine_id == asym["id"])
+            ).scalars().first()
+            is None
+        )
+
+
 def test_mirror_applies_multiplier(auth_client, session_factory):
     lead = make_combine(auth_client, "50K", name="Lead")
     f2 = make_combine(auth_client, "50K", name="Half")

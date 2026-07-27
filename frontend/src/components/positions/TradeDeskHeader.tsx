@@ -316,6 +316,13 @@ function MetricPills() {
   const dllDisabled = combine.dllDisabled;
   const dllHit = combine.dayLocked;
 
+  // Cold load: until useAccountState resolves every value falls back to 0, so
+  // without this the hero would flash a zeroed-out account ($0.00 / MLL $0) for
+  // a beat on first paint. Render a muted placeholder cluster instead.
+  if (!account) {
+    return <MetricPillsSkeleton />;
+  }
+
   return (
     <div className="flex items-stretch gap-2.5">
       <CushionHero
@@ -371,6 +378,41 @@ function MetricPills() {
 
 function signedClass(v: number): string {
   return v > 0 ? "text-bullish" : v < 0 ? "text-bearish" : "text-fg-primary";
+}
+
+/**
+ * Placeholder cluster shown while the account snapshot is still loading, so the
+ * header never flashes a zeroed-out account on cold load. Mirrors the live
+ * cluster's shape (hero block + a row of labelled pills) with muted em-dashes.
+ */
+function MetricPillsSkeleton() {
+  const labels = ["Bal", "RP&L", "UP&L", "BP", "DLL", "MKT"];
+  return (
+    <div className="flex items-stretch gap-2.5" aria-busy="true">
+      <div
+        className="bg-tier-2 border border-tier-3 rounded-btn px-3 py-1.5 flex flex-col justify-center shrink-0"
+        style={{ minWidth: 176 }}
+      >
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2"
+          style={{ fontSize: 10, letterSpacing: "0.08em" }}
+        >
+          Cushion
+        </span>
+        <span
+          className="tabular-nums text-fg-tertiary-2"
+          style={{ fontSize: 15, marginTop: 2 }}
+        >
+          —
+        </span>
+      </div>
+      <div className="flex items-center gap-3 pl-0.5">
+        {labels.map((label) => (
+          <MiniStat key={label} label={label} value="—" valueClass="text-fg-tertiary-2" />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /**

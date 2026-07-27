@@ -22,6 +22,8 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import reduce
+from math import gcd
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -146,16 +148,29 @@ def mirror_open(session: Session, lead_combine: Combine, lead_trade: Trade) -> M
             # Single leg: no inter-leg ratio to distort — clamp to the cap and
             # mirror a smaller size, the intended proportional-copy behavior.
             scaled[0] = min(scaled[0], cap)
-        elif any(s > cap for s in scaled):
-            # MULTI-LEG: clamping only the larger leg of a ratio structure (e.g.
-            # a 1-2-1 butterfly) silently turns it into a DIFFERENT position with
-            # a different risk profile than the lead traded. Skip the whole mirror
-            # (same skip-not-fail convention as the gates around it) rather than
-            # distort the structure. (A structure that fits under the cap is
-            # mirrored ratio-intact; one that overflows is caught here or by the
-            # aggregate check below — neither path clamps an individual leg.)
-            result.skipped.append((f.id, "structure exceeds contract allowance"))
-            continue
+        else:
+            # MULTI-LEG ratio integrity. A FRACTIONAL multiplier can round an
+            # asymmetric structure into a DIFFERENT one (a 1-2-1 butterfly at
+            # x1.5 -> 2-3-2 — a different risk profile). Compare the reduced
+            # inter-leg ratio before/after scaling and skip-not-distort if it
+            # changed (same convention as the gates around it). Symmetric
+            # structures (1-1 straddle/vertical) reduce identically and pass.
+            base = [max(1, int(leg.get("contracts", 1) or 1)) for leg in lead_legs]
+            g_base = reduce(gcd, base)
+            g_scaled = reduce(gcd, scaled)
+            if tuple(b // g_base for b in base) != tuple(s // g_scaled for s in scaled):
+                result.skipped.append((f.id, "multiplier distorts structure ratio"))
+                continue
+            if any(s > cap for s in scaled):
+                # Clamping only the larger leg of a ratio structure (e.g. a
+                # 1-2-1 butterfly) silently turns it into a DIFFERENT position
+                # than the lead traded. Skip the whole mirror rather than
+                # distort the structure. (A structure that fits under the cap is
+                # mirrored ratio-intact; one that overflows is caught here or by
+                # the aggregate check below — neither path clamps an individual
+                # leg.)
+                result.skipped.append((f.id, "structure exceeds contract allowance"))
+                continue
         for leg, s in zip(legs, scaled):
             leg["contracts"] = s
         # AGGREGATE cap, same convention as the direct open path: the scaling

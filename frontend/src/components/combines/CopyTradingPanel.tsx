@@ -125,6 +125,7 @@ export function CopyTradingPanel() {
                     key={c.id}
                     combine={c}
                     config={followerMap.get(c.id) ?? null}
+                    pending={update.isPending}
                     onToggle={() => toggleFollower(c.id)}
                     onPatch={(patch) => patchFollower(c.id, patch)}
                   />
@@ -148,11 +149,13 @@ export function CopyTradingPanel() {
 function FollowerRow({
   combine,
   config,
+  pending,
   onToggle,
   onPatch,
 }: {
   combine: CombineOut;
   config: CopyFollowerInput | null;
+  pending: boolean;
   onToggle: () => void;
   onPatch: (patch: Partial<CopyFollowerInput>) => void;
 }) {
@@ -183,6 +186,7 @@ function FollowerRow({
               <MultiplierPicker
                 value={mult}
                 cap={combine.max_contracts}
+                disabled={pending}
                 onChange={(m) => onPatch({ multiplier: m })}
               />
               <button
@@ -197,7 +201,7 @@ function FollowerRow({
               </button>
             </>
           )}
-          <FollowToggle on={on} onChange={onToggle} />
+          <FollowToggle on={on} disabled={pending} onChange={onToggle} />
         </div>
       </div>
 
@@ -206,11 +210,13 @@ function FollowerRow({
           <BracketInput
             label="Stop loss"
             value={config?.stop_loss ?? null}
+            disabled={pending}
             onCommit={(v) => onPatch({ stop_loss: v })}
           />
           <BracketInput
             label="Take profit"
             value={config?.take_profit ?? null}
+            disabled={pending}
             onCommit={(v) => onPatch({ take_profit: v })}
           />
           <span className="text-fg-tertiary-2" style={{ fontSize: 10, lineHeight: 1.3 }}>
@@ -230,10 +236,12 @@ function FollowerRow({
 function BracketInput({
   label,
   value,
+  disabled,
   onCommit,
 }: {
   label: string;
   value: number | null;
+  disabled?: boolean;
   onCommit: (v: number | null) => void;
 }) {
   const [draft, setDraft] = useState(value == null ? "" : String(value));
@@ -266,6 +274,7 @@ function BracketInput({
         step="0.01"
         min={0}
         value={draft}
+        disabled={disabled}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -276,7 +285,7 @@ function BracketInput({
         }}
         placeholder="—"
         aria-label={label}
-        className="h-7 w-20 px-1.5 text-right tabular-nums bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary-2 focus:border-amber focus:outline-none"
+        className="h-7 w-20 px-1.5 text-right tabular-nums bg-tier-0 border border-hairline text-fg-primary placeholder:text-fg-tertiary-2 focus:border-amber focus:outline-none disabled:opacity-50"
         style={{ borderRadius: 4, fontSize: 12 }}
       />
     </label>
@@ -294,10 +303,12 @@ function BracketInput({
 function MultiplierPicker({
   value,
   cap,
+  disabled,
   onChange,
 }: {
   value: number;
   cap: number;
+  disabled?: boolean;
   onChange: (m: number) => void;
 }) {
   const [draft, setDraft] = useState(String(value));
@@ -330,6 +341,7 @@ function MultiplierPicker({
           max={MULT_MAX}
           step={0.1}
           value={draft}
+          disabled={disabled}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
@@ -339,7 +351,7 @@ function MultiplierPicker({
             }
           }}
           aria-label="Size multiplier"
-          className="h-7 w-14 px-1.5 text-right tabular-nums bg-tier-0 border border-hairline text-fg-primary focus:border-amber focus:outline-none"
+          className="h-7 w-14 px-1.5 text-right tabular-nums bg-tier-0 border border-hairline text-fg-primary focus:border-amber focus:outline-none disabled:opacity-50"
           style={{ borderRadius: 4, fontSize: 12 }}
         />
         <span className="text-fg-tertiary-2 pl-0.5" style={{ fontSize: 11 }}>
@@ -357,12 +369,21 @@ function MultiplierPicker({
   );
 }
 
-function FollowToggle({ on, onChange }: { on: boolean; onChange: () => void }) {
+function FollowToggle({
+  on,
+  disabled,
+  onChange,
+}: {
+  on: boolean;
+  disabled?: boolean;
+  onChange: () => void;
+}) {
   return (
     <UIButton
       role="switch"
       aria-checked={on}
       onClick={onChange}
+      disabled={disabled}
       active={on}
       size="sm"
       className="uppercase tracking-label-up min-w-[64px]"

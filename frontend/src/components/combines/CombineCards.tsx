@@ -81,6 +81,7 @@ function CombineCard({
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(combine.name);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const archived = combine.status === "archived";
 
   // -- funded-agreement e-sign gate (workstream D2) --------------------------
@@ -286,24 +287,45 @@ function CombineCard({
       </div>
       {!archived && (
         <div className="px-3 pb-2.5 flex items-center gap-2">
-          {failed && (
-            <button
-              type="button"
-              disabled={reset.isPending}
-              onClick={() => reset.mutate(combine.id)}
-              title={
-                resetCredits > 0
-                  ? `Restart the evaluation using 1 of your ${resetCredits} free reset credit${resetCredits === 1 ? "" : "s"} (banked one per monthly renewal). Trade history is kept; the eval P&L starts fresh.`
-                  : `Restart the evaluation for a $${Math.round(combine.monthly_price).toLocaleString()} reset fee (the monthly rate — renewals bank a free credit). Trade history is kept; the eval P&L starts fresh.`
-              }
-              className="h-6 px-2 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-50"
-              style={{ borderRadius: 0 }}
-            >
-              {resetCredits > 0
-                ? `Reset · free (${resetCredits} left)`
-                : `Reset · $${Math.round(combine.monthly_price).toLocaleString()}`}
-            </button>
-          )}
+          {failed &&
+            (confirmReset ? (
+              <span className="flex items-center gap-2">
+                <span className="text-tiny text-fg-tertiary-2">sure?</span>
+                <button
+                  type="button"
+                  disabled={reset.isPending}
+                  onClick={() => reset.mutate(combine.id)}
+                  className="h-6 px-2 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-50"
+                  style={{ borderRadius: 0 }}
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmReset(false)}
+                  className="text-tiny text-fg-tertiary-2 hover:text-fg-primary"
+                >
+                  cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                disabled={reset.isPending}
+                onClick={() => setConfirmReset(true)}
+                title={
+                  resetCredits > 0
+                    ? `Restart the evaluation using 1 of your ${resetCredits} free reset credit${resetCredits === 1 ? "" : "s"} (banked one per monthly renewal). Trade history is kept; the eval P&L starts fresh.`
+                    : `Restart the evaluation for a $${Math.round(combine.monthly_price).toLocaleString()} reset fee (the monthly rate — renewals bank a free credit). Trade history is kept; the eval P&L starts fresh.`
+                }
+                className="h-6 px-2 text-tiny uppercase tracking-label-up border border-bullish text-bullish hover:bg-tier-2 disabled:opacity-50"
+                style={{ borderRadius: 0 }}
+              >
+                {resetCredits > 0
+                  ? `Reset · free (${resetCredits} left)`
+                  : `Reset · $${Math.round(combine.monthly_price).toLocaleString()}`}
+              </button>
+            ))}
           <div className="ml-auto">
             {confirmArchive ? (
               <span className="flex items-center gap-2">

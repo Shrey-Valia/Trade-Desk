@@ -296,10 +296,20 @@ function TagEditor({ trade }: { trade: Trade }) {
     await commit(trade.tags.filter((x) => x !== tag));
   };
 
+  // A tags PATCH round-trips the WHOLE list; another add/remove fired while
+  // one is in flight would build off a stale snapshot and could drop a tag
+  // (last-write-wins). Gate every mutating control on the in-flight state.
+  const busy = update.isPending;
+
   return (
     <div className="flex flex-wrap gap-1.5 mt-2.5">
       {trade.tags.map((tag) => (
-        <Tag key={`t-${tag}`} label={tag} kind={tagKind(tag)} onRemove={() => removeTag(tag)} />
+        <Tag
+          key={`t-${tag}`}
+          label={tag}
+          kind={tagKind(tag)}
+          onRemove={busy ? undefined : () => removeTag(tag)}
+        />
       ))}
       {trade.mistake_tags.map((tag) => (
         <Tag key={`m-${tag}`} label={tag} kind="bad" />
@@ -309,6 +319,7 @@ function TagEditor({ trade }: { trade: Trade }) {
           autoFocus
           list="intent-tag-suggestions"
           value={draft}
+          disabled={busy}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={addTag}
           onKeyDown={(e) => {
@@ -328,7 +339,8 @@ function TagEditor({ trade }: { trade: Trade }) {
         <button
           type="button"
           onClick={() => setAdding(true)}
-          className="uppercase border border-dashed border-hairline text-fg-tertiary hover:text-amber hover:border-amber"
+          disabled={busy}
+          className="uppercase border border-dashed border-hairline text-fg-tertiary hover:text-amber hover:border-amber disabled:opacity-50"
           style={{ fontSize: 11, letterSpacing: "0.06em", padding: "2px 7px", borderRadius: 2 }}
         >
           + tag
