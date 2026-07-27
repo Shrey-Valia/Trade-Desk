@@ -36,7 +36,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app/backend
 
 # Dependency layer: locked resolve WITHOUT the project itself, so the
-# (large: torch/catboost/pandas) install is cached until uv.lock changes.
+# (pandas/numpy/scipy) install is cached until uv.lock changes.
 # --extra pg bakes in the psycopg driver so pointing DATABASE_URL at
 # Postgres is pure configuration (see docs/DEPLOYMENT.md).
 COPY backend/pyproject.toml backend/uv.lock ./
