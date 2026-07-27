@@ -1306,6 +1306,7 @@ function CloseLimitRow({
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [raw, setRaw] = useState("");
+  const [confirmPull, setConfirmPull] = useState(false);
 
   const isCredit = entryNet1x(trade) < 0;
   const base = structureBase(trade);
@@ -1349,16 +1350,40 @@ function CloseLimitRow({
           {isCredit ? "Buy back ≤" : "Close ≥"} ${Math.abs(resting).toFixed(2)}{" "}
           · working
         </span>
-        <button
-          type="button"
-          onClick={() => pull.mutate()}
-          disabled={pull.isPending}
-          className="text-fg-tertiary-2 hover:text-bearish disabled:opacity-40 px-1"
-          aria-label="cancel resting close limit"
-          title="Cancel the resting close limit"
-        >
-          ✕
-        </button>
+        {confirmPull ? (
+          <span className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => pull.mutate()}
+              disabled={pull.isPending}
+              className="uppercase tracking-label-up text-bearish disabled:opacity-40"
+              style={{ fontSize: 10 }}
+              aria-label="confirm cancel resting close limit"
+            >
+              cancel?
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmPull(false)}
+              className="uppercase tracking-label-up text-fg-tertiary-2 hover:text-fg-primary"
+              style={{ fontSize: 10 }}
+              aria-label="keep resting close limit"
+            >
+              keep
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmPull(true)}
+            disabled={pull.isPending}
+            className="text-fg-tertiary-2 hover:text-bearish disabled:opacity-40 px-1"
+            aria-label="cancel resting close limit"
+            title="Cancel the resting close limit"
+          >
+            ✕
+          </button>
+        )}
       </div>
     );
   }
@@ -2106,6 +2131,9 @@ function formatClockEt(iso: string): string {
 }
 
 function formatHours(h: number): string {
+  // A missing/malformed leg expiry yields NaN hours-to-expiry; guard so the
+  // theta-scrubber label never renders "NaNhNaNm".
+  if (!Number.isFinite(h)) return "—";
   const total = Math.max(0, h);
   const hours = Math.floor(total);
   const minutes = Math.floor((total - hours) * 60);

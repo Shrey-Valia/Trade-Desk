@@ -36,16 +36,19 @@ def get_value(db: Session, key: str, default=None):
     return default if value is None else value
 
 
-def set_value(db: Session, key: str, value) -> None:
-    """Upsert one key. Commits — callers treat platform state as its own
-    small transaction (an operator flip must land even if a surrounding
-    request later fails)."""
+def set_value(db: Session, key: str, value, *, commit: bool = True) -> None:
+    """Upsert one key. Commits by default — callers treat platform state as
+    its own small transaction (an operator flip must land even if a
+    surrounding request later fails). Pass ``commit=False`` when the caller
+    needs to bundle the write with other rows (e.g. a kill-switch flip that
+    must land atomically with its audit row) and will commit once itself."""
     row = db.get(PlatformState, key)
     if row is None:
         row = PlatformState(key=key)
         db.add(row)
     row.value_json = json.dumps(value)
-    db.commit()
+    if commit:
+        db.commit()
 
 
 def get_trading_mode(db: Session) -> str:
@@ -53,10 +56,10 @@ def get_trading_mode(db: Session) -> str:
     return mode if mode in TRADING_MODES else "normal"
 
 
-def set_trading_mode(db: Session, mode: str) -> None:
+def set_trading_mode(db: Session, mode: str, *, commit: bool = True) -> None:
     if mode not in TRADING_MODES:
         raise ValueError(f"unknown trading mode {mode!r}")
-    set_value(db, KEY_TRADING_MODE, mode)
+    set_value(db, KEY_TRADING_MODE, mode, commit=commit)
 
 
 def get_banned_symbols(db: Session) -> set[str]:
@@ -66,8 +69,12 @@ def get_banned_symbols(db: Session) -> set[str]:
     return {str(s).upper() for s in raw}
 
 
-def set_banned_symbols(db: Session, symbols: list[str]) -> None:
-    set_value(db, KEY_BANNED_SYMBOLS, sorted({str(s).upper() for s in symbols}))
+def set_banned_symbols(
+    db: Session, symbols: list[str], *, commit: bool = True
+) -> None:
+    set_value(
+        db, KEY_BANNED_SYMBOLS, sorted({str(s).upper() for s in symbols}), commit=commit
+    )
 
 
 def platform_status(db: Session) -> dict:

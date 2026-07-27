@@ -168,6 +168,7 @@ function WorkingRow({
   onUnlinkGroup?: (group: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
   // A multi-leg structure's trigger is the NET premium (debit +, credit −);
   // single legs trade in plain option premium.
   const multiLeg = order.legs.length > 1;
@@ -266,16 +267,40 @@ function WorkingRow({
         >
           edit
         </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={cancelling}
-          aria-label="Cancel order"
-          className="text-fg-tertiary hover:text-bearish disabled:opacity-50 leading-none"
-          style={{ fontSize: 14 }}
-        >
-          ×
-        </button>
+        {confirmCancel ? (
+          <span className="flex items-center gap-1.5 leading-none">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={cancelling}
+              aria-label="Confirm cancel order"
+              className="uppercase tracking-label-up text-bearish hover:text-bearish disabled:opacity-50"
+              style={{ fontSize: 10 }}
+            >
+              cancel?
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmCancel(false)}
+              aria-label="Keep order"
+              className="uppercase tracking-label-up text-fg-tertiary hover:text-fg-primary"
+              style={{ fontSize: 10 }}
+            >
+              keep
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmCancel(true)}
+            disabled={cancelling}
+            aria-label="Cancel order"
+            className="text-fg-tertiary hover:text-bearish disabled:opacity-50 leading-none"
+            style={{ fontSize: 14 }}
+          >
+            ×
+          </button>
+        )}
       </div>
       {editing && (
         <EditOrderForm order={order} onClose={() => setEditing(false)} />

@@ -70,6 +70,9 @@ export function payoutStateTone(state: string): Tone {
       return "muted";
     case "denied":
       return "bearish";
+    case "cancelled":
+      // Lifecycle void (account reset / expired), not a reviewer decision.
+      return "neutral";
     default:
       return "neutral";
   }

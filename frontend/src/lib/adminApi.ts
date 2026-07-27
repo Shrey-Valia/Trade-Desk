@@ -136,6 +136,7 @@ export const PAYOUT_STATES = [
   "denied",
   "held",
   "paid",
+  "cancelled",
 ] as const;
 export type PayoutState = (typeof PAYOUT_STATES)[number];
 

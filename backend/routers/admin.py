@@ -1184,12 +1184,19 @@ def set_platform(
             + ", ".join(TRADING_MODES),
         )
     before = platform_state.platform_status(db)
-    # set_trading_mode / set_banned_symbols each commit — an operator flip
-    # lands even if anything after it fails.
+    # Stage both keys AND the audit row without committing, then land them in
+    # ONE commit below. This makes the flip atomic with its audit trail: a
+    # crash mid-request lands neither, and a combined {mode, symbols} PUT can
+    # never half-apply. (commit=False overrides platform_state's default
+    # commit-per-key behavior, which exists for the standalone-flip case.)
     if payload.trading_mode is not None:
-        platform_state.set_trading_mode(db, payload.trading_mode)
+        platform_state.set_trading_mode(db, payload.trading_mode, commit=False)
     if payload.banned_symbols is not None:
-        platform_state.set_banned_symbols(db, payload.banned_symbols)
+        platform_state.set_banned_symbols(db, payload.banned_symbols, commit=False)
+    # Flush the staged writes so the audit `after` snapshot (read back via
+    # platform_status) reflects the pending change even though nothing has
+    # committed yet — the session isn't autoflushed on read here.
+    db.flush()
     after = platform_state.platform_status(db)
     audit(
         db,
