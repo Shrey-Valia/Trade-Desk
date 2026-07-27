@@ -308,15 +308,18 @@ export function PositionsPage() {
   }, [activeTrade, analyticsQuery.data, symbol, setBracketsMutation]);
 
   return (
-    <div className="flex flex-col h-full min-h-0 overflow-y-auto md:overflow-hidden">
+    <div className="flex flex-col h-full min-h-0 overflow-y-auto xl:overflow-hidden">
       {/* a11y (WS6): a visually-hidden <h1> gives this dense chart terminal a
           heading landmark — the visible header is pills/search, not a title. */}
       <h1 className="sr-only">Trade Desk — positions terminal{symbol ? ` (${symbol})` : ""}</h1>
       <TradeDeskHeader symbol={symbol} onSymbolChange={setSymbol} />
-      {/* Desktop: chart | rail side-by-side. Mobile: chart stacked over the
-          chain/ticket rail, the whole page scrolling vertically. */}
-      <div className="flex flex-col md:flex-row flex-1 min-h-0">
-        <main className="flex-1 min-w-0 flex flex-col min-h-[60vh] md:min-h-0">
+      {/* Wide (≥xl / 1280px): chart | rail side-by-side. Narrower — including
+          tablets and small laptops — stacks chart over the chain/ticket rail,
+          the whole page scrolling vertically. The rail is a hard 452px (the
+          option chain can't shrink below it), so splitting any earlier squeezed
+          the chart to an unusable sliver between ~768–1200px. */}
+      <div className="flex flex-col xl:flex-row flex-1 min-h-0">
+        <main className="flex-1 min-w-0 flex flex-col min-h-[60vh] xl:min-h-0">
           {/* Econ-calendar strip — macro tape above the chart (FOMC / CPI /
               OPEX / earnings / ISM). Wires the previously-orphaned
               useCalendar() feed. */}
@@ -352,7 +355,7 @@ export function PositionsPage() {
           )}
         </main>
         <div
-          className="border-t md:border-t-0 md:border-l border-hairline shrink-0 flex flex-col min-h-0 bg-tier-0 w-full md:w-[452px] md:min-w-[452px]"
+          className="border-t xl:border-t-0 xl:border-l border-hairline shrink-0 flex flex-col min-h-0 bg-tier-0 w-full xl:w-[452px] xl:min-w-[452px]"
         >
           {/* Upper-right: option chain (natural height, no flex-grow). */}
           <RightChain symbol={symbol} onPickSymbol={setSymbol} />

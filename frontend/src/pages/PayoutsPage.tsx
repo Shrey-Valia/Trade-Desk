@@ -1151,10 +1151,10 @@ function PayoutRow({
   const splitText = `${pct}%`;
   return (
     <div
-      className="border border-hairline-strong bg-tier-1 flex items-center gap-4 px-3 py-2.5"
+      className="border border-hairline-strong bg-tier-1 flex items-center flex-wrap gap-x-4 gap-y-2 px-3 py-2.5"
       style={{ borderRadius: 4 }}
     >
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1" style={{ minWidth: 200 }}>
         <div className="flex items-center gap-2">
           <span className="text-fg-primary font-medium truncate" style={{ fontSize: 13 }}>
             {combine.name}
