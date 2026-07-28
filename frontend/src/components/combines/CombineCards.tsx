@@ -253,14 +253,14 @@ function CombineCard({
                   ? `Activate this funded account — a one-time $${combine.activation_fee} fee unlocks payouts (simulated).`
                   : "Activate this funded account — free on the no-activation plan — to unlock payouts."
               }
-              className="h-5 px-1.5 text-tiny uppercase tracking-label-up border border-hairline-strong text-fg-primary hover:bg-tier-2 hover:border-hairline disabled:opacity-50"
-              style={{ borderRadius: 0, fontSize: 11 }}
+              className="td-pulse-cta h-8 px-3.5 font-semibold uppercase tracking-label-up bg-bullish text-tier-0 rounded-btn hover:brightness-110 active:brightness-95 disabled:opacity-50 shrink-0 transition"
+              style={{ fontSize: 12, letterSpacing: "0.06em" }}
             >
               {activateAccount.isPending
-                ? "…"
+                ? "Activating…"
                 : combine.activation_fee > 0
-                  ? `Activate $${combine.activation_fee}`
-                  : "Activate (free)"}
+                  ? `Activate — $${combine.activation_fee} →`
+                  : "Activate account (free) →"}
             </button>
           </div>
         )}
