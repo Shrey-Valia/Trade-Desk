@@ -171,7 +171,11 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
   // expiry renders read-only: trading stays strictly 0DTE.
   const [expiry, setExpiry] = useState<string | null>(null);
   useEffect(() => setExpiry(null), [symbol]);
-  const { data, isLoading, isError, error } = useChainTable(symbol, span, expiry);
+  const { data, isLoading, isError, error, isFetching, refetch } = useChainTable(
+    symbol,
+    span,
+    expiry,
+  );
   const { data: expirations } = useExpirations(symbol);
   const browseOnly = !!data && data.expiry_is_today === false;
   // ── WS5: chain filters (additive — narrows the rendered strikes; composes
@@ -187,8 +191,20 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const { data: universe } = useZeroDteUniverse();
 
-  const chainErrMsg = isError ? (error as Error)?.message ?? "" : "";
+  const chainErr = isError
+    ? (error as Error & { status?: number; timeout?: boolean })
+    : null;
+  const chainErrMsg = chainErr?.message ?? "";
   const noZeroDteToday = chainErrMsg.startsWith("No 0DTE for");
+  // A slow/hung market-data feed (request timeout) or the backend's
+  // "…unavailable" 503 is a transient upstream condition, not a bug — the
+  // 10s poll auto-recovers. Show a retry state, not a raw red error echo.
+  const chainTimedOut = !!chainErr?.timeout;
+  const chainUnavailable =
+    !noZeroDteToday &&
+    (chainTimedOut ||
+      chainErr?.status === 503 ||
+      /unavailable/i.test(chainErrMsg));
 
   // DOM-lite overlay: resting working orders for THIS symbol, keyed by
   // strike+side, plus the existing cancel-order mutation reused inline.
@@ -421,7 +437,15 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
             onPick={onPickSymbol}
           />
         )}
-        {isError && !noZeroDteToday && (
+        {chainUnavailable && (
+          <ChainUnavailable
+            symbol={symbol}
+            timedOut={chainTimedOut}
+            retrying={isFetching}
+            onRetry={() => refetch()}
+          />
+        )}
+        {isError && !noZeroDteToday && !chainUnavailable && (
           <EmptyMessage tone="bearish">{chainErrMsg}</EmptyMessage>
         )}
         {showChain && data && data.rows.length > 0 && filteredRows.length === 0 && (
@@ -1328,6 +1352,50 @@ function EmptyMessage({
     <div className={`flex-1 flex items-center justify-center text-tiny ${cls} px-4 py-6 text-center`}>
       {children}
     </div>
+  );
+}
+
+/**
+ * Transient market-data outage state for the chain — a request timeout or the
+ * backend's "…unavailable" 503 (slow/unresponsive options feed, after-hours,
+ * rate-limited). Replaces the old dead "Loading chain…" spinner that never
+ * resolved: tells the user what's happening, notes the 10s auto-retry, and
+ * offers a manual retry.
+ */
+function ChainUnavailable({
+  symbol,
+  timedOut,
+  retrying,
+  onRetry,
+}: {
+  symbol: string | null;
+  timedOut: boolean;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <EmptyMessage tone="warning">
+      <div className="flex flex-col items-center gap-2" role="status" aria-live="polite">
+        <div className="text-fg-secondary">
+          {symbol ?? "Option"} chain unavailable
+        </div>
+        <div className="text-fg-tertiary" style={{ maxWidth: 260, lineHeight: 1.4 }}>
+          {timedOut
+            ? "The market-data feed is slow to respond."
+            : "The market-data feed is unreachable or the session is closed."}{" "}
+          Retrying automatically…
+        </div>
+        <button
+          type="button"
+          onClick={onRetry}
+          disabled={retrying}
+          className="mt-1 h-6 px-2 uppercase tracking-label-up border border-hairline-strong text-fg-secondary hover:border-hairline hover:text-fg-primary disabled:opacity-50"
+          style={{ borderRadius: 2, fontSize: 11 }}
+        >
+          {retrying ? "Retrying…" : "Retry now"}
+        </button>
+      </div>
+    </EmptyMessage>
   );
 }
 

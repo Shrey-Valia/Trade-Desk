@@ -158,13 +158,60 @@ export class MarketDataUnavailableError extends Error {
 }
 // ── end WS3 ─────────────────────────────────────────────────────────────────
 
+/** Thrown when a request exceeds its `timeoutMs` budget.
+ *  Carried as a typed error so the UI can distinguish a slow/hung upstream
+ *  from a real failure and show a "retrying" state instead of spinning
+ *  forever (e.g. the option chain when the market-data feed is unresponsive). */
+export class RequestTimeoutError extends Error {
+  readonly timeout = true;
+  constructor(path: string, timeoutMs: number) {
+    super(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    this.name = "RequestTimeoutError";
+    void path;
+  }
+}
+
 async function request<S extends z.ZodTypeAny>(
   path: string,
   schema: S,
+  opts?: { timeoutMs?: number },
 ): Promise<z.infer<S>> {
   // credentials: session-cookie auth. Same-origin through the Vite
   // proxy in dev; "include" also covers direct-to-:8000 use.
-  const res = await fetch(`${API_BASE}${path}`, { credentials: "include" });
+  let res: Response;
+  if (opts?.timeoutMs) {
+    // Deadline via Promise.race, NOT bare fetch-abort. Without a deadline a
+    // hung upstream (unresponsive options-data feed) leaves fetch pending
+    // forever and the caller's react-query stays `isLoading`. We race the
+    // fetch against a timeout that REJECTS with a typed error so react-query
+    // treats it as a normal failure (→ `isError`, retry) — an aborted fetch,
+    // by contrast, looks like a query cancellation and leaves the query idle
+    // with no error state. We still abort the losing fetch to free the socket,
+    // and swallow its abort rejection so it never surfaces as unhandled.
+    const controller = new AbortController();
+    const fetchP = fetch(`${API_BASE}${path}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    fetchP.catch(() => {}); // the abort rejection is expected once we time out
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutP = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        // Settle the race with the typed timeout FIRST, then abort — aborting
+        // first would reject the raced fetch synchronously and that rejection
+        // ("aborted") would win the race instead of our typed error.
+        reject(new RequestTimeoutError(path, opts.timeoutMs!));
+        controller.abort();
+      }, opts.timeoutMs);
+    });
+    try {
+      res = await Promise.race([fetchP, timeoutP]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } else {
+    res = await fetch(`${API_BASE}${path}`, { credentials: "include" });
+  }
   if (!res.ok) {
     notifyUnauthorized(path, res.status);
     // Surface the backend's `detail` when present (FastAPI HTTPException
@@ -762,6 +809,15 @@ export const fetchChainTable = (
     `/api/zerodte/chain/table?symbol=${encodeURIComponent(symbol)}&strikes=${strikes}` +
       (expiry ? `&expiry=${encodeURIComponent(expiry)}` : ""),
     ChainTableSchema,
+    // 8s deadline — deliberately BELOW useChainTable's 10s refetchInterval.
+    // If the timeout exceeded the poll interval, the next poll would supersede
+    // (and react-query would *cancel*, not error) the still-in-flight fetch,
+    // leaving the query stuck `pending` forever with no error state. At 8s the
+    // fetch errors cleanly before the next poll, so an unresponsive options
+    // feed surfaces the retry state instead of a perpetual "Loading…" spinner.
+    // Warm intraday loads return in well under 1s, so this only bites when the
+    // feed is actually degraded (after-hours, rate-limited).
+    { timeoutMs: 8_000 },
   );
 
 /** Listed expirations (today or later) for the chain's expiry selector. */
