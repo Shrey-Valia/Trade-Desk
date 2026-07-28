@@ -180,23 +180,39 @@ def get_current_user(
     return user
 
 
+def maybe_bootstrap_admin(user: User, db: Session) -> bool:
+    """Promote an allow-listed user to the admin role if they aren't already.
+
+    Bootstrap path: an email listed in settings.admin_emails becomes admin so
+    the first operator seat never requires hand-written SQL. Idempotent — a
+    no-op (no write) once the user is already admin or isn't allow-listed.
+    Returns True iff the user is (now) an admin.
+
+    Called from BOTH require_admin (the API gate) and the /me identity endpoint
+    so the frontend's role-based admin route guard flips to admin without the
+    UI first having to hit an /api/admin/* endpoint (which it never would — the
+    guard redirects a non-admin away before any admin call fires)."""
+    if user.role == "admin":
+        return True
+    allowlist = {e.strip().lower() for e in settings.admin_emails if e.strip()}
+    if user.email in allowlist:
+        user.role = "admin"
+        db.commit()
+        return True
+    return False
+
+
 def require_admin(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> User:
     """Admin gate for the /api/admin back office — 403 for everyone else.
 
-    Bootstrap path: an email listed in settings.admin_emails is promoted to
-    the admin role on first touch of an admin endpoint, so the first operator
-    seat never requires hand-written SQL. After that, admins promote/demote
-    through the admin API (audit-logged)."""
-    if user.role != "admin":
-        allowlist = {e.strip().lower() for e in settings.admin_emails if e.strip()}
-        if user.email in allowlist:
-            user.role = "admin"
-            db.commit()
-        else:
-            raise HTTPException(403, "admin access required")
+    Bootstrap path via maybe_bootstrap_admin: an email listed in
+    settings.admin_emails is promoted to the admin role. After that, admins
+    promote/demote through the admin API (audit-logged)."""
+    if not maybe_bootstrap_admin(user, db):
+        raise HTTPException(403, "admin access required")
     return user
 
 

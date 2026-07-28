@@ -64,6 +64,31 @@ def admin_client(api_client, monkeypatch):
     return c
 
 
+def test_me_bootstraps_admin_for_allowlisted_email(api_client, monkeypatch):
+    """GET /api/auth/me must apply the admin allowlist bootstrap itself.
+
+    The frontend gates the /admin route on this endpoint's `role` and would
+    redirect a not-yet-promoted allow-listed operator away BEFORE any
+    /api/admin/* call could trigger promotion — so promoting only inside
+    require_admin left the console unreachable via the UI. Regression for the
+    demo-blocker found in the 2026-07-27 live dry-run."""
+    monkeypatch.setattr(settings, "admin_emails", ("newadmin@test.local",))
+    c = TestClient(app)
+    _signup(c, "newadmin@test.local")
+    # No /api/admin/* call has been made — /me alone must report admin.
+    me = c.get("/api/auth/me")
+    assert me.status_code == 200
+    assert me.json()["role"] == "admin"
+
+
+def test_me_does_not_promote_non_allowlisted(api_client, monkeypatch):
+    """A normal user is never promoted by /me."""
+    monkeypatch.setattr(settings, "admin_emails", ("someoneelse@test.local",))
+    c = TestClient(app)
+    _signup(c, "regular@test.local")
+    assert c.get("/api/auth/me").json()["role"] != "admin"
+
+
 def _session(client):
     return next(client.app.dependency_overrides[get_session]())
 

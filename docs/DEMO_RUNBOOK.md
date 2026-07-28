@@ -22,9 +22,13 @@ into `.env`.
 | `KYC_AUTO_VERIFY` | `0` | Otherwise KYC never sits at `pending`, so the manual review flow can't be shown. |
 | `COOKIE_SECURE` | `0` | **Only if** serving over plain HTTP on a LAN IP / hostname / Safari. Not needed on `localhost`. |
 
-> **Admin seat gotcha:** the admin role is minted the first time an allow-listed
-> email hits an admin endpoint — there is no seeded admin row. Set
-> `ADMIN_EMAILS`, sign in with that email, then click Admin.
+> **Admin seat:** there is no seeded admin row — the role is minted from the
+> `ADMIN_EMAILS` allowlist on first identity check (`/api/auth/me`). Set
+> `ADMIN_EMAILS`, sign in with that email, and the **Admin** nav item appears.
+> (A live dry-run on 2026-07-27 found that promotion previously fired only on
+> an `/api/admin/*` call, which the UI never reaches — the route guard redirects
+> a non-admin away first — leaving the console unreachable. Fixed so `/me`
+> applies the bootstrap; setting `ADMIN_EMAILS` is now sufficient.)
 
 After editing `.env`, restart the backend so it re-reads config.
 
