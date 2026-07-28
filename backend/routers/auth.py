@@ -30,6 +30,7 @@ from services.auth import (
     create_session,
     get_current_user,
     hash_password,
+    maybe_bootstrap_admin,
     revoke_other_sessions,
     revoke_session,
     set_session_cookie,
@@ -276,7 +277,15 @@ def signout(
 
 
 @router.get("/me", response_model=UserOut)
-def me(user: User = Depends(get_current_user)) -> UserOut:
+def me(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> UserOut:
+    # Apply the admin allowlist bootstrap here too: the frontend gates the
+    # /admin route on this endpoint's `role`, and would redirect a not-yet-
+    # promoted allow-listed operator away before any /api/admin/* call could
+    # trigger promotion. Idempotent — no write once already admin.
+    maybe_bootstrap_admin(user, db)
     return UserOut(
         id=user.id,
         email=user.email,
