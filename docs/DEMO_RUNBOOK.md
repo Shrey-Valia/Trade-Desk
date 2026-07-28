@@ -40,8 +40,9 @@ Run in order. Each must pass before you present.
 
 ```bash
 # 1. Confirm the Alpaca feed returns a LIVE chain today (keys not stale/rate-limited).
-curl -s "http://localhost:8000/api/zerodte/chain/SPY" | head -c 400; echo
-# expect JSON chain rows, NOT a 503 "market data degraded"
+#    Run DURING market hours — after-hours the 0DTE chain is empty/expired.
+curl -s "http://localhost:8000/api/zerodte/chain?symbol=SPY" | head -c 400; echo
+# expect a JSON ATM call+put payload, NOT a 503 "market data degraded"
 ```
 
 ```bash
