@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MarketDataUnavailableError,
+  RequestTimeoutError,
+  fetchChainTable,
   fetchMarketStatus,
   fetchTrades,
   openZeroDteMultiLeg,
@@ -185,6 +187,48 @@ describe("api request()", () => {
       expect(err).not.toBeInstanceOf(MarketDataUnavailableError);
       expect((err as Error & { status?: number }).status).toBe(503);
       expect((err as Error).message).toBe("upstream down");
+    });
+  });
+
+  describe("request() timeout (AbortController deadline)", () => {
+    // A fetch that never resolves on its own but rejects when its AbortSignal
+    // fires — mimics a hung upstream (unresponsive options-data feed).
+    function mockHangingFetch() {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          (_url: string, init?: RequestInit) =>
+            new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () =>
+                reject(new Error("aborted")),
+              );
+            }),
+        ),
+      );
+    }
+
+    it("times fetchChainTable out at its 8s deadline with a typed timeout error", async () => {
+      vi.useFakeTimers();
+      try {
+        mockHangingFetch();
+        const err = fetchChainTable("SPY", 5).catch((e) => e);
+        await vi.advanceTimersByTimeAsync(8_000);
+        const resolved = await err;
+        expect(resolved).toBeInstanceOf(RequestTimeoutError);
+        expect((resolved as { timeout?: boolean }).timeout).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does NOT abort a request that has no timeoutMs (fetchMarketStatus)", async () => {
+      // A plain request must not carry an abort signal — a healthy call that
+      // simply takes a moment shouldn't be torn down by a deadline it never set.
+      mockFetch({ ok: true, status: 200, json: async () => OPEN_STATUS });
+      await fetchMarketStatus();
+      const init = (fetch as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0][1] as RequestInit;
+      expect(init.signal).toBeUndefined();
     });
   });
 

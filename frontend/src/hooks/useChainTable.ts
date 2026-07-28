@@ -23,6 +23,17 @@ export function useChainTable(
     enabled: !!symbol,
     staleTime: 5_000,
     refetchInterval: 10_000,
+    // Always attempt regardless of react-query's online heuristic — a
+    // same-origin API where "offline" isn't a meaningful gate, and a request
+    // timeout can otherwise trip the detector.
+    networkMode: "always",
+    // No per-attempt retry: this query already polls every 10s, so the poll
+    // IS the retry. Retrying here instead left a timed-out fetch (see
+    // fetchChainTable's 8s deadline) stuck `pending`/`paused` in retry-backoff
+    // limbo — hanging the "Loading chain…" spinner. Without retry, an 8s
+    // timeout settles straight to `error`, the panel shows the retry UI, and
+    // the next 10s poll re-attempts.
+    retry: false,
     // Keep the previous data only when it belongs to the SAME symbol — a
     // smooth 10s same-symbol refetch shouldn't flicker, but on a symbol
     // SWITCH we must drop the prior chain so the new symbol's error/empty
