@@ -99,3 +99,46 @@ copy-trade ratio-integrity guard, atomic kill-switch audit, arm-to-confirm on th
 working-order cancel and resting-close-limit pull, NaN theta-label guard, and a
 few in-flight double-submit guards. All covered by the branch; merge before the
 demo if you want them in.
+
+---
+
+## 6. T‑30 pre-demo checklist
+
+Run start to finish before anyone's watching. Ordered by time.
+
+### T‑30 → T‑20 · Bring it up
+- [ ] Backend: `uv run --directory backend uvicorn main:app --port 8000` — watch for `Application startup complete`, no tracebacks.
+- [ ] Frontend: `npm --prefix frontend run dev -- --port 5199`.
+- [ ] Confirm `.env` still has `ADMIN_EMAILS=["valia.s@northeastern.edu"]`.
+
+### T‑20 → T‑15 · Log in *(before the room — a cold browser can drop the session)*
+- [ ] `http://localhost:5199` → sign in (demo creds).
+- [ ] Confirm the **Admin** nav item shows (admin role minted).
+
+### T‑15 → T‑8 · Verify the demo state
+- [ ] **Dashboard:** BAL $106,599.99 · CLOSED P&L +$6,599.99 · amber "Evaluation passed" banner + green **Activate** button; curve + tracker (69% / 13 closed) all agree.
+- [ ] **Journal:** 13 trades · +$6,599.99 · 69%.
+- [ ] **Analytics:** profit factor 4.93, equity curve populated.
+- [ ] **Accounts:** 100K FUNDED, prominent green Activate button.
+- [ ] **Admin → Overview** loads; click **Platform** once (kill-switch renders).
+
+### T‑8 → T‑3 · Warm the terminal (the slow one)
+- [ ] Open Chart/Positions and leave it ~10s so the live SPY chart finishes loading (~5s cold — don't open it live on stage cold).
+- [ ] Market-hours check (only for the live trade): header reads market OPEN during 09:30–16:00 ET; if closed, narrate over the chart.
+- [ ] Optional feed check: `curl -s "http://localhost:8000/api/zerodte/chain?symbol=SPY" | head -c 200` → JSON, not a 503.
+
+### T‑3 → T‑0 · Presentation hygiene
+- [ ] Browser at desktop width, zoom 100%, full-screen; close unrelated tabs.
+- [ ] Land on the opening screen (Dashboard, or Landing for the cold open).
+- [ ] `docs/INVESTOR_QA.md` open in another window, real metrics filled into the `[brackets]`.
+
+### 🚫 Do NOT (on stage)
+- Click **Activate** mid-demo unless it's your finale (it resets the card to $100k funded — correct behavior, jarring mid-flow).
+- Open the terminal cold and talk over a "Loading…" spinner — warm it first.
+- Attempt a live trade after-hours — opens are gated ("market closed").
+
+### 🆘 If something breaks
+- **Logged out / blank:** re-sign-in; DB data persists.
+- **Chart won't load / chain empty:** market's likely closed or the feed's cold — narrate over it, it's not a crash.
+- **Account state wrong** (shows $100k / $0 = it got activated): reset combine 11 to funded-not-activated (`funded_activated_at=None, funded_epoch_at=None, hwm=settled_hwm=106599.99`; import models.user + models.trade first).
+- **Total fallback:** keep screenshots of the 7 beats on hand to present from images if the network dies.
