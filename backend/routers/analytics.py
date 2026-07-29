@@ -68,14 +68,25 @@ def get_analytics(
         Trade.combine_id.in_(select(Combine.id).where(Combine.user_id == user.id))
     )
     if combine_id is not None:
-        owned = session.execute(
-            select(Combine.id).where(
+        combine = session.execute(
+            select(Combine).where(
                 Combine.id == combine_id, Combine.user_id == user.id
             )
         ).scalar_one_or_none()
-        if owned is None:
+        if combine is None:
             raise HTTPException(404, f"combine {combine_id} not found")
         stmt = stmt.where(Trade.combine_id == combine_id)
+        # Funded-stage scoping. Activation re-bases the account's accounting to
+        # the funded epoch (funded_epoch_at) — from that instant the balance /
+        # closed-P&L the account header shows count ONLY trades opened at/after
+        # the epoch (services.combine_state.realized_sum_for_combine, entry_date
+        # based). Scope the analytics the same way so the dashboard's balance
+        # curve + performance tracker match the header instead of replaying the
+        # eval-stage trades a funded account no longer counts. Pre-activation
+        # (funded_epoch_at is None) nothing is filtered, so the eval view is
+        # unchanged. (The Journal remains the full trade log, by design.)
+        if combine.funded_epoch_at is not None:
+            stmt = stmt.where(Trade.entry_date >= combine.funded_epoch_at)
     if paper is not None:
         stmt = stmt.where(Trade.is_paper == paper)
     if strategy:
