@@ -5,6 +5,8 @@
  * textbook. Term wording mirrors the labels used across the terminal
  * (MLL pill, DLL pill, the 0DTE chain, the greeks readouts).
  */
+import { TOOLTIPS } from "@/lib/tooltips";
+
 export interface GlossaryTerm {
   term: string;
   /** Expanded name, when the term is an acronym. */
@@ -66,5 +68,98 @@ export const GLOSSARY: GlossaryTerm[] = [
     term: "Payout",
     definition:
       "A withdrawal of profit from a passed/funded combine. Subject to the profit-split (80/20 or 50/50) chosen at purchase.",
+  },
+  {
+    term: "BAL",
+    full: "Account balance",
+    definition: TOOLTIPS.bal,
+  },
+  {
+    term: "Closed P&L",
+    full: "Realized P&L (same as RP&L)",
+    definition: TOOLTIPS.closed_pnl,
+  },
+  {
+    term: "MLL cushion",
+    definition: TOOLTIPS.mll_cushion,
+  },
+  {
+    term: "BP",
+    full: "Buying power",
+    definition: TOOLTIPS.buying_power,
+  },
+  {
+    term: "Consistency target",
+    definition: TOOLTIPS.consistency_target,
+  },
+  {
+    term: "Profit target",
+    definition: TOOLTIPS.profit_target,
+  },
+  {
+    term: "Trading days",
+    definition: TOOLTIPS.trading_days,
+  },
+  {
+    term: "High-water mark",
+    definition:
+      "The highest balance your combine has reached. The MLL floor trails up from it and never drops back down within a trading session.",
+  },
+  {
+    term: "Funded",
+    definition:
+      "A combine you've passed and activated. Only funded combines can request payouts.",
+  },
+  {
+    term: "R-multiple",
+    definition:
+      "A trade's result measured in multiples of the risk you took (1R = the amount risked). +2R means you made twice what you risked; −1R means you lost your full risk.",
+  },
+  {
+    term: "ATM",
+    full: "At-the-money",
+    definition:
+      "The option strike closest to the current underlying price. ATM options are the most liquid and the most sensitive to a move in the stock.",
+  },
+  {
+    term: "EM",
+    full: "Expected move",
+    definition: TOOLTIPS.expected_move,
+  },
+  {
+    term: "Max pain",
+    definition: TOOLTIPS.max_pain,
+  },
+  {
+    term: "Gamma flip",
+    definition: TOOLTIPS.gamma_flip,
+  },
+  {
+    term: "Call wall",
+    definition: TOOLTIPS.call_wall,
+  },
+  {
+    term: "Put wall",
+    definition: TOOLTIPS.put_wall,
+  },
+  {
+    term: "IV Rank",
+    full: "Implied-volatility rank",
+    definition: TOOLTIPS.iv_rank,
+  },
+  {
+    term: "VRP",
+    full: "Volatility risk premium",
+    definition: TOOLTIPS.vrp,
+  },
+  {
+    term: "Skew",
+    full: "25-delta skew",
+    definition: TOOLTIPS.skew_25d,
+  },
+  {
+    term: "P/C ratio",
+    full: "Put/call ratio",
+    definition: TOOLTIPS.pc_ratio,
   },
 ];

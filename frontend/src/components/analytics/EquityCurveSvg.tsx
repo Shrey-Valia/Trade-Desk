@@ -98,8 +98,14 @@ export function EquityCurveSvg({
     : -1;
   const showBand = peakJ >= 0 && troughJ >= 0 && troughJ > peakJ;
 
+  // Reference-line labels sit at the LEFT edge of the plot (anchored to the
+  // line's start), NOT in the right gutter — the gutter is reserved for the $
+  // price ticks, and stacking both there made "TARGET"/"MLL" render on top of
+  // the axis numbers. The label rides just above its own line, clamped inside
+  // the plot so it can't clip the top edge or collide with the axis row.
   const refLine = (value: number, color: string, label: string) => {
     const yy = y(value);
+    const labelY = Math.min(Math.max(yy - 4, padT + 9), H - padB - 2);
     return (
       <g>
         <line
@@ -114,8 +120,8 @@ export function EquityCurveSvg({
           opacity={0.8}
         />
         <text
-          x={W - padR + 6}
-          y={yy + 3}
+          x={padL + 3}
+          y={labelY}
           fill={color}
           fontSize="10"
           fontFamily='"IBM Plex Mono", ui-monospace, monospace'

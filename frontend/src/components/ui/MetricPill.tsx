@@ -16,6 +16,12 @@ export interface MetricPillProps extends HTMLAttributes<HTMLDivElement> {
   /** Min width in px. Default 110. */
   width?: number;
   className?: string;
+  /**
+   * Plain-language explanation of the metric. When set, the pill shows a
+   * hover/focus tooltip, gets a help cursor, and the label is dotted-underlined
+   * to signal it's explainable — so acronyms (BAL/MLL/DLL/…) aren't cryptic.
+   */
+  hint?: string;
   /** Inline extras after the value — e.g. a <Badge>BREACH</Badge>. */
   children?: ReactNode;
 }
@@ -41,10 +47,15 @@ export function MetricPill({
   sub,
   width = 110,
   className = "",
+  hint,
   children,
   style,
+  title,
   ...rest
 }: MetricPillProps) {
+  // `hint` is the first-class definition affordance; a raw `title` is still
+  // honored for one-off contextual notes. hint wins when both are present.
+  const resolvedTitle = hint ?? title;
   const valueColor =
     tone === "bullish"
       ? "text-bullish"
@@ -67,13 +78,18 @@ export function MetricPill({
       className={[
         "flex flex-col leading-tight",
         "bg-tier-2 border border-tier-3 rounded-btn px-2.5 py-1",
+        resolvedTitle ? "cursor-help" : "",
         className,
       ].join(" ")}
       style={{ height: 44, minWidth: width, ...style }}
+      title={resolvedTitle}
       {...rest}
     >
       <span
-        className="uppercase tracking-label-up text-fg-tertiary-2"
+        className={[
+          "uppercase tracking-label-up text-fg-tertiary-2 w-fit",
+          hint ? "border-b border-dotted border-fg-tertiary" : "",
+        ].join(" ")}
         style={{ fontSize: 12, letterSpacing: "0.08em" }}
       >
         {label}
