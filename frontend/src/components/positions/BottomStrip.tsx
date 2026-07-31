@@ -31,6 +31,7 @@ import { TOOLTIPS } from "@/lib/tooltips";
 import { tradingDayStartMs } from "@/lib/tradingDay";
 import { useActivePosition } from "@/stores/activePosition";
 import { useChartPrefs } from "@/stores/chartPrefs";
+import { useTerminalMode } from "@/stores/terminalMode";
 import {
   isIntentFresh,
   useHotkeyActions,
@@ -51,6 +52,10 @@ import { isZeroDteTrade, STRATEGY_LABELS, type Trade, type TradeAnalytics } from
  */
 export function BottomStrip() {
   const symbol = useSelectedTicker((s) => s.symbol);
+  // KEY LEVELS is options market-structure (EM/CW/PW/MP/GF) — expert chrome
+  // gated to Advanced mode (P1-8). OPEN POSITION, the theta scrubber, TODAY,
+  // and the news feed stay in both modes.
+  const advanced = useTerminalMode((s) => s.mode === "advanced");
   const activeTradeId = useActivePosition((s) => s.tradeId);
   const scrubberDte = useActivePosition((s) => s.scrubberDte);
   const elapsedHours = useActivePosition((s) => s.elapsedHours);
@@ -132,7 +137,7 @@ export function BottomStrip() {
         style={{ height: 150 }}
       >
         <BulkHotkeys openCount={openPositions.length} workingOrders={workingOrders} />
-        <KeyLevelsInline symbol={symbol} />
+        {advanced && <KeyLevelsInline symbol={symbol} />}
         <TodayInline trades={trades} />
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-t border-hairline">
           <BottomNewsFeedTabs symbol={symbol} />
@@ -143,7 +148,10 @@ export function BottomStrip() {
 
   return (
     <div
-      className="grid border-t border-hairline bg-tier-0 shrink-0 grid-cols-1 sm:grid-cols-2 md:grid-cols-5 md:h-[280px]"
+      className={[
+        "grid border-t border-hairline bg-tier-0 shrink-0 grid-cols-1 sm:grid-cols-2 md:h-[280px]",
+        advanced ? "md:grid-cols-5" : "md:grid-cols-4",
+      ].join(" ")}
     >
       <BulkHotkeys openCount={openPositions.length} workingOrders={workingOrders} />
       <Column>
@@ -158,9 +166,11 @@ export function BottomStrip() {
       <Column>
         <ScrubberCol trade={activeTrade} analytics={analytics} isIntraday={isIntraday} />
       </Column>
-      <Column>
-        <KeyLevelsCol symbol={symbol} />
-      </Column>
+      {advanced && (
+        <Column>
+          <KeyLevelsCol symbol={symbol} />
+        </Column>
+      )}
       <Column>
         <TodayCol trades={trades} activeTradeId={activeTradeId} />
       </Column>

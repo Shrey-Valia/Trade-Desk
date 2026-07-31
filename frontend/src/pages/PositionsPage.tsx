@@ -23,6 +23,7 @@ import {
   useSelectedTicker,
   useSelectedTickerHasHydrated,
 } from "@/stores/selectedTicker";
+import { useTerminalMode } from "@/stores/terminalMode";
 import { useUserSettings } from "@/stores/userSettings";
 import { isZeroDteTrade, STRATEGY_LABELS } from "@/types/journal";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
@@ -50,6 +51,9 @@ export function PositionsPage() {
   const defaultTimeframe = useUserSettings((s) => s.defaultTimeframe);
   const defaultTicker = useUserSettings((s) => s.defaultTicker);
   const defaultContracts = useUserSettings((s) => s.defaultContracts);
+  // Advanced mode reveals the macro econ-calendar tape above the chart; Simple
+  // mode keeps the chart area focused (P1-8).
+  const advancedTerminal = useTerminalMode((s) => s.mode === "advanced");
   const setTicketContracts = useTradeTicket((s) => s.setContracts);
   const [timeframe, setTimeframe] = useState<ChartTimeframe>(defaultTimeframe);
 
@@ -321,9 +325,8 @@ export function PositionsPage() {
       <div className="flex flex-col xl:flex-row flex-1 min-h-0">
         <main className="flex-1 min-w-0 flex flex-col min-h-[60vh] xl:min-h-0">
           {/* Econ-calendar strip — macro tape above the chart (FOMC / CPI /
-              OPEX / earnings / ISM). Wires the previously-orphaned
-              useCalendar() feed. */}
-          <CalendarStrip />
+              OPEX / earnings / ISM). Advanced-only (P1-8). */}
+          {advancedTerminal && <CalendarStrip />}
           <ChartToolbar
             symbol={symbol}
             timeframe={timeframe}

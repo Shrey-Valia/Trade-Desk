@@ -6,6 +6,7 @@ import { useMarketStatus } from "@/hooks/useMarket";
 import { useTickerChart } from "@/hooks/useTickerChart";
 import { useChartPrefs } from "@/stores/chartPrefs";
 import { useIndicators } from "@/stores/indicators";
+import { useTerminalMode } from "@/stores/terminalMode";
 import { clampPeriod, useIndicatorPeriods } from "@/stores/indicatorPeriods";
 import { CHART_TIMEFRAMES, type ChartTimeframe } from "@/types/chart";
 import {
@@ -57,13 +58,17 @@ interface Props {
 const TF_OPTIONS: readonly ChartTimeframe[] = CHART_TIMEFRAMES;
 
 export function ChartToolbar({ symbol, timeframe, onTimeframeChange }: Props) {
+  // Simple mode (default) hides the expert chart chrome — indicators and the
+  // vol-regime strip — leaving just the timeframe ladder + OHLC readout.
+  const advanced = useTerminalMode((s) => s.mode === "advanced");
   return (
     <div className="shrink-0 bg-tier-1 border-b border-hairline">
-      <Toolbar timeframe={timeframe} onTimeframeChange={onTimeframeChange} />
+      <Toolbar timeframe={timeframe} onTimeframeChange={onTimeframeChange} advanced={advanced} />
       <OhlcStrip symbol={symbol} timeframe={timeframe} />
       {/* WS1: compact vol-regime readout — surfaces IVR / skew / VRP from
-          the existing /metrics endpoint right under the OHLC strip. */}
-      <VolRegimeStrip symbol={symbol} />
+          the existing /metrics endpoint right under the OHLC strip.
+          Advanced-only: it's dense jargon a new trader doesn't need. */}
+      {advanced && <VolRegimeStrip symbol={symbol} />}
     </div>
   );
 }
@@ -71,9 +76,11 @@ export function ChartToolbar({ symbol, timeframe, onTimeframeChange }: Props) {
 function Toolbar({
   timeframe,
   onTimeframeChange,
+  advanced,
 }: {
   timeframe: ChartTimeframe;
   onTimeframeChange: (tf: ChartTimeframe) => void;
+  advanced: boolean;
 }) {
   return (
     <div
@@ -101,13 +108,61 @@ function Toolbar({
           );
         })}
       </div>
-      <ToolbarSeparator />
-      <IndicatorChips />
+      {/* Indicators + legend + market-structure toggle are expert chrome —
+          shown only in Advanced mode. */}
+      {advanced && (
+        <>
+          <ToolbarSeparator />
+          <IndicatorChips />
+        </>
+      )}
       <div className="ml-auto flex items-center" style={{ gap: 6 }}>
-        <LegendToggle />
-        <MarketStructToggleHint />
+        {advanced && (
+          <>
+            <LegendToggle />
+            <MarketStructToggleHint />
+            <ToolbarSeparator />
+          </>
+        )}
+        <ModeToggle advanced={advanced} />
       </div>
       <span className="sr-only">{timeframe}</span>
+    </div>
+  );
+}
+
+/**
+ * Simple / Advanced switch — the terminal's progressive-disclosure control
+ * (P1-8). Advanced reveals chart indicators, the vol-regime strip, the macro
+ * calendar tape, and the KEY LEVELS market-structure panel. Persisted.
+ */
+function ModeToggle({ advanced }: { advanced: boolean }) {
+  const setMode = useTerminalMode((s) => s.setMode);
+  return (
+    <div
+      className="flex items-stretch border border-hairline rounded-btn overflow-hidden shrink-0"
+      role="group"
+      aria-label="Terminal detail level"
+      title="Simple shows the essentials; Advanced adds indicators, vol-regime, the macro calendar, and market-structure levels."
+    >
+      {(["simple", "advanced"] as const).map((m, i) => {
+        const on = advanced === (m === "advanced");
+        return (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            aria-pressed={on}
+            className={[
+              "h-6 px-2 text-tiny uppercase tracking-label-up",
+              on ? "text-amber bg-tier-2" : "text-fg-tertiary hover:bg-tier-2 hover:text-fg-primary",
+              i > 0 ? "border-l border-hairline" : "",
+            ].join(" ")}
+          >
+            {m}
+          </button>
+        );
+      })}
     </div>
   );
 }

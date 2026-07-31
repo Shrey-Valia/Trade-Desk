@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 
 import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
 import { GaugeDial } from "@/components/analytics/GaugeDial";
-import { CombineCardsGrid } from "@/components/combines/CombineCards";
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { colors } from "@/lib/design";
@@ -650,18 +649,34 @@ function ProgressBar({
 function CombineCards() {
   const { data } = useCombines();
   const combines = data?.combines ?? [];
-  if (combines.length === 0) return null;
+  // Home focuses on the ACTIVE combine — its pills, balance curve, performance,
+  // and Path to Funding are all above. Managing the full set (switch, activate,
+  // archive, copy trading) lives on the dedicated Combines page, so rather than
+  // repeat the whole card grid here (the audit's redundancy finding), Home shows
+  // a single compact link there. With only one combine there's nothing to
+  // manage across, so the section is omitted entirely.
+  if (combines.length <= 1) return null;
   return (
-    <Panel
-      title="Your combines"
-      right={`${data?.slots_used ?? 0} of ${data?.slots_total ?? 5} slots used`}
+    <Link
+      to="/accounts"
+      className="flex items-center justify-between gap-3 border border-hairline-strong bg-tier-1 px-3.5 py-3 hover:bg-tier-2 transition-colors"
+      style={{ borderRadius: 4 }}
     >
-      <CombineCardsGrid
-        combines={combines}
-        activeCombineId={data?.active_combine_id}
-        leadCombineId={data?.copy_lead_combine_id}
-      />
-    </Panel>
+      <div className="flex items-baseline gap-2 min-w-0">
+        <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
+          Your combines
+        </span>
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2 tabular-nums"
+          style={{ fontSize: 11 }}
+        >
+          {data?.slots_used ?? combines.length} of {data?.slots_total ?? 5} slots used
+        </span>
+      </div>
+      <span className="text-tiny uppercase tracking-label-up text-amber shrink-0">
+        Manage all {combines.length} combines →
+      </span>
+    </Link>
   );
 }
 
