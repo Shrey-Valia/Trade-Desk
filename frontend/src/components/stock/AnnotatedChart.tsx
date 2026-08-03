@@ -161,6 +161,23 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
   const degradedRetryAfter = degradedErr?.retryAfter ?? 30;
   // ── end WS3 ────────────────────────────────────────────────────────────────
 
+  // A bars request that stays pending (e.g. a slow feed after hours) must not
+  // spin forever. The degraded (typed-503) case has its own retrying panel;
+  // this covers the untyped-slow case — after a grace window with no data we
+  // surface an explicit "taking longer than usual" panel with a manual retry,
+  // so the primary chart area never sits on a dead spinner.
+  const stillLoadingNoData = bars.isLoading && !data && !isMarketDataDegraded;
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
+  useEffect(() => {
+    if (!stillLoadingNoData) {
+      setLoadTimedOut(false);
+      return;
+    }
+    if (loadTimedOut) return; // already surfaced; wait for a retry to reset
+    const t = window.setTimeout(() => setLoadTimedOut(true), 12000);
+    return () => window.clearTimeout(t);
+  }, [stillLoadingNoData, loadTimedOut, symbol, timeframe]);
+
   return (
     <div className="px-3 py-1.5 border-b border-hairline flex-1 min-h-0 flex flex-col">
       {!hideHeader && (
@@ -208,7 +225,19 @@ export function AnnotatedChart({ symbol, controlledTimeframe, hideHeader, positi
           />
         ) : (
           <>
-            {bars.isLoading && !data && <ChartSkeleton symbol={symbol} />}
+            {bars.isLoading &&
+              !data &&
+              (loadTimedOut ? (
+                <ChartLoadTimeout
+                  symbol={symbol}
+                  onRetry={() => {
+                    setLoadTimedOut(false);
+                    bars.refetch();
+                  }}
+                />
+              ) : (
+                <ChartSkeleton symbol={symbol} />
+              ))}
             {bars.isError && !isMarketDataDegraded && (
               <div className="text-tiny text-bearish px-2 py-2">
                 {(bars.error as Error)?.message ?? "Failed to load chart"}
@@ -1022,6 +1051,46 @@ function MarketDataUnavailable({
   );
 }
 // ── end WS3 ──────────────────────────────────────────────────────────────────
+
+// Fallback for a bars request that never resolves (slow/hung feed). Mirrors
+// the degraded panel's shape but frames it as a manual retry rather than an
+// automatic one, since there's no typed retry-after to count down.
+function ChartLoadTimeout({
+  symbol,
+  onRetry,
+}: {
+  symbol: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className="h-full w-full bg-tier-1 border border-hairline flex items-center justify-center"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex flex-col items-center gap-2 text-fg-secondary px-4 text-center">
+        <span
+          className="text-tiny uppercase tracking-label-up text-amber"
+          style={{ fontSize: 11, letterSpacing: "0.08em" }}
+        >
+          Chart is taking longer than usual
+        </span>
+        <span className="text-tiny text-fg-tertiary" style={{ fontSize: 11 }}>
+          The {symbol} price feed hasn't responded — it's often quiet outside
+          market hours. Try again in a moment.
+        </span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="text-tiny uppercase tracking-label-up text-fg-tertiary-2 hover:text-amber transition-colors duration-100 border border-hairline px-2 py-0.5"
+          style={{ fontSize: 9, borderRadius: 0 }}
+        >
+          retry now
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function ChartSkeleton({ symbol }: { symbol: string }) {
   return (

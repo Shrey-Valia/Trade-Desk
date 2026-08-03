@@ -10,8 +10,8 @@ import { ME_KEY } from "@/hooks/useAuth";
 import { useGlobalHotkeys } from "@/hooks/useGlobalHotkeys";
 import { registerUnauthorizedHandler } from "@/lib/api";
 
+import { DesktopOnlyNotice } from "./DesktopOnlyNotice";
 import { LeftRail } from "./LeftRail";
-import { MobileBottomNav } from "./MobileBottomNav";
 
 /**
  * Shared shell for every rail route. Desktop: left rail + content (flex row).
@@ -43,24 +43,29 @@ export function RailShell() {
   }, [qc]);
 
   return (
-    <div className="flex flex-col md:flex-row h-full min-h-0">
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-[70] focus:top-2 focus:left-2 focus:bg-tier-2 focus:border focus:border-amber focus:rounded-btn focus:px-3 focus:py-1.5 focus:text-sm focus:text-fg-primary"
-      >
-        Skip to content
-      </a>
-      <LeftRail />
-      {/* Skip-link target. A plain <div>, not <main>: most rail pages render
-          their own <main> landmark, so the wrapper stays a generic container
-          to avoid two main landmarks per route. */}
-      <div id="main-content" className="flex-1 min-w-0 min-h-0 flex flex-col">
-        <Outlet />
+    <>
+      {/* Below md the terminal doesn't fit — show an honest desktop-only
+          notice instead of a broken layout (P2). Exactly one of the notice
+          (md:hidden) and the shell (hidden md:flex) renders at any width. */}
+      <DesktopOnlyNotice />
+      <div className="hidden md:flex md:flex-row h-full min-h-0">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:z-[70] focus:top-2 focus:left-2 focus:bg-tier-2 focus:border focus:border-amber focus:rounded-btn focus:px-3 focus:py-1.5 focus:text-sm focus:text-fg-primary"
+        >
+          Skip to content
+        </a>
+        <LeftRail />
+        {/* Skip-link target. A plain <div>, not <main>: most rail pages render
+            their own <main> landmark, so the wrapper stays a generic container
+            to avoid two main landmarks per route. */}
+        <div id="main-content" className="flex-1 min-w-0 min-h-0 flex flex-col">
+          <Outlet />
+        </div>
+        <CommandPalette />
+        <HelpOverlay />
+        <OnboardingTour />
       </div>
-      <MobileBottomNav />
-      <CommandPalette />
-      <HelpOverlay />
-      <OnboardingTour />
-    </div>
+    </>
   );
 }

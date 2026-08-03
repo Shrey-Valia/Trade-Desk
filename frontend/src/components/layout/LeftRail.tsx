@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 
 import { TradeDeskMark } from "@/components/branding/TradeDeskMark";
 import { useMe } from "@/hooks/useAuth";
+import { useCommandPalette } from "@/stores/commandPalette";
 import { useOnboarding } from "@/stores/onboarding";
 
 import {
@@ -28,7 +29,7 @@ export interface RailItem {
 // Exported so the mobile bottom nav renders the same destinations.
 export const TOP_ITEMS: RailItem[] = [
   { to: "/dashboard", label: "Home", icon: DashboardIcon },
-  { to: "/accounts", label: "Accounts", icon: AccountsIcon },
+  { to: "/accounts", label: "Combines", icon: AccountsIcon },
   { to: "/payouts", label: "Payouts", icon: PayoutsIcon },
   { to: "/positions", label: "Chart", icon: ChartIcon },
   { to: "/journal", label: "Journal", icon: JournalIcon },
@@ -81,6 +82,9 @@ export function LeftRail() {
       <div className="mt-auto pb-2">
         <ul className="flex flex-col">
           <li>
+            <SearchEntry />
+          </li>
+          <li>
             <HelpEntry />
           </li>
           {isAdmin && <RailEntry item={ADMIN_ITEM} />}
@@ -90,6 +94,46 @@ export function LeftRail() {
         </ul>
       </div>
     </nav>
+  );
+}
+
+/** Visible entry point for the command palette (⌘K / Ctrl-K), which was
+ *  previously reachable only by the hotkey — undiscoverable to most users.
+ *  Opens the same fuzzy search over navigation + quick actions. */
+function SearchEntry() {
+  const setOpen = useCommandPalette((s) => s.setOpen);
+  const isMac =
+    typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform);
+  const combo = isMac ? "⌘K" : "Ctrl K";
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen(true)}
+      title={`Search & quick actions (${combo})`}
+      aria-label={`Open search and quick actions (${combo})`}
+      className="w-full flex flex-col items-center justify-center gap-1 py-2.5 px-1 text-fg-secondary hover:bg-tier-2 hover:text-fg-primary transition-opacity duration-100"
+    >
+      <svg
+        width={20}
+        height={20}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <circle cx="11" cy="11" r="7" />
+        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </svg>
+      <span
+        className="uppercase text-fg-tertiary-2"
+        style={{ fontSize: 11, letterSpacing: "0.02em" }}
+      >
+        Search
+      </span>
+    </button>
   );
 }
 

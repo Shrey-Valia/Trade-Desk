@@ -10,6 +10,7 @@ import { CopyTradingPanel } from "@/components/combines/CopyTradingPanel";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { LoadError } from "@/components/ui/LoadError";
 import { MetricPill } from "@/components/ui/MetricPill";
+import { TOOLTIPS } from "@/lib/tooltips";
 import { useCombines } from "@/hooks/useCombines";
 
 /**
@@ -39,7 +40,7 @@ export function AccountsPage() {
   return (
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
       <PageHeader
-        title="Accounts"
+        title="Combines"
         subtitle={
           data
             ? `${data.slots_used} of ${data.slots_total} combine slots used`
@@ -51,12 +52,17 @@ export function AccountsPage() {
           {/* Roll-up across active accounts + new-combine CTA. */}
           <div className="flex items-center gap-3 flex-wrap">
             <CombineSwitcher />
-            <MetricPill label="OPEN ACCOUNTS" value={String(active.length)} />
-            <MetricPill label="TOTAL BALANCE" value={formatDollar(totalBalance)} />
+            <MetricPill label="OPEN COMBINES" value={String(active.length)} />
+            <MetricPill
+              label="TOTAL BALANCE"
+              value={formatDollar(totalBalance)}
+              hint={TOOLTIPS.bal}
+            />
             <MetricPill
               label="TOTAL CLOSED P&L"
               value={formatSigned(totalClosed)}
               signed={totalClosed}
+              hint={TOOLTIPS.closed_pnl}
             />
             {worstCushioned && (
               <MetricPill
@@ -64,7 +70,7 @@ export function AccountsPage() {
                 value={formatDollar(mllCushion(worstCushioned))}
                 sub={worstCushioned.name}
                 tone={cushionAlarmed(worstCushioned) ? "bearish" : "default"}
-                title="The account closest to its MLL floor — watch it even when you're trading another (copy-trade followers fail on their own floors)."
+                hint="The combine closest to its MLL floor — watch it even when you're trading another (copy-trade followers fail on their own floors)."
               />
             )}
             <Link
@@ -84,7 +90,7 @@ export function AccountsPage() {
             <LoadError subject="your accounts" onRetry={refetch} />
           ) : all.length === 0 ? (
             <div className="px-1 py-10 text-center text-tiny text-fg-tertiary-2">
-              No accounts yet — start a Trading Combine to get going.
+              No combines yet — start a Trading Combine to get going.
             </div>
           ) : (
             <>
@@ -96,7 +102,7 @@ export function AccountsPage() {
                     leadCombineId={data?.copy_lead_combine_id}
                   />
                 ) : (
-                  <Empty text="No open accounts — start one." />
+                  <Empty text="No open combines — start one." />
                 )}
               </Section>
               {archived.length > 0 && (

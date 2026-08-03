@@ -18,6 +18,45 @@
 
 export const TOOLTIPS = {
   // ---------------------------------------------------------------------
+  // Account / prop-firm metrics (management pages + terminal header)
+  // ---------------------------------------------------------------------
+  bal:
+    "Your combine's account balance right now: the day's starting baseline plus realized P&L plus any open unrealized P&L. " +
+    "This is the number the loss limits are measured against.",
+
+  closed_pnl:
+    "Profit or loss already locked in by trades you've closed on this combine (the same figure the terminal labels RP&L, realized P&L). " +
+    "It excludes open positions — those show separately as unrealized P&L.",
+
+  mll:
+    "Maximum Loss Limit: the hard floor your balance may never touch — breaching it fails the combine permanently. " +
+    "It trails up as you set new equity highs and re-baselines at the 5pm-PT settlement.",
+
+  dll:
+    "Daily Loss Limit: the most you can lose in one trading day before new trades are locked for the rest of the session. " +
+    "Unlike the MLL it isn't fatal — it resets at the next 5pm-PT settlement.",
+
+  mll_cushion:
+    "How much your balance can still fall before it hits the MLL floor and the combine fails. " +
+    "The smaller this gets, the less room you have — treat it as your true risk budget.",
+
+  buying_power:
+    "The capital available to open new positions on this combine right now. " +
+    "It shrinks as you tie up money in open trades and as losses reduce your balance.",
+
+  consistency_target:
+    "A pass rule: no single trading day may account for more than 50% of your total realized profit. " +
+    "It stops one lucky day from carrying the whole evaluation — spread gains across sessions.",
+
+  profit_target:
+    "The realized-profit amount you must reach to pass the combine and get funded. " +
+    "Hit it while meeting the minimum trading days and consistency rule, without breaching the MLL.",
+
+  trading_days:
+    "The count of distinct days you've actually traded versus the minimum required to pass. " +
+    "A pass needs the profit target AND at least this many separate trading days.",
+
+  // ---------------------------------------------------------------------
   // Options metrics row
   // ---------------------------------------------------------------------
   iv_rank:

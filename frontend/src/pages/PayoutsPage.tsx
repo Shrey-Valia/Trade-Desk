@@ -98,14 +98,26 @@ export function PayoutsPage() {
     <div className="flex flex-col h-full min-h-0 bg-tier-0">
       <PageHeader
         title="Payouts"
-        subtitle="Funded accounts · your share of profit, on request (simulated)"
+        subtitle="Funded combines · your share of profit, on request (simulated)"
       />
       <main className="flex-1 min-h-0 overflow-y-auto border-t border-hairline">
         <div className="p-3.5 flex flex-col gap-3.5 min-h-full">
           <div className="flex items-center gap-3 flex-wrap">
-            <MetricPill label="FUNDED ACCOUNTS" value={String(funded.length)} />
-            <MetricPill label="AVAILABLE" value={formatDollar(totalAvailable)} />
-            <MetricPill label="REQUESTED (LIFETIME)" value={formatDollar(totalRequested)} />
+            <MetricPill
+              label="FUNDED COMBINES"
+              value={String(funded.length)}
+              hint="Combines you've passed and activated — the ones that can pay out."
+            />
+            <MetricPill
+              label="AVAILABLE"
+              value={formatDollar(totalAvailable)}
+              hint="Your share of realized profit you can request to withdraw right now, across funded combines."
+            />
+            <MetricPill
+              label="REQUESTED (LIFETIME)"
+              value={formatDollar(totalRequested)}
+              hint="Total you've ever requested to withdraw, including past payouts (simulated)."
+            />
           </div>
 
           <PayoutReadiness

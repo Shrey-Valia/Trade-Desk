@@ -3,13 +3,13 @@ import { Link } from "react-router-dom";
 
 import { EquityCurveSvg } from "@/components/analytics/EquityCurveSvg";
 import { GaugeDial } from "@/components/analytics/GaugeDial";
-import { CombineCardsGrid } from "@/components/combines/CombineCards";
 import { CombineSwitcher } from "@/components/combines/CombineSwitcher";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { colors } from "@/lib/design";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadError } from "@/components/ui/LoadError";
 import { MetricPill } from "@/components/ui/MetricPill";
+import { TOOLTIPS } from "@/lib/tooltips";
 import { useAccountState } from "@/hooks/useAccountState";
 import { useActivateAccount, useCombines } from "@/hooks/useCombines";
 import { useJournalAnalytics } from "@/hooks/useJournalAnalytics";
@@ -89,6 +89,13 @@ function FirstCombineHero() {
 
 function DashboardBody() {
   const { data: account } = useAccountState();
+  // A funded-but-not-activated combine puts a gold ACTIVATE banner at the top;
+  // when that's showing it owns the single "primary" (gold) slot, so the
+  // toolbar buttons below drop to secondary to avoid competing gold CTAs.
+  const { data: combinesData } = useCombines();
+  const hasPendingActivation = (combinesData?.combines ?? []).some(
+    (c) => c.funded && c.activation_required && c.status !== "archived",
+  );
   const activeCombineId = account?.combine_id ?? null;
   const analytics = useJournalAnalytics(
     activeCombineId != null ? { combineId: activeCombineId } : {},
@@ -106,31 +113,49 @@ function DashboardBody() {
         <CombineSwitcher />
         {account && (
           <>
-            <MetricPill label="BAL" value={formatDollar(account.balance)} />
+            <MetricPill
+              label="BAL"
+              value={formatDollar(account.balance)}
+              hint={TOOLTIPS.bal}
+            />
             <MetricPill
               label="CLOSED P&L"
               value={formatSigned(account.realized_pnl)}
               signed={account.realized_pnl}
+              hint={TOOLTIPS.closed_pnl}
             />
-            <MetricPill label="MLL" value={formatDollar(account.mll)} />
+            <MetricPill
+              label="MLL"
+              value={formatDollar(account.mll)}
+              hint={TOOLTIPS.mll}
+            />
             <MetricPill
               label="DLL"
               value={`${formatDollar(account.dll_used)} / ${formatDollar(account.dll_budget)}`}
               tone={account.dll_breached ? "bearish" : "default"}
+              hint={TOOLTIPS.dll}
             />
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
+          {/* Trading is the core daily action, so Launch terminal is the one
+              gold CTA here — unless a pending-activation banner is showing,
+              in which case ACTIVATE is the priority and both toolbar buttons
+              stay secondary. "Start a combine" is always secondary. */}
           <Link
             to="/positions"
-            className="h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
+            className={
+              hasPendingActivation
+                ? "h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
+                : "h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 font-medium"
+            }
             style={{ borderRadius: 0 }}
           >
             Launch terminal →
           </Link>
           <Link
             to="/combines/new"
-            className="h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up bg-amber text-tier-0 hover:opacity-90 font-medium"
+            className="h-8 px-3 inline-flex items-center text-tiny uppercase tracking-label-up border border-hairline text-fg-secondary hover:bg-tier-2 hover:text-fg-primary"
             style={{ borderRadius: 0 }}
           >
             Start a Trading Combine
@@ -527,7 +552,9 @@ function PathToFunding() {
               Trading days
             </span>
             <span className="text-tiny tabular-nums text-fg-secondary">
-              {account.days_traded} / {account.min_trading_days}
+              {account.days_traded >= account.min_trading_days
+                ? `Met · ${account.days_traded} days`
+                : `${account.days_traded} of ${account.min_trading_days} days`}
             </span>
           </div>
           <ProgressBar
@@ -622,18 +649,34 @@ function ProgressBar({
 function CombineCards() {
   const { data } = useCombines();
   const combines = data?.combines ?? [];
-  if (combines.length === 0) return null;
+  // Home focuses on the ACTIVE combine — its pills, balance curve, performance,
+  // and Path to Funding are all above. Managing the full set (switch, activate,
+  // archive, copy trading) lives on the dedicated Combines page, so rather than
+  // repeat the whole card grid here (the audit's redundancy finding), Home shows
+  // a single compact link there. With only one combine there's nothing to
+  // manage across, so the section is omitted entirely.
+  if (combines.length <= 1) return null;
   return (
-    <Panel
-      title="Your combines"
-      right={`${data?.slots_used ?? 0} of ${data?.slots_total ?? 5} slots used`}
+    <Link
+      to="/accounts"
+      className="flex items-center justify-between gap-3 border border-hairline-strong bg-tier-1 px-3.5 py-3 hover:bg-tier-2 transition-colors"
+      style={{ borderRadius: 4 }}
     >
-      <CombineCardsGrid
-        combines={combines}
-        activeCombineId={data?.active_combine_id}
-        leadCombineId={data?.copy_lead_combine_id}
-      />
-    </Panel>
+      <div className="flex items-baseline gap-2 min-w-0">
+        <span className="text-tiny uppercase tracking-label-up text-fg-secondary">
+          Your combines
+        </span>
+        <span
+          className="uppercase tracking-label-up text-fg-tertiary-2 tabular-nums"
+          style={{ fontSize: 11 }}
+        >
+          {data?.slots_used ?? combines.length} of {data?.slots_total ?? 5} slots used
+        </span>
+      </div>
+      <span className="text-tiny uppercase tracking-label-up text-amber shrink-0">
+        Manage all {combines.length} combines →
+      </span>
+    </Link>
   );
 }
 
