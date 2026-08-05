@@ -95,6 +95,40 @@ def _run(session_factory, **kw):
     return run_order_monitor(session_factory=session_factory, **params)
 
 
+# --- crossed / inverted book (P1: fantasy-credit guard) -----------------------
+
+
+def test_pick_fill_price_crossed_book_is_unusable():
+    """A crossed quote (ask BELOW bid) is stale/erroneous data — its mid is
+    meaningless and `max(0, ask−bid)` collapses the spread to 0, which let a
+    SELL fill at the fantasy mid. pick_fill_price must return 0 (no usable
+    quote) for both sides so the caller refuses / falls back to the model."""
+    crossed = _quote(bid=5.00, ask=0.01)
+    assert fills.pick_fill_price(crossed, "sell", 1) == 0.0
+    assert fills.pick_fill_price(crossed, "buy", 1) == 0.0
+    # A locked market (bid == ask) is still valid — spread 0, fills at the touch.
+    locked = _quote(bid=1.00, ask=1.00)
+    assert fills.pick_fill_price(locked, "sell", 1) == pytest.approx(1.00)
+    assert fills.pick_fill_price(locked, "buy", 1) == pytest.approx(1.00)
+
+
+def test_quote_quality_gate_rejects_crossed_sell():
+    """The sell-side anti-fantasy-market gate must reject a crossed book. The
+    relative-spread test (ask−bid)/mid goes NEGATIVE when crossed and would
+    otherwise pass, letting the fill machinery mint premium at the mid."""
+    from fastapi import HTTPException
+
+    from routers.zerodte import _require_quote_quality
+
+    crossed = _quote(bid=5.00, ask=0.01)
+    with pytest.raises(HTTPException) as ei:
+        _require_quote_quality("SPY", [("call 100", crossed, "sell")])
+    assert ei.value.status_code == 422
+    assert "crossed" in str(ei.value.detail).lower()
+    # A clean two-sided market passes.
+    _require_quote_quality("SPY", [("call 100", _quote(bid=1.0, ask=1.1), "sell")])
+
+
 # --- touch-based triggers -----------------------------------------------------
 
 

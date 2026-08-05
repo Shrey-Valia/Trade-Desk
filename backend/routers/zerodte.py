@@ -838,6 +838,19 @@ def _require_quote_quality(
                     f"(one-sided quote — bid ${bid:.2f} / ask ${ask:.2f})"
                 ),
             )
+        # Crossed/locked-through book (ask BELOW bid) — stale/erroneous data.
+        # The relative-spread check below uses (ask − bid)/mid, which goes
+        # NEGATIVE when crossed and so silently passes; the fill machinery
+        # would then collapse the spread to 0 and mint fantasy premium at the
+        # meaningless mid. Refuse it outright before any of that.
+        if ask < bid:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"quote_quality: {sym} {label} leg has a crossed market "
+                    f"(bid ${bid:.2f} > ask ${ask:.2f}) — no fill against it"
+                ),
+            )
         mid = (bid + ask) / 2.0  # > 0: both sides positive above (no div-by-zero)
         if mid < settings.min_option_mid:
             raise HTTPException(

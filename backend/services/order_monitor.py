@@ -330,14 +330,25 @@ def _has_trailing_stop(trade: Trade) -> bool:
     )
 
 
-def _trail_offset(hwm: float, trade: Trade) -> float:
+def _trail_offset(hwm: float, trade: Trade, pct_base: float | None = None) -> float:
     """Trail distance in PER-SHARE premium units — matching the per-share
     favorable value the trailing stop tracks. trail_amount is already a $/share
-    offset (used directly); otherwise trail_pct × the favorable peak magnitude.
-    trail_amount wins when both are set."""
+    offset (used directly); otherwise trail_pct × a STABLE base. trail_amount
+    wins when both are set.
+
+    The pct base is the |per-share net ENTRY premium| (`pct_base`), NOT the
+    live favorable high-water. Referencing |hwm| collapsed the trail toward
+    zero as a SHORT decayed to profit: a short's favorable value is the
+    negated premium, so as premium decays to 0 the peak |hwm| shrinks and the
+    trail with it — a few-cent rebound then force-closed a big winner (and a
+    long's trail conversely ballooned). The entry premium is fixed for the
+    life of the trade, so the offset is stable and symmetric for both
+    directions. Falls back to |hwm| only when there's no usable entry base
+    (a zero-net-premium structure), preserving the old behavior there."""
     if trade.trail_amount is not None and trade.trail_amount > 0:
         return float(trade.trail_amount)
-    return float(trade.trail_pct or 0.0) * abs(hwm)
+    base = pct_base if (pct_base is not None and pct_base > 0) else abs(hwm)
+    return float(trade.trail_pct or 0.0) * base
 
 
 def _process_trailing_stop(
@@ -367,7 +378,13 @@ def _process_trailing_stop(
         hwm = fav
     trade.trail_hwm = round(float(hwm), 4)
 
-    offset = _trail_offset(hwm, trade)
+    # Stable pct base: the |per-share net entry premium|, in the same
+    # per-share units as `fav` (divide the contracts-scaled entry net by the
+    # same total_contracts the mark is reduced by). Keeps the trail_pct
+    # distance fixed over the trade's life instead of tracking the shrinking
+    # remaining premium (see _trail_offset).
+    entry_base = abs(_entry_net_premium(trade)) / max(1, total_contracts)
+    offset = _trail_offset(hwm, trade, pct_base=entry_base)
     if fav > hwm - offset:
         return False  # still within the trail of the favorable peak
 
