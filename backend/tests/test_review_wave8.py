@@ -18,6 +18,7 @@ from __future__ import annotations
 import types
 from datetime import UTC, datetime
 from datetime import time as dt_time
+from zoneinfo import ZoneInfo
 
 import models.combine_event  # noqa: F401 — combine_snapshot writes events
 from config import settings
@@ -25,7 +26,14 @@ from models.trade import Trade
 from services.order_monitor import run_order_monitor
 from tests.conftest import make_combine
 
-_TODAY = datetime.now(UTC).date()
+# "Today" must be the EASTERN trading day, matching how the 0DTE engine
+# resolves it (routers.zerodte uses `datetime.now(ZoneInfo("America/New_York"))`).
+# Using a UTC date instead made the open tests flake after ~20:00 ET, when UTC
+# has already rolled to the next calendar day but the ET session day has not —
+# the stubbed 0DTE expiry then no longer matched the endpoint's "today" and the
+# open was rejected. Every usage here is relative to this same anchor, so ET
+# keeps them internally consistent while aligning with the engine.
+_TODAY = datetime.now(ZoneInfo("America/New_York")).date()
 
 
 def _leg(side, action, strike, price, contracts=1):
