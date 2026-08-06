@@ -545,21 +545,33 @@ def _leg_expiry(leg: dict) -> date | None:
 
 
 def _latest_leg_expiry(trade: Trade) -> date | None:
-    """The LAST expiry across all legs. Settlement waits for this so a
-    multi-expiry structure (calendar/diagonal) isn't force-closed while a
-    longer-dated leg is still live."""
+    """The LAST expiry across all legs. Settlement of an OPEN position waits
+    for this so a multi-expiry structure (calendar/diagonal) isn't force-closed
+    while a longer-dated leg is still live."""
     expiries = [e for e in (_leg_expiry(leg) for leg in trade.legs) if e is not None]
     return max(expiries) if expiries else None
 
 
+def _earliest_leg_expiry(trade: Trade) -> date | None:
+    """The FIRST expiry across all legs — the point at which a working ENTRY
+    can no longer legitimately fill as specified (its near leg's contract is
+    gone). Distinct from _latest_leg_expiry, which governs settling an already
+    OPEN position."""
+    expiries = [e for e in (_leg_expiry(leg) for leg in trade.legs) if e is not None]
+    return min(expiries) if expiries else None
+
+
 def _working_contract_expired(trade: Trade, now: datetime) -> bool:
-    """True when every leg of a working order is past its expiry's session
-    close — the contract no longer exists, so the resting order can never
-    legitimately fill. In a 0DTE product a GTC order (the ticket default)
-    otherwise outlives its contract: it can 'fill' next session at the model's
-    60s-floor price of a dead contract and permanently eat the scaling cap
-    (working orders count against the open-contracts aggregate)."""
-    expiry = _latest_leg_expiry(trade)
+    """True when a working order's EARLIEST leg is past its expiry's session
+    close — that leg's contract no longer exists, so the resting order can
+    never legitimately fill as specified. A working ENTRY uses the earliest
+    (not latest) leg: unlike settling an open position, there is no reason to
+    keep resting an entry whose near leg is already dead (it would 'fill' that
+    leg at the model's 60s-floor price of a corpse and permanently eat the
+    scaling cap — working orders count against the open-contracts aggregate).
+    In a 0DTE product all legs share today's expiry, so this matches the prior
+    behavior; it only diverges for a would-be multi-expiry working entry."""
+    expiry = _earliest_leg_expiry(trade)
     if expiry is None:
         return False
     return now.astimezone(_ET) >= _session_close_for_date(expiry)
@@ -851,6 +863,24 @@ def run_order_monitor(
                     cancelled += 1
                 session.commit()
                 continue
+            # DAY time-in-force: a working order that survived unfilled into a
+            # later ET session is expired (the simulated analog of an exchange
+            # cancelling DAY orders at the close). No spot needed, so — like the
+            # zombie-contract cancel above — this runs AHEAD of the spot fetch,
+            # so a cold quote (spot None → the `continue` below) can't leave a
+            # stale DAY order resting into a later session.
+            if (
+                trade.status == "working"
+                and trade.time_in_force == "day"
+                and trade.created_at is not None
+                and _et_date(trade.created_at) < _et_date(now)
+            ):
+                trade.status = "cancelled"
+                trade.close_reason = None
+                trade.notes = (trade.notes or "") + " · DAY order expired (unfilled)"
+                cancelled += 1
+                session.commit()
+                continue
             # Skip open positions with nothing to monitor (no SL/TP bracket,
             # no trailing stop, no premium-denominated TP/SL AND no resting
             # close-limit) — unless the close-out window owns them.
@@ -890,20 +920,6 @@ def run_order_monitor(
                     session.commit()
                     continue
                 if trade.status == "working":
-                    # DAY time-in-force: a working order that survived unfilled
-                    # into a later ET session is expired (the simulated analog of
-                    # an exchange cancelling DAY orders at the close).
-                    if (
-                        trade.time_in_force == "day"
-                        and trade.created_at is not None
-                        and _et_date(trade.created_at) < _et_date(now)
-                    ):
-                        trade.status = "cancelled"
-                        trade.close_reason = None
-                        trade.notes = (trade.notes or "") + " · DAY order expired (unfilled)"
-                        cancelled += 1
-                        session.commit()
-                        continue
                     outcome = _process_working(session, trade, spot, now, option_mark)
                     if outcome == "filled":
                         filled += 1
@@ -1347,9 +1363,14 @@ def _personal_triggers(
         and snap.personal_dll_amount is not None
         and snap.personal_dll_mode in ("alert", "liquidate")
     ):
-        live_day_loss = (
-            snap.dll_used + max(0.0, -open_realized) + max(0.0, -urpl)
-        )
+        # Aggregate the open-book day P&L (scale-out realized + remaining URPL)
+        # BEFORE taking the loss-only portion — the same basis as the profit
+        # target above (day_pnl = today_realized + open_realized + urpl) and the
+        # firm gate's combined-URPL test. Clamping each component to its loss
+        # separately (max(0,-open_realized) + max(0,-urpl)) double-counted a
+        # book with an open winner and an open loser, tripping the personal DLL
+        # while the firm gate did not.
+        live_day_loss = snap.dll_used + max(0.0, -(open_realized + urpl))
         if live_day_loss >= snap.personal_dll_amount:
             if snap.personal_dll_mode == "alert":
                 if not event_recorded_today(session, combine.id, "personal_dll", now):
@@ -1699,14 +1720,31 @@ def _cancel_oco_siblings(session, trade: Trade) -> int:
         .scalars()
         .all()
     )
+    cancelled = 0
     for s in siblings:
+        # Status-GUARDED claim (WHERE status='working'), like _commit_fill /
+        # _book_close: the SELECT above and this write straddle the same
+        # pricing/network window as a concurrent user cancel or a mirrored
+        # fill, and a bare `s.status = "cancelled"` would clobber a sibling the
+        # user just filled back to cancelled. Only pull a row still resting.
+        claimed = session.execute(
+            update(Trade)
+            .where(Trade.id == s.id, Trade.status == "working")
+            .values(status="cancelled", close_reason=None)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if not claimed:
+            continue  # a concurrent fill/cancel won the row — leave it
+        # Sync the in-memory object with the claimed DB row before the note +
+        # follower cascade (mirror_cancel reads the ORM state).
         s.status = "cancelled"
         s.close_reason = None
         s.notes = (s.notes or "") + " · OCO cancelled (sibling filled)"
         # Cascade to follower copies — a lead OCO cancel must pull the
         # mirrored siblings too (the manual /cancel endpoint already does).
         mirror_cancel(session, s)
-    return len(siblings)
+        cancelled += 1
+    return cancelled
 
 
 def _book_close(
@@ -1768,32 +1806,23 @@ def _process_open(
 ) -> bool:
     """Close an open position if a fixed bracket (SL/TP on the underlying) or a
     trailing stop (on the favorable option mark) triggered. Returns True if
-    closed. The trailing stop is checked first so its high-water advances every
-    tick even on a tick where the fixed brackets don't fire."""
+    closed.
+
+    Exit priority puts the PROTECTIVE (loss-cutting) exits ahead of the
+    FAVORABLE (profit-taking) ones, because a single gap tick can satisfy both
+    at once and cutting the loss must win over booking the profit:
+      1. trailing stop        (protective; its high-water also advances every
+                               tick, so it's checked first regardless)
+      2. underlying stop-loss (protective)
+      3. resting close-limit  (favorable — the trader's named price)
+      4. premium TP/SL        (SL protective, TP favorable — mutually exclusive
+                               per the validated bands; can't coincide with the
+                               close-limit, which needs the opposite mark move)
+      5. underlying take-profit (favorable; the SL half is already handled at 2)
+    """
     if _has_trailing_stop(trade) and option_mark is not None:
         mark = option_mark(trade, spot)
         if _process_trailing_stop(session, trade, mark, spot, now, unrealized_for):
-            _cancel_oco_siblings(session, trade)
-            return True
-
-    # Resting close-limit (take-profit at a price the trader named) — checked
-    # ahead of the premium/bracket exits: when both a limit target and a
-    # market-order exit would fire the same tick, the trader's named price wins.
-    if _has_close_limit(trade) and option_mark is not None:
-        if _process_close_limit(session, trade, spot, now, option_mark):
-            _cancel_oco_siblings(session, trade)
-            return True
-
-    # Premium-denominated TP/SL (Tastytrade "manage winners") — tested on the
-    # same live option mark the trailing stop uses. Coexists with the
-    # underlying-price brackets below: whichever exit triggers first wins (the
-    # trade is closed, the other becomes moot).
-    if _has_premium_exit(trade) and option_mark is not None:
-        reason, note = _premium_exit_reason(trade, option_mark(trade, spot))
-        if reason is not None:
-            if not _book_close(session, trade, spot, now, unrealized_for, reason):
-                return False  # closed concurrently — never double-book
-            trade.notes = (trade.notes or "") + f" · {note}"
             _cancel_oco_siblings(session, trade)
             return True
 
@@ -1806,16 +1835,38 @@ def _process_open(
         if short_vol
         else _bracket_triggered(entry_u, trade.stop_loss, spot)
     )
-    reason: str | None = None
     if sl_triggered:
-        reason = "stop_loss"
-    elif _bracket_triggered(entry_u, trade.take_profit, spot):
-        reason = "take_profit"
-    if reason is None:
-        return False
+        # Protective underlying stop-loss — booked ahead of the favorable
+        # close-limit / premium-TP below so a gap that trips both cuts the loss.
+        if not _book_close(session, trade, spot, now, unrealized_for, "stop_loss"):
+            return False  # closed concurrently — never double-book
+        _cancel_oco_siblings(session, trade)
+        return True
 
-    if not _book_close(session, trade, spot, now, unrealized_for, reason):
-        return False  # closed concurrently — never double-book
-    # OCO: a bracket close cancels any resting siblings in the group.
-    _cancel_oco_siblings(session, trade)
-    return True
+    # Resting close-limit (take-profit at a price the trader named) — checked
+    # ahead of the premium/take-profit exits: when both a limit target and a
+    # market-order exit would fire the same tick, the trader's named price wins.
+    if _has_close_limit(trade) and option_mark is not None:
+        if _process_close_limit(session, trade, spot, now, option_mark):
+            _cancel_oco_siblings(session, trade)
+            return True
+
+    # Premium-denominated TP/SL (Tastytrade "manage winners") — tested on the
+    # same live option mark the trailing stop uses. Coexists with the
+    # underlying take-profit below: whichever triggers first wins.
+    if _has_premium_exit(trade) and option_mark is not None:
+        reason, note = _premium_exit_reason(trade, option_mark(trade, spot))
+        if reason is not None:
+            if not _book_close(session, trade, spot, now, unrealized_for, reason):
+                return False  # closed concurrently — never double-book
+            trade.notes = (trade.notes or "") + f" · {note}"
+            _cancel_oco_siblings(session, trade)
+            return True
+
+    # Favorable underlying take-profit — the stop-loss half fired above.
+    if _bracket_triggered(entry_u, trade.take_profit, spot):
+        if not _book_close(session, trade, spot, now, unrealized_for, "take_profit"):
+            return False  # closed concurrently — never double-book
+        _cancel_oco_siblings(session, trade)
+        return True
+    return False

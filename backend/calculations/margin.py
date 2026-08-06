@@ -40,8 +40,21 @@ from typing import Any
 CONTRACT_MULTIPLIER = 100.0
 
 
+def _is_short(leg: dict[str, Any]) -> bool:
+    """Any action that isn't an explicit long ('buy') is a SHORT. Fail-safe:
+    a non-canonical action string (e.g. a rogue DB writer using 'short')
+    is sized as a short EVERYWHERE — _sign, the naked-requirement pick, and
+    the short-premium credit all key off this one predicate. Previously _sign
+    treated non-'buy' as short but the naked-req helpers recognized only
+    'sell', so a leg tagged 'short' counted as net-short yet drew a $0 naked
+    requirement — a genuinely uncovered write priced as defined-risk. The API
+    only emits 'buy'/'sell'; this guards the DB-fed paths (_book_margin_used
+    runs structure_requirement over stored legs)."""
+    return str(leg.get("action", "buy")).lower() != "buy"
+
+
 def _sign(leg: dict[str, Any]) -> float:
-    return 1.0 if str(leg.get("action", "buy")).lower() == "buy" else -1.0
+    return -1.0 if _is_short(leg) else 1.0
 
 
 def _qty(leg: dict[str, Any]) -> int:
@@ -90,7 +103,7 @@ def _naked_side_req(
     most-conservative short strike (lowest short call / highest short put)."""
     shorts = [
         leg for leg in legs
-        if leg.get("side") == side and str(leg.get("action")).lower() == "sell"
+        if leg.get("side") == side and _is_short(leg)
     ]
     if not shorts or net_short <= 0:
         return 0.0
@@ -111,7 +124,7 @@ def _short_premium(legs: list[dict[str, Any]], side: str) -> float:
     return sum(
         _qty(leg) * float(leg.get("entry_price", 0.0) or 0.0) * CONTRACT_MULTIPLIER
         for leg in legs
-        if leg.get("side") == side and str(leg.get("action")).lower() == "sell"
+        if leg.get("side") == side and _is_short(leg)
     )
 
 

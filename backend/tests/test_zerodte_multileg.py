@@ -240,6 +240,41 @@ def test_clamp_helper_accounts_for_open_contracts(session_factory, auth_client, 
     s.close()
 
 
+def test_clamp_helper_floors_to_structure_unit(session_factory, auth_client, monkeypatch):
+    """Regression (P2): the clamp floors to a whole `unit` (per-1x structure
+    total contracts) so a caller backing out base = returned // unit can't
+    re-inflate above the cap, and a no-room clamp returns 0 (not the full
+    request as before)."""
+    from models.combine import Combine
+
+    c = make_combine(auth_client, "50K")
+    s = session_factory()
+    combine = s.get(Combine, c["id"])
+    monkeypatch.setattr(
+        "routers.zerodte.combine_snapshot",
+        lambda sess, comb: types.SimpleNamespace(max_contracts=5),
+    )
+    # cap 5, nothing open, iron condor unit=4, request 8 → floors to 4 (one
+    # structure), so base = 4 // 4 = 1 persists 4 ≤ 5. (Unfloored it returned 5,
+    # and base = max(1, 5 // 4) = 1 also persisted 4 — but a request that fit
+    # exactly one-and-a-fraction structures must land on a whole multiple.)
+    assert zerodte._clamp_contracts_to_cap(s, combine, 8, unit=4) == 4
+    # A sub-unit remainder yields 0 (not a re-inflatable stub): cap 5, unit 4,
+    # request 4 with 3 already... simulate remaining 2 via a smaller cap.
+    monkeypatch.setattr(
+        "routers.zerodte.combine_snapshot",
+        lambda sess, comb: types.SimpleNamespace(max_contracts=2),
+    )
+    assert zerodte._clamp_contracts_to_cap(s, combine, 4, unit=4) == 0
+    # No room at all → 0 (previously returned the full unclamped request).
+    monkeypatch.setattr(
+        "routers.zerodte.combine_snapshot",
+        lambda sess, comb: types.SimpleNamespace(max_contracts=0),
+    )
+    assert zerodte._clamp_contracts_to_cap(s, combine, 10) == 0
+    s.close()
+
+
 def test_open_leg_persisted_size_never_exceeds_cap(auth_client, session_factory, monkeypatch):
     """End-to-end: the gate would 422, but if cap shifts the persisted leg is
     still clamped. Here we pin a cap of 2 and request 2 — it persists 2."""
