@@ -65,6 +65,19 @@ def test_naked_call_uses_reg_t_rate():
     ) == pytest.approx(2100.0)
 
 
+def test_naked_action_variant_is_sized_as_short_not_defined_risk():
+    """Regression (P2): a short leg written with a non-canonical action string
+    (e.g. 'short' from a rogue DB writer) must draw the SAME Reg-T naked
+    requirement as 'sell'. Previously _sign counted it net-short but the naked
+    helpers recognized only 'sell', so the naked requirement came back $0 and
+    an uncovered write was sized as defined-risk (near-zero collateral)."""
+    canonical = structure_requirement([_leg("call", "sell", 100, 1.0)], 100.0)
+    variant = structure_requirement([_leg("call", "short", 100, 1.0)], 100.0)
+    assert variant == pytest.approx(canonical) == pytest.approx(2100.0)
+    # And it is NOT collapsed to the tiny defined-risk (debit-like) number.
+    assert variant > 1000.0
+
+
 def test_naked_call_otm_reduction_with_floor():
     # 30-pts OTM: 20%×100 − 30 < 0 → floor 10%×spot → (10 + 0.1)×100 = $1,010.
     assert structure_requirement(

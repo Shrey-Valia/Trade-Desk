@@ -84,6 +84,14 @@ def pick_fill_price(
     ask = float(raw_ask) if raw_ask and raw_ask > 0 else None
 
     if bid is not None and ask is not None:
+        if ask < bid:
+            # Crossed/locked-through book (ask BELOW bid) — stale or erroneous
+            # data. Its "mid" is meaningless and `max(0, ask − bid)` collapses
+            # the spread to 0, which let a SELL fill at the fantasy mid (e.g.
+            # bid 5.00 / ask 0.01 → sell at ~2.50 on a contract offered at a
+            # penny). Treat as NO usable quote: the caller refuses the open
+            # (503) or falls back to the model mid mark on a monitor fill.
+            return 0.0
         mid = (bid + ask) / 2.0
         spread = max(0.0, ask - bid)
     elif raw_last and raw_last > 0:

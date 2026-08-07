@@ -838,6 +838,19 @@ def _require_quote_quality(
                     f"(one-sided quote — bid ${bid:.2f} / ask ${ask:.2f})"
                 ),
             )
+        # Crossed/locked-through book (ask BELOW bid) — stale/erroneous data.
+        # The relative-spread check below uses (ask − bid)/mid, which goes
+        # NEGATIVE when crossed and so silently passes; the fill machinery
+        # would then collapse the spread to 0 and mint fantasy premium at the
+        # meaningless mid. Refuse it outright before any of that.
+        if ask < bid:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"quote_quality: {sym} {label} leg has a crossed market "
+                    f"(bid ${bid:.2f} > ask ${ask:.2f}) — no fill against it"
+                ),
+            )
         mid = (bid + ask) / 2.0  # > 0: both sides positive above (no div-by-zero)
         if mid < settings.min_option_mid:
             raise HTTPException(
@@ -894,23 +907,34 @@ def _clamp_contracts_to_cap(
     combine: Combine,
     requested: int,
     snap: "CombineSnapshot | None" = None,
+    *,
+    unit: int = 1,
 ) -> int:
     """Defense-in-depth size clamp. `_require_tradeable` already REJECTS an
     over-cap request with a 422, but this clamps the per-order size to the
     remaining scaling-plan capacity as a belt-and-suspenders guard so a leg
     can never be persisted above the cap even if the gate is bypassed or the
-    snapshot shifts under us. Returns the size to actually use (>=1).
+    snapshot shifts under us.
 
     The cap is per-COMBINE aggregate: remaining = max_contracts − already-open.
-    With nothing open and a cap of N this is a no-op (returns `requested`).
-    Pass the snapshot from _require_tradeable when available — recomputing it
-    per gate tripled the heaviest account computation on every open."""
+    Returns the largest size ≤ `requested` that fits `remaining`, floored to a
+    whole multiple of `unit` — the per-1× structure's TOTAL contracts (1 for a
+    single leg, 2 for a straddle, Σratio for a multi-leg). Flooring to `unit`
+    is what makes it safe for a caller that backs out a base size via
+    `returned // unit`: without it, a `remaining` smaller than `unit` returned
+    a value that `base = max(1, returned // unit)` re-inflated straight back
+    over the cap (a 4-leg condor persisting 4 contracts against a 1-slot
+    remainder). Returns 0 when not even one `unit` fits; callers keep a
+    `max(1, …)` floor so a genuinely no-room open (which the gate already
+    422'd) can over-persist by at most a single structure, never the full
+    request as before. Pass the snapshot from _require_tradeable when available
+    — recomputing it per gate tripled the heaviest account computation on every
+    open."""
     snap = snap or combine_snapshot(session, combine)
     open_now = _open_contracts_for_combine(session, combine.id)
     remaining = max(0, snap.max_contracts - open_now)
-    # Never clamp below 1 — a 0-contract order is meaningless; the reject path
-    # in _require_tradeable owns the "no room at all" case (open_now >= cap).
-    return max(1, min(int(requested), remaining)) if remaining > 0 else int(requested)
+    unit = max(1, int(unit))
+    return (min(int(requested), remaining) // unit) * unit
 # ── end WS5 ─────────────────────────────────────────────────────────────────
 
 
@@ -1292,7 +1316,7 @@ def open_zerodte_straddle(
         session, combine, contracts=payload.contracts * 2, symbol=payload.symbol
     )
     allowed_total = _clamp_contracts_to_cap(
-        session, combine, payload.contracts * 2, snap=snap
+        session, combine, payload.contracts * 2, snap=snap, unit=2
     )
     contracts = max(1, allowed_total // 2)
     sym, spot, expiry, atm, call_q, put_q = _resolve_atm_chain(payload.symbol)
@@ -1398,7 +1422,10 @@ def open_zerodte_leg(
         session, combine, contracts=payload.contracts, symbol=payload.symbol
     )
     # WS5: defense-in-depth — clamp the persisted size to the scaling cap.
-    contracts = _clamp_contracts_to_cap(session, combine, payload.contracts, snap=snap)
+    # max(1, …): a single leg is unit 1, so the clamp only returns 0 when
+    # there's no room at all (the gate already 422'd) — never persist a
+    # 0-contract leg.
+    contracts = max(1, _clamp_contracts_to_cap(session, combine, payload.contracts, snap=snap))
     sym, spot, target_expiry, by_key = _resolve_same_day_quotes(payload.symbol)
 
     action = payload.action
@@ -1655,7 +1682,7 @@ def open_zerodte_multi_leg(
         session, combine, contracts=payload.contracts * sum_ratio, symbol=payload.symbol
     )
     effective = _clamp_contracts_to_cap(
-        session, combine, payload.contracts * sum_ratio, snap=snap
+        session, combine, payload.contracts * sum_ratio, snap=snap, unit=sum_ratio
     )
     base_contracts = max(1, effective // sum_ratio)
 

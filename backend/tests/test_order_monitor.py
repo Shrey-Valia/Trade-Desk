@@ -108,6 +108,33 @@ def test_bracket_direction_from_entry():
     assert not _bracket_triggered(100.0, None, 999.0)
 
 
+def test_working_entry_expires_on_earliest_leg_not_latest():
+    """Regression (P2): a working ENTRY is dead once its EARLIEST leg's contract
+    expires — it can no longer fill as specified. _working_contract_expired must
+    key off the earliest leg, not the latest (which governs settling an already
+    OPEN position). Under strict 0DTE all legs share an expiry so this is a
+    no-op; it only diverges for a would-be multi-expiry working entry."""
+    from types import SimpleNamespace
+
+    near = (_TODAY - timedelta(days=2)).isoformat()
+    far = (_TODAY + timedelta(days=5)).isoformat()
+    trade = SimpleNamespace(legs=[
+        {"side": "call", "action": "buy", "strike": 100.0, "expiry": far, "contracts": 1},
+        {"side": "call", "action": "sell", "strike": 105.0, "expiry": near, "contracts": 1},
+    ])
+    assert order_monitor._earliest_leg_expiry(trade) == _TODAY - timedelta(days=2)
+    assert order_monitor._latest_leg_expiry(trade) == _TODAY + timedelta(days=5)
+    now = datetime.combine(_TODAY, dt_time(17, 0), tzinfo=timezone.utc)
+    # Near leg's session close is 2 days past → the working entry is expired.
+    assert order_monitor._working_contract_expired(trade, now) is True
+    # If BOTH legs are still in the future, it is not expired.
+    future = SimpleNamespace(legs=[
+        {"side": "call", "action": "buy", "strike": 100.0, "expiry": far, "contracts": 1},
+        {"side": "call", "action": "sell", "strike": 105.0, "expiry": far, "contracts": 1},
+    ])
+    assert order_monitor._working_contract_expired(future, now) is False
+
+
 # --- working order fills ----------------------------------------------------
 
 
@@ -242,6 +269,32 @@ def test_day_working_order_expires_into_a_later_session(auth_client, session_fac
     s = session_factory()
     assert s.get(Trade, day_tid).status == "cancelled"
     assert s.get(Trade, gtc_tid).status == "working"
+    s.close()
+
+
+def test_day_order_cancelled_even_when_spot_feed_is_cold(auth_client, session_factory):
+    """Regression (P2): the DAY-expiry cancel runs AHEAD of the spot fetch, so a
+    cold quote (spot_for → None) can't leave a stale DAY order resting into a
+    later session. Pre-fix the cancel sat behind `if spot is None: continue`."""
+    from datetime import timedelta
+
+    c = make_combine(auth_client, "50K")
+    tid = _seed(
+        session_factory, c["id"], status="working", order_type="limit",
+        limit_price=1.0, time_in_force="day",
+    )
+    prior = datetime.now(timezone.utc) - timedelta(days=1)
+    s = session_factory()
+    s.get(Trade, tid).created_at = prior
+    s.commit()
+    s.close()
+
+    # Feed is cold this tick — no spot for the symbol.
+    summary = _run(session_factory, spot_for=lambda sym: None)
+    assert summary["cancelled"] >= 1
+    s = session_factory()
+    assert s.get(Trade, tid).status == "cancelled"
+    assert "DAY order expired" in (s.get(Trade, tid).notes or "")
     s.close()
 
 
@@ -432,15 +485,90 @@ def test_trailing_stop_multi_contract_uses_per_share_trail(auth_client, session_
 
 
 def test_trailing_stop_pct_offset(auth_client, session_factory):
-    """trail_pct sets the offset as a fraction of the high-water mark."""
+    """trail_pct sets the offset as a fraction of the STABLE per-share entry
+    premium, NOT the live high-water. Default seed leg entry_price=1.0, so
+    trail_pct=0.10 → a fixed 0.10/share offset regardless of how high the
+    mark runs."""
     c = make_combine(auth_client, "50K")
     tid = _seed(session_factory, c["id"], status="open", trail_pct=0.10)
-    # hwm 2.0 → trigger 1.8; mark 1.95 stays above → no close.
+    # hwm 2.0, offset = 0.10 × entry(1.0) = 0.10 → trigger 1.90.
     assert _run(session_factory, option_mark=lambda t, s: 2.0)["closed"] == 0
     assert _run(session_factory, option_mark=lambda t, s: 1.95)["closed"] == 0
-    # mark 1.79 ≤ 1.8 → stop out.
-    assert _run(session_factory, option_mark=lambda t, s: 1.79)["closed"] == 1
+    # mark 1.89 ≤ 1.90 → stop out. (An hwm-based offset would be 0.10×2.0=0.20
+    # → trigger 1.80, and 1.89 would NOT stop — this pins the entry-premium base.)
+    assert _run(session_factory, option_mark=lambda t, s: 1.89)["closed"] == 1
     s = session_factory(); assert s.get(Trade, tid).status == "closed"; s.close()
+
+
+def test_trailing_stop_pct_short_does_not_collapse_as_premium_decays(
+    auth_client, session_factory
+):
+    """Regression (P1): a WINNING short's pct trail must stay anchored to the
+    entry premium, not the shrinking remaining premium.
+
+    Pre-fix, the offset was trail_pct × |hwm|; as a short's premium decayed
+    toward 0 the favorable |hwm| shrank and the trail with it, so a trivial
+    few-cent rebound force-closed a large winner. The stable entry-premium
+    base keeps the trail wide the whole way down."""
+    c = make_combine(auth_client, "50K")
+    short_leg = [{
+        "side": "call", "action": "sell", "strike": 100.0,
+        "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 2.0,
+    }]
+    # entry premium 2.0/share, trail_pct 0.25 → fixed offset 0.50/share.
+    tid = _seed(
+        session_factory, c["id"], status="open", trail_pct=0.25, _legs=short_leg
+    )
+
+    # Seed the favorable high-water at the entry mark (−2.0 signed for a short).
+    _run(session_factory, option_mark=lambda t, s: -2.0)
+    # Premium decays to 0.20 (mark −0.20) — a big win; hwm advances to −0.20.
+    _run(session_factory, option_mark=lambda t, s: -0.20)
+    s = session_factory()
+    assert s.get(Trade, tid).trail_hwm == -0.20
+    assert s.get(Trade, tid).status == "open"
+    s.close()
+
+    # Tiny rebound: premium ticks 0.20 → 0.25 (mark −0.25). Trigger is
+    # hwm(−0.20) − offset(0.50) = −0.70; −0.25 > −0.70 → must NOT stop.
+    # (Pre-fix offset was 0.25×|−0.20|=0.05 → trigger −0.25, and −0.25 ≤ −0.25
+    # force-closed the winner right here.)
+    assert _run(session_factory, option_mark=lambda t, s: -0.25)["closed"] == 0
+    s = session_factory(); assert s.get(Trade, tid).status == "open"; s.close()
+
+    # Genuine adverse rebound past the stable trail: premium to 0.75
+    # (mark −0.75) ≤ −0.70 → stop out.
+    assert _run(session_factory, option_mark=lambda t, s: -0.75)["closed"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed" and t.close_reason == "stop_loss"
+    s.close()
+
+
+def test_protective_stop_beats_favorable_close_limit_on_same_tick(
+    auth_client, session_factory
+):
+    """Regression (P2): when a gap tick trips BOTH the underlying stop-loss and
+    a favorable resting close-limit, the protective stop must win — cutting the
+    loss takes precedence over booking the profit. Pre-fix the close-limit was
+    evaluated first and booked a 'limit' exit, skipping the stop."""
+    c = make_combine(auth_client, "50K")
+    # Long call: SL at 95 (fires when spot drops), close-limit TP at net 2.0.
+    tid = _seed(
+        session_factory, c["id"], status="open",
+        stop_loss=95.0, close_limit_price=2.0,
+    )
+    # Gap tick: spot 94 trips the SL AND the mark 2.5 trips the close-limit.
+    summary = _run(
+        session_factory,
+        spot_for=lambda sym: 94.0,
+        option_mark=lambda t, s: 2.5,
+    )
+    assert summary["closed"] == 1
+    s = session_factory()
+    t = s.get(Trade, tid)
+    assert t.status == "closed" and t.close_reason == "stop_loss"
+    s.close()
 
 
 def test_trailing_stop_position_is_monitored_without_fixed_brackets(auth_client, session_factory):
