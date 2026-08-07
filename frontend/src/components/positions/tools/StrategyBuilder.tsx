@@ -25,11 +25,43 @@ import type {
 
 type Preset =
   | "vertical"
+  | "call_credit"
+  | "put_debit"
   | "put_spread"
   | "strangle"
   | "iron_condor"
+  | "iron_butterfly"
   | "butterfly"
   | "custom";
+
+// Chip display labels — the internal keys stay stable (wire + tests), but the
+// UI reads directionally: "vertical" is a bull call debit, "put_spread" a bull
+// put credit, so pair them with explicit bear variants under clear names.
+const PRESET_LABELS: Record<Preset, string> = {
+  vertical: "call debit",
+  call_credit: "call credit",
+  put_debit: "put debit",
+  put_spread: "put credit",
+  strangle: "strangle",
+  iron_condor: "iron condor",
+  iron_butterfly: "iron fly",
+  butterfly: "butterfly",
+  custom: "custom",
+};
+
+// Order the chips: the four directional verticals first (bull/bear × call/put),
+// then the multi-leg/neutral structures, then custom.
+const PRESET_ORDER: Preset[] = [
+  "vertical",
+  "call_credit",
+  "put_debit",
+  "put_spread",
+  "strangle",
+  "iron_condor",
+  "iron_butterfly",
+  "butterfly",
+  "custom",
+];
 
 interface Props {
   symbol: string;
@@ -148,16 +180,7 @@ export function StrategyBuilder({ symbol }: Props) {
 
       {/* Preset selector */}
       <div className="flex flex-wrap" style={{ gap: 4 }}>
-        {(
-          [
-            "vertical",
-            "put_spread",
-            "strangle",
-            "iron_condor",
-            "butterfly",
-            "custom",
-          ] as const
-        ).map((p) => (
+        {PRESET_ORDER.map((p) => (
           <button
             key={p}
             type="button"
@@ -176,7 +199,7 @@ export function StrategyBuilder({ symbol }: Props) {
             ].join(" ")}
             style={{ height: 24, fontSize: 11 }}
           >
-            {p.replace("_", " ")}
+            {PRESET_LABELS[p]}
           </button>
         ))}
       </div>
@@ -522,6 +545,20 @@ export function presetLegs(preset: Preset, atm: number, step: number): MultiLegS
         { side: "call", action: "buy", strike: atm, ratio: 1 },
         { side: "call", action: "sell", strike: atm + w, ratio: 1 },
       ];
+    case "call_credit":
+      // Bear call CREDIT spread: sell the 1-strike-OTM call, buy the wing
+      // above — profits when the underlying stays below the short strike.
+      return [
+        { side: "call", action: "sell", strike: atm + w, ratio: 1 },
+        { side: "call", action: "buy", strike: atm + 2 * w, ratio: 1 },
+      ];
+    case "put_debit":
+      // Bear put DEBIT spread: buy the ATM put, sell the wing below —
+      // profits on a move down, capped at the lower strike.
+      return [
+        { side: "put", action: "buy", strike: atm, ratio: 1 },
+        { side: "put", action: "sell", strike: atm - w, ratio: 1 },
+      ];
     case "put_spread":
       // Bull put CREDIT spread: sell the 1-strike-OTM put, buy the wing
       // below — the most-traded defined-risk premium-selling structure.
@@ -541,6 +578,15 @@ export function presetLegs(preset: Preset, atm: number, step: number): MultiLegS
         { side: "put", action: "buy", strike: atm - 2 * w, ratio: 1 },
         { side: "put", action: "sell", strike: atm - w, ratio: 1 },
         { side: "call", action: "sell", strike: atm + w, ratio: 1 },
+        { side: "call", action: "buy", strike: atm + 2 * w, ratio: 1 },
+      ];
+    case "iron_butterfly":
+      // Short ATM straddle bracketed by long wings — a defined-risk,
+      // higher-credit cousin of the condor (short strikes meet at ATM).
+      return [
+        { side: "put", action: "buy", strike: atm - 2 * w, ratio: 1 },
+        { side: "put", action: "sell", strike: atm, ratio: 1 },
+        { side: "call", action: "sell", strike: atm, ratio: 1 },
         { side: "call", action: "buy", strike: atm + 2 * w, ratio: 1 },
       ];
     case "butterfly":

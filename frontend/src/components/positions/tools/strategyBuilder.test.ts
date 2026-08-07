@@ -61,6 +61,32 @@ describe("presetLegs (WS5 builder presets)", () => {
     expect(legs[0]).toMatchObject({ side: "call", action: "buy", strike: 105 });
     expect(legs[1]).toMatchObject({ side: "put", action: "buy", strike: 95 });
   });
+
+  it("call_credit = bear call credit spread (sell OTM call, buy the wing above)", () => {
+    const legs = presetLegs("call_credit", 100, 5);
+    expect(legs).toHaveLength(2);
+    expect(legs[0]).toMatchObject({ side: "call", action: "sell", strike: 105 });
+    expect(legs[1]).toMatchObject({ side: "call", action: "buy", strike: 110 });
+  });
+
+  it("put_debit = bear put debit spread (buy ATM put, sell the wing below)", () => {
+    const legs = presetLegs("put_debit", 100, 5);
+    expect(legs).toHaveLength(2);
+    expect(legs[0]).toMatchObject({ side: "put", action: "buy", strike: 100 });
+    expect(legs[1]).toMatchObject({ side: "put", action: "sell", strike: 95 });
+  });
+
+  it("iron_butterfly = short ATM straddle bracketed by long wings", () => {
+    const legs = presetLegs("iron_butterfly", 100, 5);
+    expect(legs).toHaveLength(4);
+    // Both short strikes sit AT the money (the fly body).
+    const shorts = legs.filter((l) => l.action === "sell");
+    expect(shorts).toHaveLength(2);
+    expect(shorts.every((l) => l.strike === 100)).toBe(true);
+    // Long wings 2 strikes out on each side.
+    const longs = legs.filter((l) => l.action === "buy").map((l) => l.strike).sort((a, b) => a - b);
+    expect(longs).toEqual([90, 110]);
+  });
 });
 
 describe("netPremiumPerShare (premium-exit direction)", () => {

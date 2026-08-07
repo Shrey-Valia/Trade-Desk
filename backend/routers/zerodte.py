@@ -1568,13 +1568,34 @@ class MultiLegSpec(BaseModel):
     ratio: int = Field(gt=0, le=10, default=1)
 
 
+# Known multi-leg structure labels (mirrors the client's StrategyBuilder
+# presets). The `strategy` field is a display/analytics tag only — it does not
+# constrain the legs — so an UNRECOGNIZED label is coerced to "custom" rather
+# than 422'd (never fail an otherwise-valid open over a cosmetic tag), which
+# keeps journal/analytics grouping to a closed vocabulary instead of arbitrary
+# free text. Leg-shape validation (does the label actually match the legs?) is
+# intentionally not done — a trader may legitimately tweak a preset's strikes.
+_MULTI_LEG_STRATEGY_LABELS = frozenset({
+    "vertical",
+    "call_credit",
+    "put_debit",
+    "put_spread",
+    "strangle",
+    "iron_condor",
+    "iron_butterfly",
+    "butterfly",
+    "custom",
+})
+
+
 class OpenMultiLegRequest(BaseModel):
     """Open a multi-leg structure expiring TODAY as a single paper Trade.
 
     `legs` is 2..6 legs; `contracts` is the base size (each leg gets
     ratio × contracts). `strategy` is an optional label (e.g. "vertical",
-    "iron_condor", "butterfly", "custom"); when omitted we infer a generic
-    "custom" tag. Always a MARKET fill — like the straddle quick-entry."""
+    "iron_condor", "butterfly", "custom"); when omitted or unrecognized we
+    store a generic "custom" tag. Always a MARKET fill — like the straddle
+    quick-entry."""
 
     symbol: str = Field(min_length=1, max_length=16, default="SPY")
     contracts: int = Field(gt=0, le=100, default=1)
@@ -1765,6 +1786,8 @@ def open_zerodte_multi_leg(
     _require_buying_power(session, combine, sym, legs_json, spot, snap=snap)
 
     strategy = (payload.strategy or "custom").strip().lower() or "custom"
+    if strategy not in _MULTI_LEG_STRATEGY_LABELS:
+        strategy = "custom"  # closed vocabulary — an unknown tag isn't stored raw
     if is_working:
         notes = (
             f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · "

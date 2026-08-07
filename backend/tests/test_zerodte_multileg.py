@@ -70,6 +70,33 @@ def test_multileg_vertical_opens_with_two_legs(auth_client, session_factory, mon
     assert ("call", "sell", 105.0) in sides
 
 
+def test_multileg_unknown_strategy_label_coerced_to_custom(
+    auth_client, session_factory, monkeypatch
+):
+    """The strategy tag is a closed vocabulary: a recognized label is kept, an
+    arbitrary/garbage one is coerced to 'custom' (never 422'd — it's cosmetic)."""
+    make_combine(auth_client, "50K")
+    _stub_chain(monkeypatch)
+    legs = [
+        {"side": "call", "action": "buy", "strike": 100, "ratio": 1},
+        {"side": "call", "action": "sell", "strike": 105, "ratio": 1},
+    ]
+    # A known label survives.
+    ok = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={"symbol": "SPY", "contracts": 1, "strategy": "call_credit", "legs": legs},
+    )
+    assert ok.status_code == 201, ok.text
+    assert ok.json()["strategy"] == "call_credit"
+    # An unknown label is normalized to custom.
+    junk = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={"symbol": "SPY", "contracts": 1, "strategy": "pump_and_dump", "legs": legs},
+    )
+    assert junk.status_code == 201, junk.text
+    assert junk.json()["strategy"] == "custom"
+
+
 def test_multileg_iron_condor_four_legs(auth_client, session_factory, monkeypatch):
     make_combine(auth_client, "50K")
     _stub_chain(monkeypatch, strikes=(90.0, 95.0, 105.0, 110.0))
