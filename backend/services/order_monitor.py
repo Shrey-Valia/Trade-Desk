@@ -1587,29 +1587,65 @@ def _entry_fill_price(
 def _process_working_multi(
     session, trade: Trade, spot: float, now: datetime, option_mark
 ) -> str | None:
-    """Fill a WORKING multi-leg NET-premium limit order.
+    """Fill a WORKING multi-leg NET-premium order (limit / stop / stop_limit).
 
-    Trigger: the structure's live signed net per 1x (option_mark — the same
-    leg-mark machinery the premium exits use — divided by the base size, i.e.
-    the common factor of the leg quantities) must satisfy the SIGNED
-    limit_price: net debit ≤ limit for a debit structure (limit > 0), net
-    credit ≥ |limit| for a credit structure (limit < 0). Both reduce to
-    `net_1x ≤ limit` with the debit-positive/credit-negative convention.
+    All triggers use the structure's live signed net per 1x (option_mark — the
+    same leg-mark machinery the premium exits use — divided by the base size,
+    the common factor of the leg quantities), debit positive / credit negative:
+
+      * LIMIT       — fill when net_1x ≤ limit_price (pay at most / collect at
+                      least). The booked net is capped AT the limit (below).
+      * STOP        — fill when net_1x ≥ stop_price (the mirror of the limit;
+                      a momentum/breakout entry). A stop is marketable once
+                      triggered, so it fills at the crossed net with NO cap.
+      * STOP_LIMIT  — arm when net_1x ≥ stop_price, then rest as a LIMIT at
+                      limit_price (converted in place, like the single-leg
+                      path); it fills the same tick if the limit is already
+                      satisfied, else it waits as a limit.
 
     Fill: each leg through the spread-crossing helper against its live quote;
     a leg without a quote fills at its mid mark (never strand the order on a
     partial feed)."""
-    if trade.order_type != "limit" or trade.limit_price is None:
+    if trade.order_type not in ("limit", "stop", "stop_limit"):
         return None
     legs = trade.legs
     # base size = the common factor of the leg quantities (contracts = ratio ×
     # base at placement), so mark/base is the per-1x-structure net premium —
     # the SAME reduction the close-limit trigger uses (_structure_base).
     base = _structure_base(trade)
-    limit = float(trade.limit_price)
     net_1x = option_mark(trade, spot) / base
-    if net_1x > limit:
-        return None  # debit still too rich / credit still too thin
+
+    # STOP_LIMIT phase 1 — arm at the stop (net rose to it), then behave as a
+    # plain LIMIT at limit_price for this and every later tick.
+    if trade.order_type == "stop_limit":
+        if trade.stop_price is None or trade.limit_price is None:
+            return None
+        if net_1x < float(trade.stop_price):
+            return None  # not yet armed
+        claimed = session.execute(
+            update(Trade)
+            .where(Trade.id == trade.id, Trade.status == "working")
+            .values(order_type="limit")
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if claimed == 0:
+            session.expire(trade)
+            return None  # cancelled during the pricing window
+        trade.order_type = "limit"  # armed → resting limit at limit_price
+        trade.notes = (trade.notes or "") + " · stop armed → limit"
+
+    # Resolve the trigger + whether the booked net is capped. A STOP fills at
+    # the market (no cap); a LIMIT never fills worse than its price.
+    if trade.order_type == "stop":
+        if trade.stop_price is None or net_1x < float(trade.stop_price):
+            return None  # net hasn't risen to the stop yet
+        limit: float | None = None
+    else:  # "limit" (including an armed stop_limit)
+        if trade.limit_price is None:
+            return None
+        limit = float(trade.limit_price)
+        if net_1x > limit:
+            return None  # debit still too rich / credit still too thin
 
     quotes = fills.live_leg_quotes(trade.symbol, legs)
     # FILL-TIME QUOTE GATE — every SELL leg of the structure needs a genuine
@@ -1651,7 +1687,11 @@ def _process_working_multi(
         return sum(s * c * p for (s, c), p in zip(sign_contracts, pl)) / base
 
     crossed_net = _net_1x(crossed)
-    if crossed_net > limit:
+    if limit is not None and crossed_net > limit:
+        # LIMIT: crossing the spread pushes each leg adversely, so the crossed
+        # net can exceed the limit — scale every leg's slippage back toward its
+        # mid by one factor k so the booked net lands AT the limit (never
+        # through it). A STOP (limit is None) is a market fill: no cap.
         mid_net = _net_1x(mids)          # ≤ limit (the trigger condition)
         denom = crossed_net - mid_net
         k = 0.0 if denom <= 1e-12 else max(0.0, min(1.0, (limit - mid_net) / denom))

@@ -181,4 +181,62 @@ describe("multiLegOrderPayload (net-debit limit wire shape)", () => {
       multiLegOrderPayload({ ...base, orderType: "limit", limitPrice: NaN }),
     ).toBeNull();
   });
+
+  it("stop sends order_type:'stop' + stop_price and no limit_price", () => {
+    const p = multiLegOrderPayload({
+      ...base,
+      orderType: "stop",
+      limitPrice: null,
+      stopPrice: 1.6,
+    });
+    expect(p).toMatchObject({ order_type: "stop", stop_price: 1.6, limit_price: null });
+  });
+
+  it("stop_limit sends both stop_price and limit_price", () => {
+    const p = multiLegOrderPayload({
+      ...base,
+      orderType: "stop_limit",
+      limitPrice: 1.0,
+      stopPrice: 1.6,
+    });
+    expect(p).toMatchObject({
+      order_type: "stop_limit",
+      stop_price: 1.6,
+      limit_price: 1.0,
+    });
+  });
+
+  it("returns null when a stop is requested without a stop price", () => {
+    expect(
+      multiLegOrderPayload({ ...base, orderType: "stop", limitPrice: null, stopPrice: null }),
+    ).toBeNull();
+    expect(
+      multiLegOrderPayload({
+        ...base,
+        orderType: "stop_limit",
+        limitPrice: 1.0,
+        stopPrice: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("carries a trailing-stop exit ($ or %), mutually exclusive", () => {
+    const dollars = multiLegOrderPayload({
+      ...base,
+      orderType: "market",
+      limitPrice: null,
+      trailAmount: 0.25,
+    });
+    expect(dollars).toMatchObject({ trail_amount: 0.25 });
+    expect(dollars).not.toHaveProperty("trail_pct");
+
+    const pct = multiLegOrderPayload({
+      ...base,
+      orderType: "market",
+      limitPrice: null,
+      trailPct: 0.1,
+    });
+    expect(pct).toMatchObject({ trail_pct: 0.1 });
+    expect(pct).not.toHaveProperty("trail_amount");
+  });
 });

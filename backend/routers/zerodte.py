@@ -1602,22 +1602,48 @@ class OpenMultiLegRequest(BaseModel):
     legs: list[MultiLegSpec] = Field(min_length=2, max_length=6)
     strategy: str | None = Field(default=None, max_length=32)
     # "market" (default) fills every leg immediately at the indicative crossed
-    # quote. "limit" places a WORKING net-premium order: the monitor prices the
-    # structure's live net each pass and fills when it satisfies limit_price.
-    order_type: Literal["market", "limit"] = "market"
+    # quote. "limit"/"stop"/"stop_limit" place a WORKING net-premium order: the
+    # monitor prices the structure's live net each pass and fills/arms when it
+    # satisfies the trigger. All net triggers use ONE signed convention (debit
+    # positive / credit negative): a LIMIT fills when net_1x ≤ limit_price
+    # (pay at most / collect at least), a STOP fills when net_1x ≥ stop_price
+    # (the mirror — enter once the net has risen to the stop), and a STOP_LIMIT
+    # arms at stop_price (net ≥ stop) then rests as a limit at limit_price.
+    order_type: Literal["market", "limit", "stop", "stop_limit"] = "market"
     limit_price: float | None = Field(
         default=None,
         description=(
             "NET premium limit per 1x structure (legs at their stated ratios),"
-            " $/share — required for order_type='limit', ignored for market."
-            " SIGN CONVENTION: debit positive / credit negative. A positive"
-            " limit fills when the structure's live net DEBIT ≤ limit (pay at"
-            " most this much); a negative limit fills when the live net CREDIT"
-            " ≥ |limit| (collect at least this much). Must be non-zero."
+            " $/share — required for order_type='limit'/'stop_limit', ignored"
+            " for market/stop. SIGN CONVENTION: debit positive / credit"
+            " negative. A positive limit fills when the structure's live net"
+            " DEBIT ≤ limit (pay at most this much); a negative limit fills"
+            " when the live net CREDIT ≥ |limit| (collect at least this much)."
+            " Must be non-zero."
+        ),
+    )
+    stop_price: float | None = Field(
+        default=None,
+        description=(
+            "NET premium STOP trigger per 1x structure, $/share — required for"
+            " order_type='stop'/'stop_limit', ignored otherwise. Same signed"
+            " convention as limit_price (debit positive / credit negative);"
+            " fires when the structure's live net ≥ stop_price. Must be"
+            " non-zero."
         ),
     )
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
+    # Trailing-stop EXIT on the filled structure's net mark (carried onto the
+    # position; the monitor advances the favorable high-water and stops out on
+    # a retrace). trail_amount is $/share of net; trail_pct a fraction of the
+    # net entry premium. Mutually exclusive (amount wins when both set).
+    trail_amount: float | None = Field(default=None, gt=0)
+    trail_pct: float | None = Field(default=None, gt=0, le=1)
+    # OCO pairing (shared id) and time-in-force for a WORKING order — same
+    # semantics as the single-leg path; ignored for a market fill.
+    oco_group: str | None = Field(default=None, max_length=36)
+    time_in_force: Literal["day", "gtc"] = "gtc"
     # Premium-denominated TP/SL. Direction is derived from the PRICED net
     # entry premium (net debit vs net credit), so the bands are validated
     # after the legs are priced — see _validate_premium_mults.
@@ -1687,12 +1713,20 @@ def open_zerodte_multi_leg(
     against the cap; per-leg ratios scale within the structure). Strict 0DTE +
     session-open, like the straddle/leg paths."""
     _require_market_open()
-    is_working = payload.order_type == "limit"
-    if is_working and (payload.limit_price is None or payload.limit_price == 0):
+    is_working = payload.order_type != "market"
+    needs_limit = payload.order_type in ("limit", "stop_limit")
+    needs_stop = payload.order_type in ("stop", "stop_limit")
+    if needs_limit and (payload.limit_price is None or payload.limit_price == 0):
         raise HTTPException(
             400,
             "limit_price (net premium per 1x structure; debit positive, credit"
-            " negative, non-zero) is required for a limit order",
+            " negative, non-zero) is required for a limit / stop_limit order",
+        )
+    if needs_stop and (payload.stop_price is None or payload.stop_price == 0):
+        raise HTTPException(
+            400,
+            "stop_price (net premium per 1x structure; debit positive, credit"
+            " negative, non-zero) is required for a stop / stop_limit order",
         )
     # The aggregate scaling cap counts TOTAL contracts across all legs, so a
     # structure consumes base × Σ ratios (e.g. a 4-leg iron condor at base 1 is
@@ -1767,8 +1801,12 @@ def open_zerodte_multi_leg(
     # multiply — reject the mults.
     if payload.tp_premium_mult is not None or payload.sl_premium_mult is not None:
         if is_working:
+            # Direction from the SIGNED resting trigger: the limit for a
+            # limit/stop_limit (where the order comes to rest), the stop for a
+            # bare stop. Negative = credit structure (inverted TP/SL bands).
+            signed_trigger = payload.limit_price if needs_limit else payload.stop_price
             _validate_premium_mults(
-                payload.limit_price < 0, payload.tp_premium_mult, payload.sl_premium_mult
+                signed_trigger < 0, payload.tp_premium_mult, payload.sl_premium_mult
             )
         else:
             if net == 0:
@@ -1789,10 +1827,13 @@ def open_zerodte_multi_leg(
     if strategy not in _MULTI_LEG_STRATEGY_LABELS:
         strategy = "custom"  # closed vocabulary — an unknown tag isn't stored raw
     if is_working:
-        notes = (
-            f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · "
-            f"working @ net {payload.limit_price:g}"
-        )
+        if payload.order_type == "stop":
+            trig = f"stop @ net {payload.stop_price:g}"
+        elif payload.order_type == "stop_limit":
+            trig = f"stop {payload.stop_price:g} → limit {payload.limit_price:g}"
+        else:
+            trig = f"limit @ net {payload.limit_price:g}"
+        notes = f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · working {trig}"
     else:
         notes = f"0DTE {strategy.replace('_', ' ')} · {len(legs_json)} legs · indicative fill"
 
@@ -1804,9 +1845,19 @@ def open_zerodte_multi_leg(
         net_debit_credit=net,
         status="working" if is_working else "open",
         order_type=payload.order_type,
-        limit_price=float(payload.limit_price) if is_working else None,
+        limit_price=float(payload.limit_price) if (is_working and needs_limit) else None,
+        stop_price=float(payload.stop_price) if (is_working and needs_stop) else None,
         stop_loss=payload.stop_loss,
         take_profit=payload.take_profit,
+        # Trailing carries onto the position and applies once FILLED (dormant
+        # while the order rests), like the single-leg working path.
+        trail_amount=payload.trail_amount,
+        trail_pct=payload.trail_pct,
+        # OCO pairing is only meaningful between resting orders; a market fill
+        # has no sibling to cancel. TIF is harmless on a market fill (the
+        # monitor only reads it for working orders).
+        oco_group=payload.oco_group if is_working else None,
+        time_in_force=payload.time_in_force,
         tp_premium_mult=payload.tp_premium_mult,
         sl_premium_mult=payload.sl_premium_mult,
         is_paper=True,

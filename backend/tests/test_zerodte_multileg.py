@@ -97,6 +97,54 @@ def test_multileg_unknown_strategy_label_coerced_to_custom(
     assert junk.json()["strategy"] == "custom"
 
 
+def test_multileg_stop_order_creates_working_trade(
+    auth_client, session_factory, monkeypatch
+):
+    """/open-multi accepts a NET-stop working order: status 'working',
+    order_type 'stop', stop_price persisted, no immediate fill."""
+    make_combine(auth_client, "50K")
+    _stub_chain(monkeypatch)
+    res = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={
+            "symbol": "SPY",
+            "contracts": 1,
+            "strategy": "vertical",
+            "order_type": "stop",
+            "stop_price": 1.50,
+            "legs": [
+                {"side": "call", "action": "buy", "strike": 100, "ratio": 1},
+                {"side": "call", "action": "sell", "strike": 105, "ratio": 1},
+            ],
+        },
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["status"] == "working"
+    assert body["order_type"] == "stop"
+    assert body["stop_price"] == 1.50
+
+
+def test_multileg_stop_requires_stop_price(auth_client, session_factory, monkeypatch):
+    """order_type='stop' without a stop_price is a 400."""
+    make_combine(auth_client, "50K")
+    _stub_chain(monkeypatch)
+    res = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={
+            "symbol": "SPY",
+            "contracts": 1,
+            "order_type": "stop",
+            "legs": [
+                {"side": "call", "action": "buy", "strike": 100, "ratio": 1},
+                {"side": "call", "action": "sell", "strike": 105, "ratio": 1},
+            ],
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "stop_price" in res.text
+
+
 def test_multileg_iron_condor_four_legs(auth_client, session_factory, monkeypatch):
     make_combine(auth_client, "50K")
     _stub_chain(monkeypatch, strikes=(90.0, 95.0, 105.0, 110.0))
