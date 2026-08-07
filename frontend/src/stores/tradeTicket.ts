@@ -90,8 +90,17 @@ interface TradeTicketState {
   /** Option-premium ARM level for a stop_limit order (per-share). */
   stopPrice: number | null;
   /** Optional trailing-stop EXIT distance ($/share off the favorable mark);
-   *  null = no trailing stop attached at open. */
+   *  null = no trailing stop attached at open. Mutually exclusive with
+   *  trailPct (the backend uses trail_amount when both are set). */
   trailAmount: number | null;
+  /** Optional trailing-stop EXIT distance as a FRACTION of the entry premium
+   *  (0.10 = 10%); null = not a percentage trail. */
+  trailPct: number | null;
+  /** Optional underlying-price SL/TP brackets pre-attached at entry; null =
+   *  not set. Absolute underlying price levels (the same the draggable chart
+   *  brackets set post-open). */
+  stopLoss: number | null;
+  takeProfit: number | null;
   /** Time-in-force for a working order: 'gtc' rests, 'day' expires next session. */
   timeInForce: "day" | "gtc";
   /** Premium-exit presets — persisted last-used config, off by default. */
@@ -106,6 +115,9 @@ interface TradeTicketState {
   setLimitPrice: (p: number | null) => void;
   setStopPrice: (p: number | null) => void;
   setTrailAmount: (a: number | null) => void;
+  setTrailPct: (p: number | null) => void;
+  setStopLoss: (p: number | null) => void;
+  setTakeProfit: (p: number | null) => void;
   setTimeInForce: (t: "day" | "gtc") => void;
   /** Patch the premium-exit config (merges; e.g. `{ enabled: true }`). */
   setPremiumExit: (patch: Partial<PremiumExitConfig>) => void;
@@ -121,6 +133,9 @@ export const useTradeTicket = create<TradeTicketState>()(
       limitPrice: null,
       stopPrice: null,
       trailAmount: null,
+      trailPct: null,
+      stopLoss: null,
+      takeProfit: null,
       // DAY is the honest default on a strictly-0DTE product — a resting order
       // that outlives the session is the exception, so GTC is opt-in.
       timeInForce: "day",
@@ -134,6 +149,9 @@ export const useTradeTicket = create<TradeTicketState>()(
           limitPrice: selection ? selection.price : null,
           stopPrice: selection ? selection.price : null,
           trailAmount: null,
+          trailPct: null,
+          stopLoss: null,
+          takeProfit: null,
         }),
       refreshSelectionPrice: (price) =>
         set((s) =>
@@ -147,6 +165,9 @@ export const useTradeTicket = create<TradeTicketState>()(
       setLimitPrice: (limitPrice) => set({ limitPrice }),
       setStopPrice: (stopPrice) => set({ stopPrice }),
       setTrailAmount: (trailAmount) => set({ trailAmount }),
+      setTrailPct: (trailPct) => set({ trailPct }),
+      setStopLoss: (stopLoss) => set({ stopLoss }),
+      setTakeProfit: (takeProfit) => set({ takeProfit }),
       setTimeInForce: (timeInForce) => set({ timeInForce }),
       setPremiumExit: (patch) =>
         set((s) => ({ premiumExit: { ...s.premiumExit, ...patch } })),
@@ -159,6 +180,9 @@ export const useTradeTicket = create<TradeTicketState>()(
           limitPrice: null,
           stopPrice: null,
           trailAmount: null,
+          trailPct: null,
+          stopLoss: null,
+          takeProfit: null,
           timeInForce: "day",
         }),
     }),

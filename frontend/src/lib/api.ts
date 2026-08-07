@@ -887,6 +887,10 @@ export const openZeroDteStraddle = (
     tp_premium_mult?: number | null;
     sl_premium_mult?: number | null;
   },
+  brackets?: {
+    stop_loss?: number | null;
+    take_profit?: number | null;
+  },
 ): Promise<Trade> =>
   mutate("/api/zerodte/open", TradeOutSchema, {
     method: "POST",
@@ -896,6 +900,8 @@ export const openZeroDteStraddle = (
       contracts,
       tp_premium_mult: premiumExits?.tp_premium_mult ?? null,
       sl_premium_mult: premiumExits?.sl_premium_mult ?? null,
+      stop_loss: brackets?.stop_loss ?? null,
+      take_profit: brackets?.take_profit ?? null,
     }),
   });
 

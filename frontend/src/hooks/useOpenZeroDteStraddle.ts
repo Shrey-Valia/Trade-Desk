@@ -23,6 +23,8 @@ export function useOpenZeroDteStraddle() {
       contracts,
       tp_premium_mult,
       sl_premium_mult,
+      stop_loss,
+      take_profit,
     }: {
       symbol: string;
       action?: "buy" | "sell";
@@ -30,11 +32,23 @@ export function useOpenZeroDteStraddle() {
       /** Optional premium-exit multiples of the entry premium. */
       tp_premium_mult?: number | null;
       sl_premium_mult?: number | null;
+      /** Optional underlying-price SL/TP brackets pre-attached at entry. */
+      stop_loss?: number | null;
+      take_profit?: number | null;
     }) =>
-      openZeroDteStraddle(symbol, action, contracts ?? 1, {
-        tp_premium_mult: tp_premium_mult ?? null,
-        sl_premium_mult: sl_premium_mult ?? null,
-      }),
+      openZeroDteStraddle(
+        symbol,
+        action,
+        contracts ?? 1,
+        {
+          tp_premium_mult: tp_premium_mult ?? null,
+          sl_premium_mult: sl_premium_mult ?? null,
+        },
+        {
+          stop_loss: stop_loss ?? null,
+          take_profit: take_profit ?? null,
+        },
+      ),
     onSuccess: (trade) => {
       // useTrades keys queries as ["journal","trades",filters]. An
       // invalidation key of ["trades"] silently no-matches (wrong prefix)
