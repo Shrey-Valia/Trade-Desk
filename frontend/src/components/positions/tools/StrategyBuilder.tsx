@@ -5,7 +5,6 @@ import { useChainTable } from "@/hooks/useChainTable";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useMultiLegPreview } from "@/hooks/useMultiLegPreview";
 import { useOpenZeroDteMultiLeg } from "@/hooks/useOpenZeroDteMultiLeg";
-import { premiumExitForDirection, useTradeTicket } from "@/stores/tradeTicket";
 import type {
   ChainStrikeRow,
   MultiLegSpec,
@@ -97,11 +96,13 @@ export function StrategyBuilder({ symbol }: Props) {
     setLegs(presetLegs(preset, atm, step));
   }, [preset, atm, step]);
 
-  // Premium-exit presets (ticket store, shared with the single-leg ticket).
-  // A structure's direction isn't a button here — derive net debit/credit
-  // from the live chain prices; when the legs can't be priced client-side,
-  // send nothing (defensive: the backend is the pricing authority).
-  const premiumExit = useTradeTicket((s) => s.premiumExit);
+  // Live net debit/credit of the structure off the chain — used to seed the
+  // net-limit price below. (The builder no longer borrows the single-leg
+  // ticket's premium-exit multipliers: they rode onto every structure
+  // invisibly, and their debit/credit direction was derived from this CLIENT
+  // net while the server re-derives it from the crossed-quote net, so a
+  // near-zero-net structure could 400. Premium exits on a structure are a
+  // future builder-local control, not a hidden inheritance.)
   const netPremium = useMemo(
     () => netPremiumPerShare(chain?.rows ?? [], legs),
     [chain, legs],
@@ -142,10 +143,6 @@ export function StrategyBuilder({ symbol }: Props) {
   const submittingRef = useRef(false);
   const fire = () => {
     if (submittingRef.current || !canFire) return;
-    const exits =
-      netPremium != null
-        ? premiumExitForDirection(premiumExit, netPremium >= 0)
-        : { tp: null, sl: null };
     const payload = multiLegOrderPayload({
       symbol,
       contracts,
@@ -153,8 +150,8 @@ export function StrategyBuilder({ symbol }: Props) {
       legs,
       orderType: orderMode,
       limitPrice,
-      tp: exits.tp,
-      sl: exits.sl,
+      tp: null,
+      sl: null,
     });
     if (!payload) return;
     submittingRef.current = true;

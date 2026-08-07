@@ -140,6 +140,10 @@ export function QuickOrder({
         limit_price: needsTrigger ? trigger : null,
         stop_price: null,
         trail_amount: null,
+        // Match the main ticket's default (tradeTicket store) so the same
+        // product doesn't rest a working order for a different lifetime
+        // depending on which surface placed it — the wire default is "gtc".
+        time_in_force: "day",
       },
       {
         onSuccess: () => {
