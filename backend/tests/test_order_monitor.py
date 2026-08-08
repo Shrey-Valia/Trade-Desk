@@ -20,9 +20,15 @@ from services.order_monitor import (
     run_order_monitor,
     settle_expired_positions,
 )
+from routers import zerodte
 from tests.conftest import make_combine
 
-_TODAY = datetime.now(timezone.utc).date()
+# EASTERN trading day — the monitor resolves the session/expiry in ET, so a UTC
+# date flips a day early after ~20:00 ET and desyncs the seeded 0DTE legs.
+_TODAY = datetime.now(zerodte._ET).date()
+# Mid-session ET clock for tests that need a concrete `now` (liquidation pass,
+# etc.): noon ET is safely inside the 9:30–16:00 session on the seeded expiry.
+_NOON_ET = datetime.combine(_TODAY, dt_time(12, 0), tzinfo=zerodte._ET)
 
 
 @pytest.fixture(autouse=True)
@@ -970,7 +976,7 @@ def test_liquidation_uses_fresh_fallback_spot_on_feed_gap(auth_client, session_f
     c = make_combine(auth_client, "50K")
     tid = _seed(session_factory, c["id"], status="open")
 
-    now = datetime.now(timezone.utc)
+    now = _NOON_ET
     # Warm the store with a good spot observed 30s ago (< 60s TTL).
     order_monitor._LAST_GOOD_SPOT["SPY"] = (99.0, now - timedelta(seconds=30))
 
@@ -997,7 +1003,7 @@ def test_liquidation_skips_when_fallback_spot_is_stale(auth_client, session_fact
     c = make_combine(auth_client, "50K")
     tid = _seed(session_factory, c["id"], status="open")
 
-    now = datetime.now(timezone.utc)
+    now = _NOON_ET
     # Fallback observed 120s ago — beyond the 60s TTL.
     order_monitor._LAST_GOOD_SPOT["SPY"] = (99.0, now - timedelta(seconds=120))
 
@@ -1022,7 +1028,7 @@ def test_liquidation_prefers_live_spot_over_fallback(auth_client, session_factor
     c = make_combine(auth_client, "50K")
     _seed(session_factory, c["id"], status="open")
 
-    now = datetime.now(timezone.utc)
+    now = _NOON_ET
     # A stale fallback is present, but the live feed returns a value this tick,
     # so the stale fallback must NOT be consulted.
     order_monitor._LAST_GOOD_SPOT["SPY"] = (50.0, now - timedelta(seconds=999))
