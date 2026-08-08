@@ -392,3 +392,102 @@ def test_multileg_working_fill_capped_at_net_limit(
         px = {(float(l["strike"]), l["side"]): l["entry_price"] for l in t.legs}
         booked_net = px[(100.0, "call")] - px[(105.0, "call")]  # buy − sell, base 1
         assert booked_net <= 1.00 + 1e-6   # never filled through the limit
+
+
+def _mock_multileg_pricing(monkeypatch):
+    """Frictionless mids + wide two-sided quotes for a 100/105 call vertical —
+    shared by the multi-leg working-order tests."""
+    import services.order_monitor as om
+
+    mids = {(100.0, "call"): 2.00, (105.0, "call"): 1.00}
+    monkeypatch.setattr(om, "_option_chain_rows", lambda sym: None)
+    monkeypatch.setattr(om, "_rate", lambda: 0.04)
+    monkeypatch.setattr(
+        om, "_leg_model_price",
+        lambda rows, leg, spot, now, rate: mids[(float(leg["strike"]), leg["side"])],
+    )
+    monkeypatch.setattr(
+        fills, "live_leg_quotes",
+        lambda symbol, legs_: {
+            (100.0, "call"): types.SimpleNamespace(bid=1.5, ask=2.5, last=2.0),
+            (105.0, "call"): types.SimpleNamespace(bid=0.5, ask=1.5, last=1.0),
+        },
+    )
+
+
+_VERTICAL_LEGS = [
+    {"side": "call", "action": "buy", "strike": 100.0,
+     "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 0.0},
+    {"side": "call", "action": "sell", "strike": 105.0,
+     "expiry": _TODAY.isoformat(), "contracts": 1, "entry_price": 0.0},
+]
+
+
+def _run_multi(session_factory, tid, net_1x):
+    """Drive _process_working_multi once with option_mark pinned to `net_1x`."""
+    import services.order_monitor as om
+
+    with session_factory() as s:
+        t = s.get(Trade, tid)
+        om._process_working_multi(
+            s, t, spot=100.0, now=datetime.now(timezone.utc),
+            option_mark=lambda tr, sp: net_1x,
+        )
+        s.commit()
+
+
+def test_multileg_stop_fills_when_net_rises_to_stop(
+    auth_client, session_factory, monkeypatch
+):
+    """A multi-leg NET STOP order fills once the structure's net rises to the
+    stop (net_1x ≥ stop_price) — the mirror of the net-limit's net_1x ≤ limit."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="working",
+                order_type="stop", _legs=[dict(leg) for leg in _VERTICAL_LEGS])
+    with session_factory() as s:
+        s.get(Trade, tid).stop_price = 1.50
+        s.commit()
+    _mock_multileg_pricing(monkeypatch)
+
+    # Net still below the stop → rests.
+    _run_multi(session_factory, tid, 1.00)
+    with session_factory() as s:
+        assert s.get(Trade, tid).status == "working"
+
+    # Net rises to/through the stop → fills (market fill: no limit cap).
+    _run_multi(session_factory, tid, 1.60)
+    with session_factory() as s:
+        assert s.get(Trade, tid).status == "open"
+
+
+def test_multileg_stop_limit_arms_then_fills(
+    auth_client, session_factory, monkeypatch
+):
+    """A multi-leg STOP-LIMIT arms at stop_price (net ≥ stop), converting to a
+    resting LIMIT at limit_price, and fills only once net_1x ≤ limit."""
+    c = make_combine(auth_client, "50K")
+    tid = _seed(session_factory, c["id"], status="working",
+                order_type="stop_limit", limit_price=1.00,
+                _legs=[dict(leg) for leg in _VERTICAL_LEGS])
+    with session_factory() as s:
+        s.get(Trade, tid).stop_price = 1.50
+        s.commit()
+    _mock_multileg_pricing(monkeypatch)
+
+    # Below the stop → not armed, still a stop_limit.
+    _run_multi(session_factory, tid, 1.00)
+    with session_factory() as s:
+        t = s.get(Trade, tid)
+        assert t.status == "working" and t.order_type == "stop_limit"
+
+    # Net ≥ stop arms it (→ limit), but net 1.60 > limit 1.00 so it rests.
+    _run_multi(session_factory, tid, 1.60)
+    with session_factory() as s:
+        t = s.get(Trade, tid)
+        assert t.status == "working" and t.order_type == "limit"
+        assert "stop armed" in (t.notes or "")
+
+    # Net falls to/through the limit → fills.
+    _run_multi(session_factory, tid, 0.90)
+    with session_factory() as s:
+        assert s.get(Trade, tid).status == "open"

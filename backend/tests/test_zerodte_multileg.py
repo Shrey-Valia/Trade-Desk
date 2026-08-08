@@ -70,6 +70,81 @@ def test_multileg_vertical_opens_with_two_legs(auth_client, session_factory, mon
     assert ("call", "sell", 105.0) in sides
 
 
+def test_multileg_unknown_strategy_label_coerced_to_custom(
+    auth_client, session_factory, monkeypatch
+):
+    """The strategy tag is a closed vocabulary: a recognized label is kept, an
+    arbitrary/garbage one is coerced to 'custom' (never 422'd — it's cosmetic)."""
+    make_combine(auth_client, "50K")
+    _stub_chain(monkeypatch)
+    legs = [
+        {"side": "call", "action": "buy", "strike": 100, "ratio": 1},
+        {"side": "call", "action": "sell", "strike": 105, "ratio": 1},
+    ]
+    # A known label survives.
+    ok = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={"symbol": "SPY", "contracts": 1, "strategy": "call_credit", "legs": legs},
+    )
+    assert ok.status_code == 201, ok.text
+    assert ok.json()["strategy"] == "call_credit"
+    # An unknown label is normalized to custom.
+    junk = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={"symbol": "SPY", "contracts": 1, "strategy": "pump_and_dump", "legs": legs},
+    )
+    assert junk.status_code == 201, junk.text
+    assert junk.json()["strategy"] == "custom"
+
+
+def test_multileg_stop_order_creates_working_trade(
+    auth_client, session_factory, monkeypatch
+):
+    """/open-multi accepts a NET-stop working order: status 'working',
+    order_type 'stop', stop_price persisted, no immediate fill."""
+    make_combine(auth_client, "50K")
+    _stub_chain(monkeypatch)
+    res = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={
+            "symbol": "SPY",
+            "contracts": 1,
+            "strategy": "vertical",
+            "order_type": "stop",
+            "stop_price": 1.50,
+            "legs": [
+                {"side": "call", "action": "buy", "strike": 100, "ratio": 1},
+                {"side": "call", "action": "sell", "strike": 105, "ratio": 1},
+            ],
+        },
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["status"] == "working"
+    assert body["order_type"] == "stop"
+    assert body["stop_price"] == 1.50
+
+
+def test_multileg_stop_requires_stop_price(auth_client, session_factory, monkeypatch):
+    """order_type='stop' without a stop_price is a 400."""
+    make_combine(auth_client, "50K")
+    _stub_chain(monkeypatch)
+    res = auth_client.post(
+        "/api/zerodte/open-multi",
+        json={
+            "symbol": "SPY",
+            "contracts": 1,
+            "order_type": "stop",
+            "legs": [
+                {"side": "call", "action": "buy", "strike": 100, "ratio": 1},
+                {"side": "call", "action": "sell", "strike": 105, "ratio": 1},
+            ],
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "stop_price" in res.text
+
+
 def test_multileg_iron_condor_four_legs(auth_client, session_factory, monkeypatch):
     make_combine(auth_client, "50K")
     _stub_chain(monkeypatch, strikes=(90.0, 95.0, 105.0, 110.0))

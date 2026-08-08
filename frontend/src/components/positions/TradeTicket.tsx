@@ -6,6 +6,7 @@ import {
   useHotkeyConsumer,
 } from "@/stores/hotkeyActions";
 import { useAccountState } from "@/hooks/useAccountState";
+import { useChainTable } from "@/hooks/useChainTable";
 import { useCombineStatus } from "@/hooks/useCombineStatus";
 import { useOpenContractsCount } from "@/hooks/useOpenContractsCount";
 import { useMarketStatus } from "@/hooks/useMarket";
@@ -64,6 +65,12 @@ export function TradeTicket() {
   const setStopPrice = useTradeTicket((s) => s.setStopPrice);
   const trailAmount = useTradeTicket((s) => s.trailAmount);
   const setTrailAmount = useTradeTicket((s) => s.setTrailAmount);
+  const trailPct = useTradeTicket((s) => s.trailPct);
+  const setTrailPct = useTradeTicket((s) => s.setTrailPct);
+  const stopLoss = useTradeTicket((s) => s.stopLoss);
+  const setStopLoss = useTradeTicket((s) => s.setStopLoss);
+  const takeProfit = useTradeTicket((s) => s.takeProfit);
+  const setTakeProfit = useTradeTicket((s) => s.setTakeProfit);
   const timeInForce = useTradeTicket((s) => s.timeInForce);
   const setTimeInForce = useTradeTicket((s) => s.setTimeInForce);
   const premiumExit = useTradeTicket((s) => s.premiumExit);
@@ -74,6 +81,10 @@ export function TradeTicket() {
   const straddleMutation = useOpenZeroDteStraddle();
   const { data: marketStatus } = useMarketStatus();
   const marketOpen = marketStatus?.status === "open";
+  // Underlying spot for the SL/TP bracket reference (cached; shares the chain
+  // query with the builder). Brackets are absolute underlying price levels.
+  const { data: chainForSpot } = useChainTable(selection?.symbol ?? null, 12);
+  const spot = chainForSpot?.spot ?? null;
 
   // Scaling-plan cap — max TOTAL open contracts at the current built equity
   // (server-enforced too). Shared sum-of-legs hook: the SAME math sizes the
@@ -274,6 +285,8 @@ export function TradeTicket() {
           contracts,
           tp_premium_mult: exits.tp,
           sl_premium_mult: exits.sl,
+          stop_loss: stopLoss && stopLoss > 0 ? stopLoss : null,
+          take_profit: takeProfit && takeProfit > 0 ? takeProfit : null,
         },
         {
           onSuccess: () => clear(),
@@ -296,6 +309,9 @@ export function TradeTicket() {
         limit_price: needsLimit ? limitPrice : null,
         stop_price: needsStop ? stopPrice : null,
         trail_amount: trailAmount && trailAmount > 0 ? trailAmount : null,
+        trail_pct: trailPct && trailPct > 0 ? trailPct : null,
+        stop_loss: stopLoss && stopLoss > 0 ? stopLoss : null,
+        take_profit: takeProfit && takeProfit > 0 ? takeProfit : null,
         tp_premium_mult: exits.tp,
         sl_premium_mult: exits.sl,
       },
@@ -355,8 +371,22 @@ export function TradeTicket() {
         />
       )}
       {isLeg && (
-        <TrailStopRow trailAmount={trailAmount} setTrailAmount={setTrailAmount} />
+        <TrailStopRow
+          trailAmount={trailAmount}
+          setTrailAmount={setTrailAmount}
+          trailPct={trailPct}
+          setTrailPct={setTrailPct}
+        />
       )}
+      {/* Underlying-price SL/TP brackets — leg AND straddle (both open paths
+          accept them). Absolute price levels, seeded ~1% either side of spot. */}
+      <BracketRow
+        spot={spot}
+        stopLoss={stopLoss}
+        setStopLoss={setStopLoss}
+        takeProfit={takeProfit}
+        setTakeProfit={setTakeProfit}
+      />
       <PremiumExitRow config={premiumExit} onChange={setPremiumExit} />
       <QuantityRow
         contracts={contracts}
@@ -871,16 +901,42 @@ function OrderTypeRow({
 function TrailStopRow({
   trailAmount,
   setTrailAmount,
+  trailPct,
+  setTrailPct,
 }: {
   trailAmount: number | null;
   setTrailAmount: (a: number | null) => void;
+  trailPct: number | null;
+  setTrailPct: (p: number | null) => void;
 }) {
-  const on = trailAmount != null;
+  const on = trailAmount != null || trailPct != null;
+  const mode: "amount" | "pct" = trailPct != null ? "pct" : "amount";
+  const toggleOn = () => {
+    if (on) {
+      setTrailAmount(null);
+      setTrailPct(null);
+    } else {
+      setTrailAmount(0.1);
+      setTrailPct(null);
+    }
+  };
+  const setMode = (m: "amount" | "pct") => {
+    if (m === mode) return;
+    // The two are mutually exclusive (the backend uses trail_amount when both
+    // are set); switching seeds the other and clears the current.
+    if (m === "pct") {
+      setTrailPct(0.1);
+      setTrailAmount(null);
+    } else {
+      setTrailAmount(0.1);
+      setTrailPct(null);
+    }
+  };
   return (
     <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0" style={{ fontSize: 12 }}>
       <button
         type="button"
-        onClick={() => setTrailAmount(on ? null : 0.1)}
+        onClick={toggleOn}
         aria-pressed={on}
         className={[
           "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
@@ -889,17 +945,142 @@ function TrailStopRow({
             : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
         ].join(" ")}
         style={{ height: 24, fontSize: 11 }}
-        title="Attach a trailing stop: the position exits when the option mark retraces this far from its favorable high-water."
+        title="Attach a trailing stop: the position exits when the option mark retraces this far from its favorable high-water. $ trails by a fixed premium; % trails by a fraction of the entry premium."
       >
         trail stop
       </button>
       {on && (
-        <PriceInput
-          label="trail $"
-          value={trailAmount}
-          onChange={(v) => setTrailAmount(v != null && v > 0 ? v : null)}
-          ariaLabel="Trailing stop distance ($/share)"
-        />
+        <>
+          <div className="flex" style={{ gap: 2 }}>
+            {(["amount", "pct"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                aria-pressed={mode === m}
+                aria-label={m === "amount" ? "Trail by dollars per share" : "Trail by percent of entry premium"}
+                className={[
+                  "tracking-label-up transition-colors duration-100 select-none rounded-btn",
+                  mode === m
+                    ? "bg-tier-3 border border-amber text-amber"
+                    : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                ].join(" ")}
+                style={{ height: 24, width: 26, fontSize: 12 }}
+              >
+                {m === "amount" ? "$" : "%"}
+              </button>
+            ))}
+          </div>
+          {mode === "amount" ? (
+            <PriceInput
+              label="trail $"
+              value={trailAmount}
+              onChange={(v) => setTrailAmount(v != null && v > 0 ? v : null)}
+              ariaLabel="Trailing stop distance ($/share)"
+            />
+          ) : (
+            <label className="flex items-center gap-1" style={{ fontSize: 11 }}>
+              <span className="uppercase tracking-label-up text-fg-tertiary-2">trail %</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0.1}
+                max={100}
+                step={0.5}
+                value={trailPct != null ? +(trailPct * 100).toFixed(2) : ""}
+                onChange={(e) => {
+                  const pct = parseFloat(e.target.value);
+                  // Stored as a FRACTION (0.10 = 10%); backend caps at 1 (100%).
+                  setTrailPct(
+                    Number.isFinite(pct) && pct > 0 ? Math.min(1, pct / 100) : null,
+                  );
+                }}
+                aria-label="Trailing stop distance (% of entry premium)"
+                className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+                style={{ width: 56, height: 24, fontSize: 12 }}
+              />
+            </label>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Optional UNDERLYING-price SL/TP brackets pre-attached at open — the classic
+ * "stop / target" pair, as absolute underlying price levels (the same the
+ * draggable chart lines set post-open). Direction is derived by the monitor
+ * from the entry, so a long put's "stop" can sit above spot. Toggling on seeds
+ * levels ~1% either side of the live spot as a starting point; the backend
+ * rejects a level placed on top of spot, so a spot reference is shown.
+ */
+function BracketRow({
+  spot,
+  stopLoss,
+  setStopLoss,
+  takeProfit,
+  setTakeProfit,
+}: {
+  spot: number | null;
+  stopLoss: number | null;
+  setStopLoss: (p: number | null) => void;
+  takeProfit: number | null;
+  setTakeProfit: (p: number | null) => void;
+}) {
+  const on = stopLoss != null || takeProfit != null;
+  const toggleOn = () => {
+    if (on) {
+      setStopLoss(null);
+      setTakeProfit(null);
+    } else if (spot != null && spot > 0) {
+      // Seed ~1% either side of spot so the inputs start at sensible,
+      // valid-distance levels the user can adjust.
+      setStopLoss(+(spot * 0.99).toFixed(2));
+      setTakeProfit(+(spot * 1.01).toFixed(2));
+    }
+  };
+  const disabled = !on && (spot == null || spot <= 0);
+  return (
+    <div className="flex items-center gap-2 px-3 pb-1 tabular-nums shrink-0" style={{ fontSize: 12 }}>
+      <button
+        type="button"
+        onClick={toggleOn}
+        aria-pressed={on}
+        disabled={disabled}
+        className={[
+          "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+          on
+            ? "bg-tier-3 border border-amber text-amber"
+            : disabled
+              ? "bg-tier-1 border border-tier-2 text-fg-disabled cursor-not-allowed"
+              : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+        ].join(" ")}
+        style={{ height: 24, fontSize: 11 }}
+        title="Attach SL/TP brackets on the UNDERLYING price. The position exits when the underlying reaches your stop or target."
+      >
+        brackets
+      </button>
+      {on && (
+        <>
+          <PriceInput
+            label="stop"
+            value={stopLoss}
+            onChange={(v) => setStopLoss(v != null && v > 0 ? v : null)}
+            ariaLabel="Stop-loss (underlying price)"
+          />
+          <PriceInput
+            label="target"
+            value={takeProfit}
+            onChange={(v) => setTakeProfit(v != null && v > 0 ? v : null)}
+            ariaLabel="Take-profit (underlying price)"
+          />
+          {spot != null && (
+            <span className="text-fg-tertiary-2" style={{ fontSize: 11 }}>
+              spot {spot.toFixed(2)}
+            </span>
+          )}
+        </>
       )}
     </div>
   );

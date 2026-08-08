@@ -344,6 +344,21 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
       expiry: data.expiry,
     });
   };
+  // Discoverable straddle entry: clicking the ATM strike-label cell also
+  // selects a straddle, but that's easy to miss — this labelled button makes
+  // it explicit. Same selection shape as the ATM branch of onClickStrike.
+  const selectAtmStraddle = () => {
+    if (!data || noZeroDteToday || browseOnly) return;
+    const atmRow = data.rows.find((r) => r.is_atm);
+    if (!atmRow) return;
+    setSelection({
+      kind: "straddle",
+      symbol: data.underlying,
+      strike: atmRow.strike,
+      price: atmRow.call_price + atmRow.put_price,
+      expiry: data.expiry,
+    });
+  };
 
   // ── WS5: apply chain filters to the rows (moneyness band / min open
   // interest / live-quotes-only). Pure narrowing — keeps the ATM row so the
@@ -405,6 +420,19 @@ export function RightChain({ symbol, onPickSymbol }: Props) {
         />
       )}
       {/* ── end WS5 ── */}
+      {showChain && !browseOnly && !noZeroDteToday && atmStrike != null && (
+        <div className="px-3 py-1 border-b border-hairline bg-tier-1 shrink-0">
+          <button
+            type="button"
+            onClick={selectAtmStraddle}
+            className="w-full rounded-btn border border-tier-3 bg-tier-2 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary uppercase tracking-label-up transition-colors duration-100"
+            style={{ height: 24, fontSize: 11 }}
+            title="Load an ATM straddle into the ticket — then Buy (long) or Sell (short) both legs at once."
+          >
+            + Straddle @ ATM {atmStrike}
+          </button>
+        </div>
+      )}
       {!marketOpen && showChain && (
         <div
           className="px-3 py-1 border-b border-hairline bg-tier-1 text-warning text-center shrink-0"

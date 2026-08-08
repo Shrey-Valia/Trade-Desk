@@ -25,6 +25,9 @@ export async function openZeroDteLeg(input: {
   time_in_force?: "day" | "gtc";
   /** Optional trailing-stop EXIT distance ($/share off the favorable mark). */
   trail_amount?: number | null;
+  /** Optional trailing-stop EXIT distance as a fraction of the entry premium
+   *  (0.10 = 10%); mutually exclusive with trail_amount. */
+  trail_pct?: number | null;
   /** Optional SL/TP brackets (underlying price levels). */
   stop_loss?: number | null;
   take_profit?: number | null;
@@ -53,6 +56,7 @@ export async function openZeroDteLeg(input: {
       limit_price: input.limit_price ?? null,
       stop_price: input.stop_price ?? null,
       trail_amount: input.trail_amount ?? null,
+      trail_pct: input.trail_pct ?? null,
       stop_loss: input.stop_loss ?? null,
       take_profit: input.take_profit ?? null,
       tp_premium_mult: input.tp_premium_mult ?? null,

@@ -205,14 +205,26 @@ export interface OpenMultiLegInput {
   legs: MultiLegSpec[];
   /** Label: "vertical" | "iron_condor" | "butterfly" | "custom". */
   strategy?: string;
-  /** market (default) fills now at server pricing; "limit" rests as a
-   *  working order until the structure's NET mark crosses `limit_price`.
-   *  Omitted entirely for market opens (wire-compatible with older backends). */
-  order_type?: "market" | "limit";
-  /** NET premium per 1× structure ($/share): debit positive, credit negative. */
+  /** market (default) fills now at server pricing; limit/stop/stop_limit rest
+   *  as a working order on the structure's NET mark. Omitted entirely for
+   *  market opens (wire-compatible with older backends). */
+  order_type?: "market" | "limit" | "stop" | "stop_limit";
+  /** NET premium per 1× structure ($/share): debit positive, credit negative.
+   *  The resting limit for limit / stop_limit. */
   limit_price?: number | null;
+  /** NET premium STOP trigger per 1× structure (same signed convention); fires
+   *  when the structure's net rises to it. For stop / stop_limit. */
+  stop_price?: number | null;
   stop_loss?: number | null;
   take_profit?: number | null;
+  /** Trailing-stop EXIT on the filled net mark: $/share of net (trail_amount)
+   *  or a fraction of the net entry premium (trail_pct). */
+  trail_amount?: number | null;
+  trail_pct?: number | null;
+  /** Time-in-force for a working order ('gtc' rests, 'day' expires). */
+  time_in_force?: "day" | "gtc";
+  /** OCO pairing id (accepted for parity with the single-leg path). */
+  oco_group?: string | null;
   /** Optional premium-exit multiples of the entry premium — TP/SL on the
    *  structure's net mark (fraction of the credit for net-credit opens). */
   tp_premium_mult?: number | null;

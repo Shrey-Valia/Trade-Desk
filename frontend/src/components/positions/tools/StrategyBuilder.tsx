@@ -5,7 +5,6 @@ import { useChainTable } from "@/hooks/useChainTable";
 import { useMarketStatus } from "@/hooks/useMarket";
 import { useMultiLegPreview } from "@/hooks/useMultiLegPreview";
 import { useOpenZeroDteMultiLeg } from "@/hooks/useOpenZeroDteMultiLeg";
-import { premiumExitForDirection, useTradeTicket } from "@/stores/tradeTicket";
 import type {
   ChainStrikeRow,
   MultiLegSpec,
@@ -25,11 +24,59 @@ import type {
 
 type Preset =
   | "vertical"
+  | "call_credit"
+  | "put_debit"
   | "put_spread"
   | "strangle"
   | "iron_condor"
+  | "iron_butterfly"
   | "butterfly"
   | "custom";
+
+// Chip display labels — the internal keys stay stable (wire + tests), but the
+// UI reads directionally: "vertical" is a bull call debit, "put_spread" a bull
+// put credit, so pair them with explicit bear variants under clear names.
+const PRESET_LABELS: Record<Preset, string> = {
+  vertical: "call debit",
+  call_credit: "call credit",
+  put_debit: "put debit",
+  put_spread: "put credit",
+  strangle: "strangle",
+  iron_condor: "iron condor",
+  iron_butterfly: "iron fly",
+  butterfly: "butterfly",
+  custom: "custom",
+};
+
+// Order the chips: the four directional verticals first (bull/bear × call/put),
+// then the multi-leg/neutral structures, then custom.
+const PRESET_ORDER: Preset[] = [
+  "vertical",
+  "call_credit",
+  "put_debit",
+  "put_spread",
+  "strangle",
+  "iron_condor",
+  "iron_butterfly",
+  "butterfly",
+  "custom",
+];
+
+type OrderType = "market" | "limit" | "stop" | "stop_limit";
+
+const ORDER_TYPE_LABELS: Record<OrderType, string> = {
+  market: "market",
+  limit: "limit",
+  stop: "stop",
+  stop_limit: "stop lim",
+};
+
+const ORDER_TYPE_HELP: Record<OrderType, string> = {
+  market: "Fill now at the server-priced net premium.",
+  limit: "Rest until the structure's NET mark reaches your limit (pay at most / collect at least).",
+  stop: "Rest until the structure's NET rises to your stop, then fill at the market.",
+  stop_limit: "Arm when the NET rises to your stop, then rest as a limit at your limit price.",
+};
 
 interface Props {
   symbol: string;
@@ -51,11 +98,26 @@ export function StrategyBuilder({ symbol }: Props) {
   const [preset, setPreset] = useState<Preset>("vertical");
   const [contracts, setContracts] = useState(1);
   const [legs, setLegs] = useState<MultiLegSpec[]>([]);
-  // NET LIMIT mode: the structure rests until its net mark crosses the limit.
-  const [orderMode, setOrderMode] = useState<"market" | "limit">("market");
+  // Working-order type on the structure's NET mark: market fills now; limit /
+  // stop / stop_limit rest until the net satisfies their trigger(s).
+  const [orderType, setOrderType] = useState<
+    "market" | "limit" | "stop" | "stop_limit"
+  >("market");
   const [limitPrice, setLimitPrice] = useState<number | null>(null);
+  const [stopPrice, setStopPrice] = useState<number | null>(null);
   // Once the user types a price we stop re-seeding it from the live net.
   const [limitDirty, setLimitDirty] = useState(false);
+  const [stopDirty, setStopDirty] = useState(false);
+  // Time-in-force for a working order (matches the ticket default).
+  const [tif, setTif] = useState<"day" | "gtc">("day");
+  // Optional trailing-stop EXIT carried onto the filled structure ($/share of
+  // net, or a fraction of net entry premium). Mutually exclusive.
+  const [trailAmount, setTrailAmount] = useState<number | null>(null);
+  const [trailPct, setTrailPct] = useState<number | null>(null);
+
+  const needsLimit = orderType === "limit" || orderType === "stop_limit";
+  const needsStop = orderType === "stop" || orderType === "stop_limit";
+  const isWorking = orderType !== "market";
 
   // Re-derive preset legs whenever the preset / ATM / step changes (but not in
   // custom mode, where the user owns the legs).
@@ -65,23 +127,29 @@ export function StrategyBuilder({ symbol }: Props) {
     setLegs(presetLegs(preset, atm, step));
   }, [preset, atm, step]);
 
-  // Premium-exit presets (ticket store, shared with the single-leg ticket).
-  // A structure's direction isn't a button here — derive net debit/credit
-  // from the live chain prices; when the legs can't be priced client-side,
-  // send nothing (defensive: the backend is the pricing authority).
-  const premiumExit = useTradeTicket((s) => s.premiumExit);
+  // Live net debit/credit of the structure off the chain — used to seed the
+  // net-limit price below. (The builder no longer borrows the single-leg
+  // ticket's premium-exit multipliers: they rode onto every structure
+  // invisibly, and their debit/credit direction was derived from this CLIENT
+  // net while the server re-derives it from the crossed-quote net, so a
+  // near-zero-net structure could 400. Premium exits on a structure are a
+  // future builder-local control, not a hidden inheritance.)
   const netPremium = useMemo(
     () => netPremiumPerShare(chain?.rows ?? [], legs),
     [chain, legs],
   );
 
-  // Seed / track the NET LIMIT price from the live computed net premium until
-  // the user types their own value (limitDirty). Re-seeds as legs reprice so
-  // the pre-fill stays honest, but never clobbers a hand-entered price.
+  // Seed / track the NET trigger price(s) from the live computed net premium
+  // until the user types their own value. Re-seeds as legs reprice so the
+  // pre-fill stays honest, but never clobbers a hand-entered price.
   useEffect(() => {
-    if (orderMode !== "limit" || limitDirty) return;
+    if (!needsLimit || limitDirty) return;
     setLimitPrice(netPremium != null ? +netPremium.toFixed(2) : null);
-  }, [orderMode, netPremium, limitDirty]);
+  }, [needsLimit, netPremium, limitDirty]);
+  useEffect(() => {
+    if (!needsStop || stopDirty) return;
+    setStopPrice(netPremium != null ? +netPremium.toFixed(2) : null);
+  }, [needsStop, netPremium, stopDirty]);
 
   // Live risk graph for the structure AS SUBMITTED (short legs negative):
   // payoff curves, breakevens, max profit/loss, POP — the missing half of
@@ -101,7 +169,8 @@ export function StrategyBuilder({ symbol }: Props) {
     atm != null &&
     legs.length >= 2 &&
     !openMulti.isPending &&
-    (orderMode === "market" || limitPrice != null);
+    (!needsLimit || limitPrice != null) &&
+    (!needsStop || stopPrice != null);
 
   // Synchronous double-submit guard: openMulti.isPending only flips on the next
   // render, so two fast clicks would both pass canFire and fire two identical
@@ -110,19 +179,19 @@ export function StrategyBuilder({ symbol }: Props) {
   const submittingRef = useRef(false);
   const fire = () => {
     if (submittingRef.current || !canFire) return;
-    const exits =
-      netPremium != null
-        ? premiumExitForDirection(premiumExit, netPremium >= 0)
-        : { tp: null, sl: null };
     const payload = multiLegOrderPayload({
       symbol,
       contracts,
       strategy: preset,
       legs,
-      orderType: orderMode,
+      orderType,
       limitPrice,
-      tp: exits.tp,
-      sl: exits.sl,
+      stopPrice,
+      trailAmount,
+      trailPct,
+      timeInForce: tif,
+      tp: null,
+      sl: null,
     });
     if (!payload) return;
     submittingRef.current = true;
@@ -148,16 +217,7 @@ export function StrategyBuilder({ symbol }: Props) {
 
       {/* Preset selector */}
       <div className="flex flex-wrap" style={{ gap: 4 }}>
-        {(
-          [
-            "vertical",
-            "put_spread",
-            "strangle",
-            "iron_condor",
-            "butterfly",
-            "custom",
-          ] as const
-        ).map((p) => (
+        {PRESET_ORDER.map((p) => (
           <button
             key={p}
             type="button"
@@ -176,7 +236,7 @@ export function StrategyBuilder({ symbol }: Props) {
             ].join(" ")}
             style={{ height: 24, fontSize: 11 }}
           >
-            {p.replace("_", " ")}
+            {PRESET_LABELS[p]}
           </button>
         ))}
       </div>
@@ -276,66 +336,99 @@ export function StrategyBuilder({ symbol }: Props) {
         </div>
       )}
 
-      {/* Order type: MARKET fills now; NET LIMIT rests at a net-premium price */}
+      {/* Order type on the structure's NET mark: market fills now; limit /
+          stop / stop-limit rest as a working order until the net triggers. */}
       <div className="flex flex-col gap-0.5">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex" style={{ gap: 4 }}>
-            {(["market", "limit"] as const).map((m) => (
+            {(["market", "limit", "stop", "stop_limit"] as const).map((m) => (
               <button
                 key={m}
                 type="button"
                 onClick={() => {
-                  setOrderMode(m);
+                  setOrderType(m);
                   setLimitDirty(false);
+                  setStopDirty(false);
                 }}
-                aria-pressed={orderMode === m}
-                title={
-                  m === "market"
-                    ? "Fill now at the server-priced net premium."
-                    : "Rest as a working order until the structure's NET mark reaches your price."
-                }
+                aria-pressed={orderType === m}
+                title={ORDER_TYPE_HELP[m]}
                 className={[
                   "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
-                  orderMode === m
+                  orderType === m
                     ? "bg-tier-3 border border-amber text-amber"
                     : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
                 ].join(" ")}
                 style={{ height: 22, fontSize: 10 }}
               >
-                {m === "market" ? "market" : "net limit"}
+                {ORDER_TYPE_LABELS[m]}
               </button>
             ))}
           </div>
-          {orderMode === "limit" && (
-            <label className="flex items-center gap-1" style={{ fontSize: 11 }}>
-              <span className="uppercase tracking-label-up text-fg-tertiary-2">
-                net @
-              </span>
-              <input
-                type="number"
-                inputMode="decimal"
-                step={0.01}
-                value={limitPrice ?? ""}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  setLimitDirty(true);
-                  setLimitPrice(Number.isFinite(v) ? v : null);
-                }}
-                placeholder="0.00"
-                aria-label="Net limit price (per-share net premium of the structure)"
-                className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
-                style={{ width: 68, height: 22, fontSize: 11 }}
-              />
-            </label>
+          {needsStop && (
+            <NetPriceInput
+              label="stop @"
+              value={stopPrice}
+              onChange={(v) => {
+                setStopDirty(true);
+                setStopPrice(v);
+              }}
+              ariaLabel="Net stop trigger (per-share net premium of the structure)"
+            />
+          )}
+          {needsLimit && (
+            <NetPriceInput
+              label="limit @"
+              value={limitPrice}
+              onChange={(v) => {
+                setLimitDirty(true);
+                setLimitPrice(v);
+              }}
+              ariaLabel="Net limit price (per-share net premium of the structure)"
+            />
+          )}
+          {isWorking && (
+            <div className="flex" style={{ gap: 2 }}>
+              {(["day", "gtc"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTif(t)}
+                  aria-pressed={tif === t}
+                  title={
+                    t === "day"
+                      ? "Day order — cancelled if it doesn't fill this session."
+                      : "Good-til-cancelled — rests until filled or cancelled."
+                  }
+                  className={[
+                    "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-1.5",
+                    tif === t
+                      ? "bg-tier-3 border border-amber text-amber"
+                      : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                  ].join(" ")}
+                  style={{ height: 22, fontSize: 10 }}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           )}
         </div>
-        {orderMode === "limit" && (
+        {isWorking && (
           <span className="text-fg-tertiary-2" style={{ fontSize: 10 }}>
             net premium per 1× structure — a debit you pay is positive, a
             credit you receive is negative
+            {needsStop && "; a stop fills once the net rises to it"}
           </span>
         )}
       </div>
+
+      {/* Optional trailing-stop EXIT carried onto the filled structure. */}
+      <TrailControl
+        trailAmount={trailAmount}
+        trailPct={trailPct}
+        setTrailAmount={setTrailAmount}
+        setTrailPct={setTrailPct}
+      />
 
       {/* Size + fire */}
       <div className="flex items-center gap-2 pt-0.5">
@@ -373,8 +466,8 @@ export function StrategyBuilder({ symbol }: Props) {
         >
           {openMulti.isPending
             ? "submitting…"
-            : orderMode === "limit"
-              ? "place net limit"
+            : isWorking
+              ? "place order"
               : "open structure"}
         </button>
       </div>
@@ -496,6 +589,151 @@ function LegRow({
   );
 }
 
+/** Compact signed net-premium input (debit positive / credit negative). */
+function NetPriceInput({
+  label,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <label className="flex items-center gap-1" style={{ fontSize: 11 }}>
+      <span className="uppercase tracking-label-up text-fg-tertiary-2">{label}</span>
+      <input
+        type="number"
+        inputMode="decimal"
+        step={0.01}
+        value={value ?? ""}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value);
+          onChange(Number.isFinite(v) ? v : null);
+        }}
+        placeholder="0.00"
+        aria-label={ariaLabel}
+        className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+        style={{ width: 64, height: 22, fontSize: 11 }}
+      />
+    </label>
+  );
+}
+
+/** Optional trailing-stop EXIT on the structure's net mark ($/share or % of
+ *  net entry premium). Mutually exclusive — the two are wired so only one is
+ *  ever set. Applies once the structure is filled. */
+function TrailControl({
+  trailAmount,
+  trailPct,
+  setTrailAmount,
+  setTrailPct,
+}: {
+  trailAmount: number | null;
+  trailPct: number | null;
+  setTrailAmount: (a: number | null) => void;
+  setTrailPct: (p: number | null) => void;
+}) {
+  const on = trailAmount != null || trailPct != null;
+  const mode: "amount" | "pct" = trailPct != null ? "pct" : "amount";
+  return (
+    <div className="flex items-center gap-2 tabular-nums" style={{ fontSize: 11 }}>
+      <button
+        type="button"
+        onClick={() => {
+          if (on) {
+            setTrailAmount(null);
+            setTrailPct(null);
+          } else {
+            setTrailAmount(0.1);
+            setTrailPct(null);
+          }
+        }}
+        aria-pressed={on}
+        title="Attach a trailing-stop exit on the structure's net mark; it activates once the order fills."
+        className={[
+          "uppercase tracking-label-up transition-colors duration-100 select-none rounded-btn px-2",
+          on
+            ? "bg-tier-3 border border-amber text-amber"
+            : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+        ].join(" ")}
+        style={{ height: 22, fontSize: 10 }}
+      >
+        trail stop
+      </button>
+      {on && (
+        <>
+          <div className="flex" style={{ gap: 2 }}>
+            {(["amount", "pct"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => {
+                  if (m === mode) return;
+                  if (m === "pct") {
+                    setTrailPct(0.1);
+                    setTrailAmount(null);
+                  } else {
+                    setTrailAmount(0.1);
+                    setTrailPct(null);
+                  }
+                }}
+                aria-pressed={mode === m}
+                aria-label={m === "amount" ? "Trail by net dollars" : "Trail by percent of net entry premium"}
+                className={[
+                  "tracking-label-up transition-colors duration-100 select-none rounded-btn",
+                  mode === m
+                    ? "bg-tier-3 border border-amber text-amber"
+                    : "bg-tier-2 border border-tier-3 text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                ].join(" ")}
+                style={{ height: 22, width: 24, fontSize: 11 }}
+              >
+                {m === "amount" ? "$" : "%"}
+              </button>
+            ))}
+          </div>
+          {mode === "amount" ? (
+            <input
+              type="number"
+              inputMode="decimal"
+              min={0.01}
+              step={0.05}
+              value={trailAmount ?? ""}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                setTrailAmount(Number.isFinite(v) && v > 0 ? v : null);
+              }}
+              aria-label="Trailing stop distance ($/share of net)"
+              className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+              style={{ width: 56, height: 22, fontSize: 11 }}
+            />
+          ) : (
+            <input
+              type="number"
+              inputMode="decimal"
+              min={0.1}
+              max={100}
+              step={0.5}
+              value={trailPct != null ? +(trailPct * 100).toFixed(2) : ""}
+              onChange={(e) => {
+                const pct = parseFloat(e.target.value);
+                setTrailPct(
+                  Number.isFinite(pct) && pct > 0 ? Math.min(1, pct / 100) : null,
+                );
+              }}
+              aria-label="Trailing stop distance (% of net entry premium)"
+              className="bg-tier-2 border border-tier-3 rounded-btn text-fg-primary tabular-nums text-right px-1.5"
+              style={{ width: 56, height: 22, fontSize: 11 }}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // --- preset leg derivation --------------------------------------------------
 
 /** The typical strike increment from the live grid (median gap, fallback 1). */
@@ -522,6 +760,20 @@ export function presetLegs(preset: Preset, atm: number, step: number): MultiLegS
         { side: "call", action: "buy", strike: atm, ratio: 1 },
         { side: "call", action: "sell", strike: atm + w, ratio: 1 },
       ];
+    case "call_credit":
+      // Bear call CREDIT spread: sell the 1-strike-OTM call, buy the wing
+      // above — profits when the underlying stays below the short strike.
+      return [
+        { side: "call", action: "sell", strike: atm + w, ratio: 1 },
+        { side: "call", action: "buy", strike: atm + 2 * w, ratio: 1 },
+      ];
+    case "put_debit":
+      // Bear put DEBIT spread: buy the ATM put, sell the wing below —
+      // profits on a move down, capped at the lower strike.
+      return [
+        { side: "put", action: "buy", strike: atm, ratio: 1 },
+        { side: "put", action: "sell", strike: atm - w, ratio: 1 },
+      ];
     case "put_spread":
       // Bull put CREDIT spread: sell the 1-strike-OTM put, buy the wing
       // below — the most-traded defined-risk premium-selling structure.
@@ -541,6 +793,15 @@ export function presetLegs(preset: Preset, atm: number, step: number): MultiLegS
         { side: "put", action: "buy", strike: atm - 2 * w, ratio: 1 },
         { side: "put", action: "sell", strike: atm - w, ratio: 1 },
         { side: "call", action: "sell", strike: atm + w, ratio: 1 },
+        { side: "call", action: "buy", strike: atm + 2 * w, ratio: 1 },
+      ];
+    case "iron_butterfly":
+      // Short ATM straddle bracketed by long wings — a defined-risk,
+      // higher-credit cousin of the condor (short strikes meet at ATM).
+      return [
+        { side: "put", action: "buy", strike: atm - 2 * w, ratio: 1 },
+        { side: "put", action: "sell", strike: atm, ratio: 1 },
+        { side: "call", action: "sell", strike: atm, ratio: 1 },
         { side: "call", action: "buy", strike: atm + 2 * w, ratio: 1 },
       ];
     case "butterfly":
@@ -581,22 +842,33 @@ export function netPremiumPerShare(
 }
 
 /**
- * Assemble the /open-multi payload. Market opens OMIT order_type/limit_price
- * entirely (wire-compatible with backends that predate the field); NET LIMIT
- * sends order_type:"limit" + limit_price — the structure's net premium per 1×
- * ($/share): debit positive, credit negative. Null when a limit is requested
- * without a usable price (callers must not fire). Exported for unit testing.
+ * Assemble the /open-multi payload. A MARKET open omits the working-order
+ * fields entirely (wire-compatible with backends that predate them). A working
+ * order (limit / stop / stop_limit) sends its net trigger(s) — the structure's
+ * net premium per 1× ($/share): debit positive, credit negative — plus any
+ * trailing-stop exit and time-in-force. Returns null when a required trigger
+ * price is missing (callers must not fire). Exported for unit testing.
  */
 export function multiLegOrderPayload(args: {
   symbol: string;
   contracts: number;
   strategy: string;
   legs: MultiLegSpec[];
-  orderType: "market" | "limit";
+  orderType: "market" | "limit" | "stop" | "stop_limit";
   limitPrice: number | null;
+  stopPrice?: number | null;
+  trailAmount?: number | null;
+  trailPct?: number | null;
+  timeInForce?: "day" | "gtc";
   tp: number | null;
   sl: number | null;
 }): OpenMultiLegInput | null {
+  const trail =
+    args.trailAmount != null && args.trailAmount > 0
+      ? { trail_amount: args.trailAmount }
+      : args.trailPct != null && args.trailPct > 0
+        ? { trail_pct: args.trailPct }
+        : {};
   const base: OpenMultiLegInput = {
     symbol: args.symbol,
     contracts: args.contracts,
@@ -604,10 +876,24 @@ export function multiLegOrderPayload(args: {
     legs: args.legs,
     tp_premium_mult: args.tp,
     sl_premium_mult: args.sl,
+    ...trail,
   };
   if (args.orderType === "market") return base;
-  if (args.limitPrice == null || !Number.isFinite(args.limitPrice)) return null;
-  return { ...base, order_type: "limit", limit_price: args.limitPrice };
+
+  const needsLimit = args.orderType === "limit" || args.orderType === "stop_limit";
+  const needsStop = args.orderType === "stop" || args.orderType === "stop_limit";
+  const limitOk = args.limitPrice != null && Number.isFinite(args.limitPrice);
+  const stopOk = args.stopPrice != null && Number.isFinite(args.stopPrice);
+  if (needsLimit && !limitOk) return null;
+  if (needsStop && !stopOk) return null;
+
+  return {
+    ...base,
+    order_type: args.orderType,
+    limit_price: needsLimit ? args.limitPrice : null,
+    stop_price: needsStop ? args.stopPrice ?? null : null,
+    time_in_force: args.timeInForce ?? "day",
+  };
 }
 
 function describeLegs(legs: MultiLegSpec[]): string {
