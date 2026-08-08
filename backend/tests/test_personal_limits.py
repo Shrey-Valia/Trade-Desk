@@ -15,7 +15,7 @@ network); trades are seeded straight into the DB.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -31,7 +31,14 @@ from services.combine_state import combine_snapshot
 from services.order_monitor import run_order_monitor
 from tests.conftest import make_combine
 
-_TODAY = datetime.now(timezone.utc).date().isoformat()
+# "Today" is the EASTERN trading day (the monitor resolves the session in ET);
+# a UTC date flips a day early after ~20:00 ET.
+_TODAY_DATE = datetime.now(zerodte._ET).date()
+_TODAY = _TODAY_DATE.isoformat()
+# Mid-session ET so the seeded 0DTE legs are never treated as expired whatever
+# wall-clock time the suite runs at (run_order_monitor's default `now` is the
+# real time — past 16:00 ET it settles them instead of running the triggers).
+_NOON_ET = datetime.combine(_TODAY_DATE, dt_time(12, 0), tzinfo=zerodte._ET)
 
 
 def _seed_closed_trade(session, combine_id: int, realized: float) -> None:
@@ -93,6 +100,7 @@ def _run(session_factory, **kw):
         spot_for=lambda sym: 100.0,
         option_mark=lambda t, s: 1.0,
         unrealized_for=lambda t, s: 0.0,
+        now=_NOON_ET,
     )
     params.update(kw)
     return run_order_monitor(session_factory=session_factory, **params)

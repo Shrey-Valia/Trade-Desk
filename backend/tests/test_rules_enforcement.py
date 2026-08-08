@@ -6,7 +6,7 @@ settlement that no longer waits for a read)."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -19,6 +19,13 @@ from models.combine_event import CombineEvent
 from models.trade import Trade
 from routers import zerodte
 from tests.conftest import make_combine
+
+# EASTERN trading day + a mid-session ET clock: the auto-liquidation tests seed
+# 0DTE positions and drive the monitor, so `now` must be mid-session on the
+# seeded expiry — the default (real time) settles the legs as expired past
+# 16:00 ET and the liquidation path under test never runs.
+_TODAY_DATE = datetime.now(zerodte._ET).date()
+_NOON_ET = datetime.combine(_TODAY_DATE, dt_time(12, 0), tzinfo=zerodte._ET)
 
 
 def _seed_closed_trade(session, combine_id: int, realized: float) -> None:
@@ -238,6 +245,7 @@ def test_dll_off_skips_dll_liquidation(auth_client, session_factory):
         market_open=lambda: True,
         spot_for=lambda sym: 99.0,
         unrealized_for=lambda t, s: -1_500.0,
+        now=_NOON_ET,
     )
     assert summary["liquidated"] == 0
     session = session_factory()
@@ -252,7 +260,7 @@ def test_dll_off_skips_dll_liquidation(auth_client, session_factory):
 def _seed_open_position(session, combine_id: int) -> int:
     """A bracket-less OPEN position — only the liquidation pass can act on it."""
     now = datetime.now(timezone.utc)
-    today = now.date().isoformat()
+    today = _TODAY_DATE.isoformat()  # ET session day — matches _NOON_ET
     t = Trade(
         symbol="SPY",
         strategy="long_call",
@@ -292,6 +300,7 @@ def test_auto_liquidation_force_closes_and_fails_on_mll_breach(auth_client, sess
         market_open=lambda: True,
         spot_for=lambda sym: 99.0,
         unrealized_for=lambda t, s: -2_600.0,
+        now=_NOON_ET,
     )
     assert summary["liquidated"] == 1
 
@@ -327,6 +336,7 @@ def test_auto_liquidation_leaves_healthy_combine_open(auth_client, session_facto
         market_open=lambda: True,
         spot_for=lambda sym: 100.0,
         unrealized_for=lambda t, s: -200.0,
+        now=_NOON_ET,
     )
     assert summary["liquidated"] == 0
 

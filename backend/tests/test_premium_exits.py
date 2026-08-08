@@ -13,7 +13,7 @@ followers.
 from __future__ import annotations
 
 import types
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 
 from sqlalchemy import select
 
@@ -25,7 +25,14 @@ from services.copy_trade import mirror_open
 from services.order_monitor import run_order_monitor
 from tests.conftest import make_combine
 
-_TODAY = datetime.now(timezone.utc).date().isoformat()
+# "Today" is the EASTERN trading day (the 0DTE engine + monitor resolve the
+# session in ET); a UTC date flips a day early after ~20:00 ET.
+_TODAY_DATE = datetime.now(zerodte._ET).date()
+_TODAY = _TODAY_DATE.isoformat()
+# Pin the monitor clock to MID-SESSION ET so the seeded 0DTE legs are never
+# treated as expired, whatever wall-clock time the suite runs at (the default
+# run_order_monitor `now` is the real time — past 16:00 ET it settles them).
+_NOON_ET = datetime.combine(_TODAY_DATE, dt_time(12, 0), tzinfo=zerodte._ET)
 
 
 def _seed(session_factory, combine_id, *, action="buy", entry_price=1.0,
@@ -61,6 +68,7 @@ def _run(session_factory, **kw):
         spot_for=lambda sym: 100.0,
         option_mark=lambda t, s: 1.0,
         unrealized_for=lambda t, s: 0.0,
+        now=_NOON_ET,
     )
     params.update(kw)
     return run_order_monitor(session_factory=session_factory, **params)
