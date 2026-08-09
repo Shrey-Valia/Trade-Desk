@@ -1132,7 +1132,9 @@ def _auto_liquidate(
             if not usable:
                 continue
 
-            snap = combine_snapshot(session, combine)
+            # Thread the monitor clock so the settlement window / DLL day /
+            # profit-lock window are all computed at THIS tick's `now`.
+            snap = combine_snapshot(session, combine, now=now)
             # DLL branch active unless the owner disabled it (Step 3 toggle).
             dll_active = _combine_dll_enabled(session, combine)
 
@@ -1482,7 +1484,7 @@ def _process_working(session, trade: Trade, spot: float, now: datetime, option_m
 
     # Don't fill into a non-tradeable combine — cancel the resting order.
     if combine is not None:
-        snap = combine_snapshot(session, combine)
+        snap = combine_snapshot(session, combine, now=now)
         if snap.outcome == "failed" or snap.day_locked:
             trade.status = "cancelled"
             trade.close_reason = None

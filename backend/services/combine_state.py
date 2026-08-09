@@ -340,16 +340,24 @@ def event_recorded_today(
     )
 
 
-def combine_snapshot(session: Session, combine: Combine) -> CombineSnapshot:
+def combine_snapshot(
+    session: Session, combine: Combine, *, now: datetime | None = None
+) -> CombineSnapshot:
     """Full computed state for one combine. Advances the persisted RUNNING
     HWM monotonically intraday (realized-only, display-only), runs the lazy
     5pm-PT settlement against the end-of-day balance basis, computes the
     fixed-intraday MLL floor from the settled HWM, persists a realized-based
     PASS/FAIL outcome, AUTO-FUNDS on a pass, and logs each transition. All
     persisted decisions are realized-based; the frontend folds live URPL in
-    for display only."""
+    for display only.
+
+    `now` defaults to the real UTC time; callers that already resolved a
+    monitor clock (the order monitor) pass it so the 5pm-PT settlement window,
+    the DLL day and the profit-lock day-window are computed against the SAME
+    instant that drove the pass — keeping the whole tick clock-consistent and
+    the monitor tests deterministic regardless of wall-clock time."""
     tier = TIERS[combine.tier]
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     # Funded-stage epoch: once activated, accounting restarts — only trades
     # opened at/after the epoch count, and booked payouts debit the balance.
     # Pre-activation (eval, or funded-but-unactivated) the eval basis applies.
