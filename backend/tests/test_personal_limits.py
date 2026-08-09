@@ -41,6 +41,26 @@ _TODAY = _TODAY_DATE.isoformat()
 _NOON_ET = datetime.combine(_TODAY_DATE, dt_time(12, 0), tzinfo=zerodte._ET)
 
 
+@pytest.fixture(autouse=True)
+def _freeze_combine_clock(monkeypatch):
+    """Freeze combine_state's wall-clock to the mid-session ET instant these
+    tests pin the monitor to, so the 5pm-PT settlement window / DLL day /
+    profit-lock day-window reads all agree with it — including the snapshot
+    inside `_require_tradeable` and the monitor's own internal snapshot. Without
+    this, a profit-lock stamped at noon ET reads as 'expired' once real time
+    crosses the 5pm-PT settlement boundary, so the day-lock assertions flaked by
+    time-of-day. combine_state reads the clock in exactly one spot
+    (combine_snapshot's default `now`), so patching `datetime.now` there covers
+    every path."""
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _NOON_ET.astimezone(tz) if tz is not None else _NOON_ET.replace(tzinfo=None)
+
+    monkeypatch.setattr("services.combine_state.datetime", _FrozenDateTime)
+
+
 def _seed_closed_trade(session, combine_id: int, realized: float) -> None:
     now = datetime.now(timezone.utc)
     session.add(
