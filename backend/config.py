@@ -235,6 +235,18 @@ class Settings(BaseSettings):
     auth_rate_limit_window_s: int = 60
 
     # ---------------------------------------------------------------------
+    # Closed launch. With signup_require_invite ON, POST /api/auth/signup
+    # demands a valid, unredeemed invite code (minted by an admin under
+    # /api/admin/invites) — the gate for an invite-only deployment. OFF by
+    # default so local dev and the test suite keep their open signup; a
+    # closed deployment sets SIGNUP_REQUIRE_INVITE=1. A code supplied when
+    # the gate is OFF is still validated and redeemed, so the audit trail
+    # never silently drops one.
+    signup_require_invite: bool = False
+    # Default TTL the admin mint form pre-fills, in days. 0 = never expires.
+    invite_default_ttl_days: float = 14.0
+
+    # ---------------------------------------------------------------------
     # Operator back office (P0 wave, 2026-07). Emails auto-promoted to the
     # admin role at signin — the bootstrap path for the first operator seat
     # (afterwards admins can promote/demote via /api/admin).

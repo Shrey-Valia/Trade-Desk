@@ -121,6 +121,7 @@ def init_db() -> None:
         combine,
         combine_event,
         historical_earnings_event,
+        invite,
         job_run,
         kyc,
         notification,

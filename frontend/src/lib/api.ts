@@ -61,9 +61,11 @@ import { TickerDetailSchema, type TickerDetail } from "@/types/ticker";
 import { WatchlistResponseSchema, type WatchlistResponse } from "@/types/watchlist";
 import { AccountStateSchema, type AccountState } from "@/types/account";
 import {
+  SignupPolicySchema,
   UserOutSchema,
   type SigninInput,
   type SignupInput,
+  type SignupPolicy,
   type UserOut,
 } from "@/types/auth";
 import {
@@ -620,6 +622,10 @@ export const signup = (input: SignupInput): Promise<UserOut> =>
     method: "POST",
     body: JSON.stringify(input),
   });
+
+/** Public + unauthenticated: does the signup form need an invite code? */
+export const fetchSignupPolicy = (): Promise<SignupPolicy> =>
+  request("/api/auth/signup-policy", SignupPolicySchema);
 
 export const signin = (input: SigninInput): Promise<UserOut> =>
   mutate("/api/auth/signin", UserOutSchema, {

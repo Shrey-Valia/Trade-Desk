@@ -12,6 +12,8 @@ Surface:
   * Payments  — refund (reuses the Stripe webhook's refund core).
   * Payouts   — the human review queue + approve/deny/hold/resume/mark-paid
                 (delegating to services/payout_desk.decide).
+  * Invites   — mint / list / revoke the codes that gate signup when
+                settings.signup_require_invite is on (closed launch).
   * Platform  — the kill switch (trading mode + symbol ban list). DB-only,
                 no market-data dependency: it works exactly when the feed
                 is the thing that broke.
@@ -40,6 +42,7 @@ from database import get_session
 from models.admin_action import AdminAction
 from models.combine import Combine
 from models.combine_event import CombineEvent
+from models.invite import Invite
 from models.job_run import JobRun
 from models.kyc import KycVerification
 from models.payment import Payment
@@ -63,6 +66,12 @@ from services.combine_state import (
     PAYOUT_DEBIT_TYPES,
     combine_snapshot,
     record_event,
+)
+from services.invites import (
+    INVITE_STATES,
+    expiry_from_days,
+    invite_status,
+    mint_code,
 )
 from services.payout_desk import decide as payout_decide
 from services.platform_state import TRADING_MODES
@@ -1129,6 +1138,256 @@ def decide_payout(
     )
     db.commit()
     return _payout_request_out(updated)
+
+
+# ---------------------------------------------------------------------------
+# Invites — the closed-launch signup gate
+# ---------------------------------------------------------------------------
+
+
+class InviteOut(BaseModel):
+    id: int
+    code: str
+    email: str | None
+    note: str | None
+    # Derived (services/invites.invite_status), never stored.
+    status: str
+    created_by_email: str | None
+    created_at: str
+    expires_at: str | None
+    redeemed_at: str | None
+    redeemed_by_email: str | None
+    revoked_at: str | None
+
+
+class InvitesPage(BaseModel):
+    invites: list[InviteOut]
+    total: int
+    page: int
+    # Echoed so the console can explain WHY signup is (or isn't) gated
+    # without a second round trip to a settings endpoint.
+    require_invite: bool
+    default_ttl_days: float
+
+
+class CreateInviteIn(BaseModel):
+    # Bind the code to one address, or leave blank for a bearer code.
+    email: str | None = Field(default=None, max_length=255)
+    note: str | None = Field(default=None, max_length=200)
+    # None = fall back to settings.invite_default_ttl_days; 0 = never expires.
+    expires_in_days: float | None = Field(default=None, ge=0, le=365)
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not v:
+            return None
+        # Same light shape check as routers/auth._normalize_email — a typo'd
+        # binding silently locks the invitee out, so catch it at mint time.
+        if "@" not in v or " " in v:
+            raise ValueError("invalid email address")
+        return v
+
+    @field_validator("note")
+    @classmethod
+    def _clean_note(cls, v: str | None) -> str | None:
+        return (v or "").strip() or None
+
+
+def _invite_out(inv: Invite, emails: dict[int, str]) -> InviteOut:
+    return InviteOut(
+        id=inv.id,
+        code=inv.code,
+        email=inv.email,
+        note=inv.note,
+        status=invite_status(inv),
+        created_by_email=emails.get(inv.created_by_id),
+        created_at=_iso(inv.created_at) or "",
+        expires_at=_iso(inv.expires_at),
+        redeemed_at=_iso(inv.redeemed_at),
+        redeemed_by_email=(
+            emails.get(inv.redeemed_by_id) if inv.redeemed_by_id else None
+        ),
+        revoked_at=_iso(inv.revoked_at),
+    )
+
+
+def _invite_emails(db: Session, rows: list[Invite]) -> dict[int, str]:
+    """One batched lookup of every creator/redeemer email on the page —
+    the same no-N+1 discipline as the user list above."""
+    ids = {inv.created_by_id for inv in rows}
+    ids |= {inv.redeemed_by_id for inv in rows if inv.redeemed_by_id is not None}
+    if not ids:
+        return {}
+    return {
+        uid: email
+        for uid, email in db.execute(
+            select(User.id, User.email).where(User.id.in_(ids))
+        ).all()
+    }
+
+
+@router.get("/invites", response_model=InvitesPage)
+def list_invites(
+    status: str | None = Query(default=None),
+    q: str = "",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    db: Session = Depends(get_session),
+) -> InvitesPage:
+    """The invite ledger, newest first, paginated. Optional status filter
+    plus a case-insensitive search over code / bound email / note.
+
+    Status is derived, so it can't be a SQL WHERE on a column: expiry is
+    filtered with an explicit timestamp predicate and the terminal states
+    with NULL checks, keeping the filter in the database rather than
+    post-filtering a page (which would return short pages).
+    """
+    if status is not None and status not in INVITE_STATES:
+        raise HTTPException(
+            422, f"invalid_status: status must be one of {', '.join(INVITE_STATES)}"
+        )
+    now = datetime.now(timezone.utc)
+    stmt = select(Invite)
+    if status == "redeemed":
+        stmt = stmt.where(Invite.redeemed_at.is_not(None))
+    elif status == "revoked":
+        stmt = stmt.where(
+            Invite.redeemed_at.is_(None), Invite.revoked_at.is_not(None)
+        )
+    elif status == "expired":
+        stmt = stmt.where(
+            Invite.redeemed_at.is_(None),
+            Invite.revoked_at.is_(None),
+            Invite.expires_at.is_not(None),
+            Invite.expires_at <= now,
+        )
+    elif status == "active":
+        stmt = stmt.where(
+            Invite.redeemed_at.is_(None),
+            Invite.revoked_at.is_(None),
+            or_(Invite.expires_at.is_(None), Invite.expires_at > now),
+        )
+    needle = q.strip()
+    if needle:
+        like = f"%{needle}%"
+        stmt = stmt.where(
+            or_(
+                Invite.code.ilike(like),
+                Invite.email.ilike(like),
+                Invite.note.ilike(like),
+            )
+        )
+    total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    rows = (
+        db.execute(
+            stmt.order_by(Invite.created_at.desc(), Invite.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    emails = _invite_emails(db, list(rows))
+    return InvitesPage(
+        invites=[_invite_out(inv, emails) for inv in rows],
+        total=int(total),
+        page=page,
+        require_invite=settings.signup_require_invite,
+        default_ttl_days=settings.invite_default_ttl_days,
+    )
+
+
+@router.post("/invites", response_model=InviteOut, status_code=201)
+def create_invite(
+    payload: CreateInviteIn,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_session),
+) -> InviteOut:
+    """Mint a code. Bound to an email or bearer; expiring per the request
+    or the configured default."""
+    if payload.email is not None:
+        taken = db.execute(
+            select(User.id).where(User.email == payload.email)
+        ).scalar_one_or_none()
+        if taken is not None:
+            raise HTTPException(
+                409,
+                "already_registered: that email already has an account",
+            )
+    ttl = (
+        payload.expires_in_days
+        if payload.expires_in_days is not None
+        else settings.invite_default_ttl_days
+    )
+    inv = Invite(
+        code=mint_code(db),
+        email=payload.email,
+        note=payload.note,
+        created_by_id=admin.id,
+        expires_at=expiry_from_days(ttl),
+    )
+    db.add(inv)
+    db.flush()
+    audit(
+        db,
+        admin,
+        "invite.create",
+        "invite",
+        inv.id,
+        after={
+            "code": inv.code,
+            "email": inv.email,
+            "expires_at": _iso(inv.expires_at),
+        },
+        reason=inv.note,
+    )
+    db.commit()
+    db.refresh(inv)
+    return _invite_out(inv, {admin.id: admin.email})
+
+
+@router.post("/invites/{invite_id}/revoke", response_model=InviteOut)
+def revoke_invite(
+    invite_id: int,
+    payload: OptionalReasonIn | None = None,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_session),
+) -> InviteOut:
+    """Kill an unredeemed code. Redemption is terminal — a redeemed invite
+    can't be revoked (the account it created already exists; suspend the
+    user instead)."""
+    inv = db.get(Invite, invite_id)
+    if inv is None:
+        raise HTTPException(404, "invite not found")
+    status = invite_status(inv)
+    if status == "redeemed":
+        raise HTTPException(
+            409,
+            "already_redeemed: that invite was already used — suspend the "
+            "account instead",
+        )
+    if status == "revoked":
+        raise HTTPException(409, "already_revoked: that invite is already revoked")
+    inv.revoked_at = datetime.now(timezone.utc)
+    inv.revoked_by_id = admin.id
+    audit(
+        db,
+        admin,
+        "invite.revoke",
+        "invite",
+        inv.id,
+        before={"status": status},
+        after={"status": "revoked", "revoked_at": _iso(inv.revoked_at)},
+        reason=payload.reason if payload else None,
+    )
+    db.commit()
+    db.refresh(inv)
+    emails = _invite_emails(db, [inv])
+    return _invite_out(inv, emails)
 
 
 # ---------------------------------------------------------------------------

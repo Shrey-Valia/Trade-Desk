@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import {
@@ -8,7 +9,8 @@ import {
   AuthSubmit,
 } from "@/components/auth/AuthCard";
 import { useSignup } from "@/hooks/useAuth";
-import { acceptDocuments } from "@/lib/legalApi";
+import { fetchSignupPolicy } from "@/lib/api";
+import { acceptDocuments, errorMessage } from "@/lib/legalApi";
 import { toast } from "@/stores/toast";
 
 export function SignUpPage() {
@@ -21,16 +23,33 @@ export function SignUpPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  // ?invite= lets an operator hand out one link instead of a link plus a
+  // code to retype.
+  const [inviteCode, setInviteCode] = useState(params.get("invite") ?? "");
   const [agreed, setAgreed] = useState(false);
+
+  // Whether this deployment is invite-only. The policy is cheap, immutable
+  // for the life of the process, and the server enforces the gate anyway —
+  // so a failure to load it just falls back to the open form rather than
+  // blocking the page.
+  const policy = useQuery({
+    queryKey: ["signup-policy"],
+    queryFn: fetchSignupPolicy,
+    staleTime: Infinity,
+    retry: false,
+  });
+  const inviteRequired = policy.data?.require_invite ?? false;
+  const missingInvite = inviteRequired && !inviteCode.trim();
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!agreed) return; // button is disabled; belt-and-suspenders
+    if (!agreed || missingInvite) return; // button is disabled; belt-and-suspenders
     signup.mutate(
       {
         email,
         password,
         display_name: displayName.trim() || undefined,
+        invite_code: inviteCode.trim() || undefined,
       },
       {
         onSuccess: () => {
@@ -78,6 +97,21 @@ export function SignUpPage() {
           onChange={setDisplayName}
           autoComplete="nickname"
         />
+        {inviteRequired && (
+          <div className="flex flex-col gap-1">
+            <AuthInput
+              label="Invite code"
+              type="text"
+              value={inviteCode}
+              onChange={(v) => setInviteCode(v.toUpperCase())}
+              autoComplete="off"
+            />
+            <span className="text-tiny text-fg-tertiary-2">
+              Trade Desk is invite-only right now. Paste the code from your
+              invite — it looks like TD-XXXX-XXXX.
+            </span>
+          </div>
+        )}
         <label className="flex items-start gap-2 cursor-pointer select-none">
           <input
             type="checkbox"
@@ -107,13 +141,14 @@ export function SignUpPage() {
             </Link>
           </span>
         </label>
-        <AuthError
-          message={signup.isError ? (signup.error as Error).message : null}
-        />
+        {/* Gate refusals arrive as "<code>: <message>" (invalid_invite,
+            already_redeemed, …) — show the human half only, same as the
+            reset-password page. */}
+        <AuthError message={signup.isError ? errorMessage(signup.error) : null} />
         <AuthSubmit
           label="Create account"
           pending={signup.isPending}
-          disabled={!agreed}
+          disabled={!agreed || missingInvite}
         />
       </form>
       <div className="text-tiny text-fg-tertiary-2 text-center">
