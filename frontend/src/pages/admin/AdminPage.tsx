@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { useMe } from "@/hooks/useAuth";
 
 import { AdminAudit } from "./AdminAudit";
+import { AdminInvites } from "./AdminInvites";
 import { AdminJobs } from "./AdminJobs";
 import { AdminOverview } from "./AdminOverview";
 import { AdminPayoutQueue } from "./AdminPayoutQueue";
@@ -22,6 +23,7 @@ const TABS = [
   { key: "overview", label: "Overview" },
   { key: "payouts", label: "Payouts" },
   { key: "users", label: "Users" },
+  { key: "invites", label: "Invites" },
   { key: "platform", label: "Platform" },
   { key: "support", label: "Support" },
   { key: "jobs", label: "Jobs" },
@@ -88,6 +90,7 @@ export function AdminPage() {
           {tab === "overview" && <AdminOverview />}
           {tab === "payouts" && <AdminPayoutQueue />}
           {tab === "users" && <AdminUsers />}
+          {tab === "invites" && <AdminInvites />}
           {tab === "platform" && <AdminPlatform />}
           {tab === "support" && <AdminSupport />}
           {tab === "jobs" && <AdminJobs />}

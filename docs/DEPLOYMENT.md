@@ -53,6 +53,8 @@ Compose passes these through from the host shell or a `.env` file beside
 | `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `ALPACA_PAPER` | empty / `true` | Required for live quotes, chains, fills. |
 | `FINNHUB_API_KEY`, `FRED_API_KEY` | empty | News / macro data. |
 | `ADMIN_EMAILS` | `[]` | JSON array; listed emails are auto-promoted to admin at signin — the bootstrap for the first operator seat. |
+| `SIGNUP_REQUIRE_INVITE` | `false` | `1` closes signup: `POST /api/auth/signup` then demands a valid invite code. See "Invite-only launch" below. |
+| `INVITE_DEFAULT_TTL_DAYS` | `14` | TTL the admin mint form pre-fills. `0` = codes never expire. |
 | `PAYOUT_AUTO_APPROVE` | `true` | Set `0` to require a human on every payout (the real-firm posture). |
 | `MAIL_PROVIDER` | `console` | `console` logs mail to stdout; `smtp` sends via the `SMTP_*` settings. |
 | `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS` | see `backend/config.py` | Only used when `MAIL_PROVIDER=smtp`. |
@@ -61,6 +63,33 @@ Compose passes these through from the host shell or a `.env` file beside
 | `ALLOW_LEGACY_TRADE_WIPE` | `false` | **Leave unset.** See "restored pre-tier backup" below. |
 
 Full list with inline docs: `backend/config.py`.
+
+## Invite-only launch
+
+`SIGNUP_REQUIRE_INVITE=1` is the gate for a closed launch: with it set,
+signup refuses any request without a valid, unredeemed invite code
+(`403 invite_required: …`). Without it, **anyone with the URL can create an
+account** — minting codes alone does not close the door, which is why the
+admin Invites tab shows a warning banner whenever the flag is off.
+
+Codes are minted in the operator console under **Admin → Invites** (or
+`POST /api/admin/invites`). Each is single-use, optionally bound to one
+email, optionally expiring, and revocable until it's redeemed; both minting
+and revoking write `AdminAction` audit rows. The mint dialog also builds a
+`/signup?invite=CODE` link that prefills the form, so an invitee gets one
+link instead of a link plus a code to retype.
+
+Two things to know before flipping it:
+
+- **It gates new accounts only.** Existing users keep signing in normally,
+  so turning it on mid-flight locks nobody out.
+- **A code supplied while the gate is OFF is still validated and redeemed.**
+  A wrong code is refused either way — the ledger never silently drops one.
+
+```bash
+SIGNUP_REQUIRE_INVITE=1
+ADMIN_EMAILS=["you@yourdomain.com"]   # you need the console to mint codes
+```
 
 ## Backups & restore
 

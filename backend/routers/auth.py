@@ -37,6 +37,8 @@ from services.auth import (
     verify_password,
     verify_password_timing_safe,
 )
+from services.invites import InviteError
+from services.invites import redeem as redeem_invite
 from services.notify import enqueue_email
 from services.rate_limit import auth_limiter, enforce
 
@@ -53,6 +55,9 @@ class SignupIn(BaseModel):
     email: str = Field(..., max_length=255)
     password: Password
     display_name: str | None = Field(default=None, max_length=64)
+    # Required only when settings.signup_require_invite is on (the closed-
+    # launch posture); validated and redeemed whenever it IS supplied.
+    invite_code: str | None = Field(default=None, max_length=32)
 
 
 class SigninIn(BaseModel):
@@ -92,6 +97,19 @@ def _normalize_email(raw: str) -> str:
     return email
 
 
+class SignupPolicyOut(BaseModel):
+    require_invite: bool
+
+
+@router.get("/signup-policy", response_model=SignupPolicyOut)
+def signup_policy() -> SignupPolicyOut:
+    """Whether the signup form must collect an invite code. Public and
+    unauthenticated — it has to answer before an account exists, and it
+    reveals nothing a POST to /signup wouldn't. The server-side gate in
+    signup() is the enforcement; this only shapes the form."""
+    return SignupPolicyOut(require_invite=settings.signup_require_invite)
+
+
 @router.post("/signup", response_model=UserOut, status_code=201)
 def signup(
     payload: SignupIn,
@@ -101,6 +119,11 @@ def signup(
 ) -> UserOut:
     enforce(auth_limiter, request, "signup")
     email = _normalize_email(payload.email)
+    code = (payload.invite_code or "").strip()
+    if settings.signup_require_invite and not code:
+        raise HTTPException(
+            403, "invite_required: Sign-ups are invite-only right now."
+        )
     existing = session.execute(
         select(User.id).where(User.email == email)
     ).scalar_one_or_none()
@@ -112,6 +135,18 @@ def signup(
         display_name=(payload.display_name or "").strip() or None,
     )
     session.add(user)
+    # The user row and the redemption share ONE transaction: flush to mint
+    # user.id for redeemed_by_id, redeem, then commit both. A refusal (bad
+    # code, or the loser of a two-signup race for the same code) rolls the
+    # half-built user back with it, so a failed signup can never leave an
+    # account behind.
+    if code:
+        session.flush()
+        try:
+            redeem_invite(session, code, email, user.id)
+        except InviteError as exc:
+            session.rollback()
+            raise HTTPException(403, str(exc)) from exc
     session.commit()
     session.refresh(user)
     set_session_cookie(response, create_session(session, user.id))

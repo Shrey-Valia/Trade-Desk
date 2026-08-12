@@ -124,6 +124,9 @@ export const adminKeys = {
   tickets: (status: string | undefined, q: string, page: number) =>
     ["admin", "tickets", status ?? "all", q, page] as const,
   ticketsPrefix: ["admin", "tickets"] as const,
+  invites: (status: string | undefined, q: string, page: number) =>
+    ["admin", "invites", status ?? "all", q, page] as const,
+  invitesPrefix: ["admin", "invites"] as const,
 };
 
 // -- domain constants ----------------------------------------------------------
@@ -671,4 +674,82 @@ export const updateAdminTicket = (
   mutateJson(`/api/support/admin/tickets/${id}`, AdminTicketSchema, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+
+// -- invites (the closed-launch signup gate) -----------------------------------
+
+/** services/invites.INVITE_STATES, verbatim. Status is DERIVED server-side
+ *  from the timestamps, never stored. */
+export const INVITE_STATES = [
+  "active",
+  "redeemed",
+  "revoked",
+  "expired",
+] as const;
+export type InviteStatus = (typeof INVITE_STATES)[number];
+
+export const AdminInviteSchema = z.object({
+  id: z.number().int(),
+  code: z.string(),
+  /** Bound address — only this email may redeem. Null = bearer code. */
+  email: z.string().nullable(),
+  note: z.string().nullable(),
+  status: z.string(),
+  created_by_email: z.string().nullable(),
+  created_at: z.string(),
+  /** Null = never expires. */
+  expires_at: z.string().nullable(),
+  redeemed_at: z.string().nullable(),
+  redeemed_by_email: z.string().nullable(),
+  revoked_at: z.string().nullable(),
+});
+export type AdminInvite = z.infer<typeof AdminInviteSchema>;
+
+export const AdminInvitesPageSchema = z.object({
+  invites: z.array(AdminInviteSchema),
+  total: z.number().int(),
+  page: z.number().int(),
+  /** Whether signup is ACTUALLY gated right now (SIGNUP_REQUIRE_INVITE).
+   *  Minting codes while this is false does nothing to close the door. */
+  require_invite: z.boolean(),
+  default_ttl_days: z.number(),
+});
+export type AdminInvitesPage = z.infer<typeof AdminInvitesPageSchema>;
+
+export const ADMIN_INVITES_PAGE_SIZE = 25;
+
+export const fetchAdminInvites = (
+  status: InviteStatus | undefined,
+  q: string,
+  page: number,
+  pageSize: number = ADMIN_INVITES_PAGE_SIZE,
+): Promise<AdminInvitesPage> => {
+  const p = new URLSearchParams();
+  if (status) p.set("status", status);
+  if (q) p.set("q", q);
+  p.set("page", String(page));
+  p.set("page_size", String(pageSize));
+  return requestJson(`/api/admin/invites?${p.toString()}`, AdminInvitesPageSchema);
+};
+
+/** Mint a code. `email` binds it to one address; `expires_in_days` of 0
+ *  means never, omitted means the server's configured default. */
+export const createAdminInvite = (input: {
+  email?: string;
+  note?: string;
+  expires_in_days?: number;
+}): Promise<AdminInvite> =>
+  mutateJson("/api/admin/invites", AdminInviteSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+/** Kill an unredeemed code. 409s once it has been used. */
+export const revokeAdminInvite = (
+  id: number,
+  reason?: string,
+): Promise<AdminInvite> =>
+  mutateJson(`/api/admin/invites/${id}/revoke`, AdminInviteSchema, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason || null }),
   });

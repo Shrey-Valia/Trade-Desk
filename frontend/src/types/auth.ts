@@ -14,7 +14,17 @@ export interface SignupInput {
   email: string;
   password: string;
   display_name?: string;
+  /** Required only while the deployment is invite-only — see
+   *  SignupPolicySchema / GET /api/auth/signup-policy. */
+  invite_code?: string;
 }
+
+/** Whether the signup form must collect an invite code. The server-side
+ *  gate is the enforcement; this only shapes the form. */
+export const SignupPolicySchema = z.object({
+  require_invite: z.boolean(),
+});
+export type SignupPolicy = z.infer<typeof SignupPolicySchema>;
 
 export interface SigninInput {
   email: string;

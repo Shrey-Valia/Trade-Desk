@@ -95,6 +95,24 @@ export function ticketStatusTone(status: string): Tone {
   return status === "open" ? "amber" : status === "replied" ? "bullish" : "muted";
 }
 
+/** Invite state → chip tone. Active is the live one (amber); redeemed
+ *  landed successfully (green); revoked reads as a deliberate kill,
+ *  expired as quietly spent. */
+export function inviteStatusTone(status: string): Tone {
+  switch (status) {
+    case "active":
+      return "amber";
+    case "redeemed":
+      return "bullish";
+    case "revoked":
+      return "bearish";
+    case "expired":
+      return "muted";
+    default:
+      return "neutral";
+  }
+}
+
 // -- buttons ---------------------------------------------------------------------
 
 const BTN_BASE =

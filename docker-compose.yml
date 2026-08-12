@@ -47,6 +47,9 @@ services:
       # back office / payouts
       - ADMIN_EMAILS
       - PAYOUT_AUTO_APPROVE
+      # closed launch — see "Invite-only launch" in docs/DEPLOYMENT.md
+      - SIGNUP_REQUIRE_INVITE
+      - INVITE_DEFAULT_TTL_DAYS
       # transactional mail
       - MAIL_PROVIDER
       - MAIL_FROM
