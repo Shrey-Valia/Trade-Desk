@@ -2,7 +2,11 @@
 
 Single-container deployment: the FastAPI backend serves the API **and** the
 built React SPA. Built by the multi-stage `Dockerfile` at the repo root,
-run via `docker-compose.yml`.
+run via `docker-compose.yml` locally or `fly.toml` in production.
+
+**Production target: Fly.io** — see [Deploying to Fly.io](#deploying-to-flyio).
+The compose path below stays the local/self-hosted route and the way to
+smoke-test the image before shipping it.
 
 ## Quick start
 
@@ -63,6 +67,103 @@ Compose passes these through from the host shell or a `.env` file beside
 | `ALLOW_LEGACY_TRADE_WIPE` | `false` | **Leave unset.** See "restored pre-tier backup" below. |
 
 Full list with inline docs: `backend/config.py`.
+
+## Deploying to Fly.io
+
+`fly.toml` at the repo root is the production config. It pins **one machine
+on one volume**, keeps `auto_stop_machines` off, forces HTTPS, and sets the
+closed-launch posture (`SIGNUP_REQUIRE_INVITE=1`, human payout/KYC review).
+
+### One-time setup
+
+```bash
+brew install flyctl && fly auth login
+```
+
+1. **Create the app** without deploying (reserves the name; edit `app =` in
+   `fly.toml` if `trade-desk` is taken):
+
+   ```bash
+   fly apps create trade-desk
+   ```
+
+2. **Create the volume** — 3GB is ample for a SQLite database, screenshot
+   uploads and 14 days of backups. It must live in `primary_region`:
+
+   ```bash
+   fly volumes create trade_data --region iad --size 3
+   ```
+
+3. **Set the secrets.** These are the ones that must NOT sit in `fly.toml`.
+   Note `ADMIN_EMAILS` is parsed as a **JSON array** — the shell quoting
+   below matters, and a comma-separated string aborts boot:
+
+   ```bash
+   fly secrets set \
+     ALPACA_API_KEY=... \
+     ALPACA_API_SECRET=... \
+     FINNHUB_API_KEY=... \
+     FRED_API_KEY=... \
+     ADMIN_EMAILS='["you@yourdomain.com"]'
+   ```
+
+   Setting secrets restarts the machine, so do it before the first deploy
+   (or expect one extra restart).
+
+4. **Deploy:**
+
+   ```bash
+   fly deploy
+   ```
+
+5. **Verify** — health, then the real thing:
+
+   ```bash
+   fly status
+   curl -sS https://trade-desk.fly.dev/health
+   fly logs
+   ```
+
+   `/health` returns 200 only when the database answers. Then sign in with
+   the `ADMIN_EMAILS` address, confirm **Admin → Invites** loads *without*
+   the "signup is open" warning banner (its absence is the proof the gate
+   is live), mint a code, and redeem it from a private window.
+
+### Custom domain
+
+```bash
+fly certs add app.yourdomain.com
+```
+
+Add the DNS records it prints, wait for `fly certs show app.yourdomain.com`
+to go green, then **update `FRONTEND_BASE_URL` in `fly.toml` to the new
+origin** and redeploy. Leaving it on the `.fly.dev` name sends every
+password-reset and payout email out with links pointing at the wrong host.
+
+### Things that will bite you
+
+- **Never `fly scale count 2`.** One volume attaches to one machine, and a
+  second machine means a second APScheduler double-firing billing and
+  settlement. Read the banner at the top of `fly.toml`.
+- **Never let the machine auto-stop.** Fly suspends idle machines by
+  default; `fly.toml` disables it. A suspended machine silently skips
+  billing renewals, settlement and the nightly backup — nothing alerts you,
+  the jobs just never run. Check **Admin → Jobs** for staleness after any
+  config change.
+- **Deploys are downtime.** `strategy = "immediate"` is forced by the
+  single-volume constraint: there is nowhere to stand up a replacement.
+  Deploy outside market hours.
+- **Fly volume snapshots are not your backup.** They default to 5-day
+  retention and live in the same failure domain. The nightly `backup_db`
+  job writes into `/app/data/backups` on that same volume, so pull copies
+  off the machine on a schedule:
+
+  ```bash
+  fly ssh sftp get /app/data/backups/dashboard-YYYYMMDD-HHMMSS.db
+  ```
+
+- **Memory.** `[[vm]] memory = "1gb"` is not padding: pandas + numpy +
+  scipy are resident from first import and 512MB OOMs during startup.
 
 ## Invite-only launch
 

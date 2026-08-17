@@ -1,0 +1,95 @@
+# Trade Desk — Fly.io deployment.
+#
+# Single machine, single volume, single uvicorn worker. Full runbook:
+# docs/DEPLOYMENT.md ("Deploying to Fly.io").
+#
+# ############################  DO NOT SCALE  ############################
+# NEVER run more than one machine of this app. The backend runs APScheduler
+# IN-PROCESS: a second machine double-fires every scheduled job (billing
+# renewals, combine settlement, payout auto-approval, EOD settlement, the
+# nightly backup), which double-charges and corrupts money state. There is
+# also exactly one volume holding the SQLite database, and a volume attaches
+# to one machine at a time — so `fly scale count 2` gets you either a
+# second scheduler or a machine with no database. Neither is survivable.
+# ########################################################################
+
+app = "trade-desk"
+# Ashburn — same metro as AWS us-east-1, where Alpaca's API lives. Keeps the
+# market-data round trip short, which matters on the 5-15s polling paths.
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret configuration. Secrets (API keys, SMTP password, Stripe) go
+# through `fly secrets set` instead — see the runbook.
+[env]
+  # The image already bakes APP_ENV=production, SERVE_FRONTEND_DIR and the
+  # SQLite DATABASE_URL; these are the deployment-posture overrides.
+  #
+  # Fly's proxy terminates TLS and appends the real client IP to
+  # X-Forwarded-For, so the rate limiter must trust it — otherwise every
+  # request keys off the proxy and one abusive client throttles everyone.
+  TRUST_PROXY = "1"
+  # One JSON object per line, for Fly's log search.
+  LOG_JSON = "1"
+  # Closed launch: signup demands an invite code minted in Admin -> Invites.
+  SIGNUP_REQUIRE_INVITE = "1"
+  # Real-firm posture — a human decides payouts and identity, not a timer.
+  PAYOUT_AUTO_APPROVE = "0"
+  KYC_AUTO_VERIFY = "0"
+  BACKUP_RETENTION_DAYS = "14"
+  # Set this to your real origin once a custom domain is attached; it builds
+  # the links inside password-reset and payout emails. Wrong value = dead
+  # links in every email you send.
+  FRONTEND_BASE_URL = "https://trade-desk.fly.dev"
+
+# SQLite database + journal-screenshot uploads + nightly backups. Everything
+# that must outlive a deploy lives here.
+[[mounts]]
+  source = "trade_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8000
+  # Redirect http -> https at the edge. The image runs APP_ENV=production,
+  # which sets a Secure session cookie; served over plain http the browser
+  # drops it and every sign-in silently fails.
+  force_https = true
+  # BOTH must stay false. Fly's default is to suspend an idle machine — but
+  # APScheduler only fires while the process is alive, so a suspended
+  # machine silently skips billing renewals, combine settlement, EOD
+  # settlement and the nightly backup, and nothing surfaces the gap until
+  # someone notices a month of missing charges.
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 60
+    hard_limit = 100
+
+  # /health returns 200 only when the database actually answers (503
+  # otherwise), so this catches a wedged DB, not just a live socket.
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/health"
+
+[deploy]
+  # One machine bound to one volume cannot be rolled: there is nowhere to
+  # stand up the replacement. `immediate` stops the old machine and starts
+  # the new one, accepting a short outage — the honest consequence of the
+  # single-replica constraint. Deploy outside market hours.
+  strategy = "immediate"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # pandas + numpy + scipy + pandas-market-calendars are resident from the
+  # first import. 512MB OOMs during startup; 1GB leaves headroom for the
+  # chain/analytics paths.
+  memory = "1gb"
