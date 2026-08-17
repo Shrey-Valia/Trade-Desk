@@ -34,7 +34,17 @@ services:
       - FINNHUB_API_KEY
       - FRED_API_KEY
       # deployment posture
-      - APP_ENV
+      #
+      # CAREFUL: a bare `- VAR` below does NOT mean "pass it through if the
+      # host sets it, else keep the image's value". When the host doesn't
+      # set it, compose UNSETS the variable in the container, erasing any
+      # ENV baked into the image. That's harmless for the vars whose
+      # config.py default already IS the intended production value — but
+      # APP_ENV is not one of them: the image bakes `production`, compose
+      # would erase it, config.py would fall back to `development`, and the
+      # session cookie would silently lose its Secure flag. Hence the
+      # explicit default here (override it from the host to change it).
+      - APP_ENV=${APP_ENV:-production}
       - COOKIE_SECURE
       - CORS_ALLOW_ORIGINS
       - TRUST_PROXY
@@ -67,8 +77,16 @@ services:
       # backups / migration escape hatch
       - BACKUP_RETENTION_DAYS
       - ALLOW_LEGACY_TRADE_WIPE
-      # Postgres opt-in (overrides the image's SQLite default)
-      - DATABASE_URL
+      # Postgres opt-in. Deliberately NOT a bare `- DATABASE_URL`
+      # passthrough: this repo's dev .env sets a RELATIVE sqlite path
+      # (sqlite:///./data/dashboard.db, correct when the backend runs with
+      # cwd=backend/), and compose would hand that straight to the
+      # container — where it resolves against the /app/backend WORKDIR and
+      # puts the database in the writable layer instead of the /app/data
+      # volume, silently destroying it on every recreate. Set
+      # DOCKER_DATABASE_URL to point at Postgres; leave it unset to keep
+      # the image's absolute SQLite default.
+      - DATABASE_URL=${DOCKER_DATABASE_URL:-sqlite:////app/data/dashboard.db}
 
 volumes:
   trade_data:

@@ -42,6 +42,40 @@ class Base(DeclarativeBase):
     pass
 
 
+def _assert_durable_sqlite_path(url: str) -> None:
+    """Refuse to boot a production deployment on a RELATIVE sqlite path.
+
+    `sqlite:///./data/x.db` is correct for local dev (cwd is `backend/`),
+    and catastrophic in a container: resolved against the image's
+    /app/backend WORKDIR it lands the database in the container's writable
+    layer instead of the mounted /app/data volume. Nothing errors — the app
+    comes up, serves traffic, takes signups, and loses every row the next
+    time the container is recreated. Worse, the backup job writes to its
+    own absolute default on the volume, so you keep BACKUPS of a database
+    that isn't there.
+
+    Absolute is the only safe form under a container (note the four
+    slashes): sqlite:////app/data/dashboard.db. This mirrors the existing
+    pre-tier legacy-DB refusal — a loud stop beats silent data loss.
+    """
+    if not settings.is_production or not url.startswith("sqlite:///"):
+        return
+    path = url.replace("sqlite:///", "", 1)
+    if path.startswith("/"):
+        return
+    raise RuntimeError(
+        "DATABASE_URL is a RELATIVE sqlite path "
+        f"({url!r}) while APP_ENV=production. Under a container this "
+        "resolves against the WORKDIR, not the mounted data volume, and "
+        "the database is destroyed on every container recreate. Use an "
+        "absolute path — sqlite:////app/data/dashboard.db (four slashes) "
+        "— or unset DATABASE_URL to take the image default. See "
+        "docs/DEPLOYMENT.md."
+    )
+
+
+_assert_durable_sqlite_path(settings.database_url)
+
 # SQLite needs the directory to exist before the file is opened.
 if settings.database_url.startswith("sqlite:///"):
     db_path = Path(settings.database_url.replace("sqlite:///", "", 1))
