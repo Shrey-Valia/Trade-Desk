@@ -44,6 +44,20 @@ Compose passes these through from the host shell or a `.env` file beside
 > `CORS_ALLOW_ORIGINS=["https://app.example.com"]`. Comma-separated strings
 > fail to parse and abort boot.
 
+> **Compose passthrough trap — read before adding a variable.** A bare
+> `- VAR` in the compose `environment:` list does **not** mean "use the
+> host's value if set, otherwise keep the image's". When the host doesn't
+> set it, compose **unsets the variable in the container**, erasing any
+> `ENV` baked into the image; when the host *does* set it (including from
+> the dev `.env` beside the compose file), that value is injected verbatim,
+> even if it only makes sense outside a container. Both of these bit us for
+> real: `APP_ENV` was erased, so the app fell back to `development` and
+> dropped the `Secure` flag from the session cookie, and the dev
+> `DATABASE_URL`'s **relative** sqlite path was injected, putting the
+> database in the container's writable layer instead of the `/app/data`
+> volume. Any variable whose image default must survive needs an explicit
+> `- VAR=${VAR:-default}`, as `APP_ENV` and `DATABASE_URL` now have.
+
 | Variable | Default | Prod guidance |
 |---|---|---|
 | `APP_ENV` | `production` (image) | Leave as `production`; hardens cookie defaults. |
