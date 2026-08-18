@@ -17,6 +17,7 @@ breaker self-heal, the factory singleton, and the consumer-task lifecycle
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -394,10 +395,18 @@ class _FakeStream:
         self.subscribed = set()
         self.run_started = False
         self._stop = None
+        # Set once the run loop is live AND the quote handler is wired, so a
+        # test can WAIT for readiness rather than poll for a fixed budget.
+        self.ready = asyncio.Event()
+
+    def _maybe_ready(self):
+        if self.run_started and self.quote_handler is not None:
+            self.ready.set()
 
     def subscribe_quotes(self, handler, *syms):
         self.quote_handler = handler
         self.subscribed |= set(syms)
+        self._maybe_ready()
 
     def subscribe_trades(self, handler, *syms):
         self.trade_handler = handler
@@ -415,10 +424,9 @@ class _FakeStream:
         pass
 
     async def _run_forever(self):
-        import asyncio
-
         self.run_started = True
         self._stop = asyncio.Event()
+        self._maybe_ready()
         await self._stop.wait()
 
     async def stop_ws(self):
@@ -430,18 +438,19 @@ async def test_consumer_subscribes_and_stores_ticks(monkeypatch):
     """End-to-end through the real AlpacaRealtimeFeed run loop with a fake
     stream: subscribe seeds the symbol set, a quote tick lands in the store,
     and stop() unblocks the loop cleanly. No socket is opened."""
-    import asyncio
-
     fake_stream = _FakeStream()
     feed = AlpacaRealtimeFeed(stream_factory=lambda: fake_stream)
     feed.subscribe(["SPY"])
 
     task = asyncio.create_task(feed.run())
-    # Let the loop connect + subscribe.
-    for _ in range(20):
-        if fake_stream.run_started and fake_stream.quote_handler is not None:
-            break
-        await asyncio.sleep(0.01)
+    # WAIT for readiness; don't poll for a fixed budget. This used to be
+    # `for _ in range(20): await asyncio.sleep(0.01)` — a 200ms wall-clock
+    # allowance that is plenty on an idle machine and not enough on a loaded
+    # one (caught failing while a docker build saturated the CPU). That made
+    # the test measure host scheduling latency rather than the feed. The
+    # timeout below is an upper bound for a hang, not a budget the happy path
+    # spends: readiness normally arrives in microseconds.
+    await asyncio.wait_for(fake_stream.ready.wait(), timeout=5.0)
 
     assert fake_stream.run_started
     assert "SPY" in fake_stream.subscribed
@@ -462,4 +471,4 @@ async def test_consumer_subscribes_and_stores_ticks(monkeypatch):
     assert feed.latest_quote("SPY").last == 100.5
 
     feed.stop()
-    await asyncio.wait_for(task, timeout=1.0)   # loop exits cleanly
+    await asyncio.wait_for(task, timeout=5.0)   # loop exits cleanly
