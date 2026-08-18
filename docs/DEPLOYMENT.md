@@ -66,7 +66,8 @@ Compose passes these through from the host shell or a `.env` file beside
 | `TRUST_PROXY` | `false` | Set `1` **only** behind a reverse proxy that appends real client IPs to `X-Forwarded-For`; otherwise rate-limit keying is spoofable. |
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Public URL of the app — used to build links in emails (password reset, payout status). Set to your real origin. |
 | `DATABASE_URL` | `sqlite:////app/data/dashboard.db` | See "SQLite → Postgres" below. |
-| `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | empty / `development` | Empty = error tracking fully off. |
+| `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | empty / `development` | Empty = error tracking fully off — a crash is then invisible. See "Error tracking" below. |
+| `SENTRY_RELEASE` | empty | Pins events to a deploy. Falls back to Fly's `FLY_IMAGE_REF`; without either, a regression is indistinguishable from an old bug. |
 | `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | `LOG_JSON=1` emits one JSON object per line for log aggregators. |
 | `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `ALPACA_PAPER` | empty / `true` | Required for live quotes, chains, fills. |
 | `FINNHUB_API_KEY`, `FRED_API_KEY` | empty | News / macro data. |
@@ -178,6 +179,49 @@ password-reset and payout email out with links pointing at the wrong host.
 
 - **Memory.** `[[vm]] memory = "1gb"` is not padding: pandas + numpy +
   scipy are resident from first import and 512MB OOMs during startup.
+
+## Error tracking (Sentry)
+
+Until `SENTRY_DSN` is set, **a crash is invisible**: mail is console-only, so
+a user can't tell you, and nothing else is watching. This is the cheapest
+risk reduction available before handing out invites.
+
+Setup — the DSN is the only thing you need, and it is a **secret**:
+
+1. Create a free Sentry account and a **Python / FastAPI** project.
+2. Copy the DSN it shows (`https://<key>@<org>.ingest.sentry.io/<id>`).
+3. `fly secrets set SENTRY_DSN='https://...'` — this restarts the machine.
+
+`SENTRY_ENVIRONMENT=production` is already set in `fly.toml`. Confirm it took
+by watching for the startup line, which reports the release it tagged:
+
+```bash
+fly logs | grep "sentry initialised"
+# sentry initialised (env=production release=<image ref>)
+```
+
+**What you get for free.** Scheduled-job failures are the reason this
+matters, and they arrive without extra wiring: `run_logged` re-raises,
+APScheduler logs the exception at ERROR, and the SDK's default logging
+integration promotes ERROR records to events. So a settlement, billing
+renewal, or nightly backup that dies at 3am becomes an issue in Sentry
+rather than a line in an untailed log. That chain is indirect enough to
+break quietly, so `backend/tests/test_sentry_wiring.py` pins it.
+
+**Release tagging.** `release` falls back to Fly's `FLY_IMAGE_REF` when
+`SENTRY_RELEASE` is unset, so each deploy is distinguishable and a
+regression can be pinned to the build that introduced it.
+
+**PII.** `send_default_pii=False`, and a `before_send` hook scrubs
+`Cookie` / `Set-Cookie` / `Authorization` / `X-API-Key` before anything
+leaves the process — an error report is never worth leaking a live session
+token. `User-Agent` and the path survive, since those are what let you
+reproduce the failure.
+
+**Still missing after this:** Sentry catches crashes, not silence. A machine
+that is up but wedged, or one that never restarted after an OOM, produces no
+events. An external uptime check against `/health` is the complement — it
+returns 200 only when the database answers.
 
 ## Invite-only launch
 

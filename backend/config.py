@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     sentry_environment: str = "development"
     # Fraction of transactions traced for performance monitoring (0 = off).
     sentry_traces_sample_rate: float = 0.0
+    # Release identifier, so an error can be pinned to the deploy that
+    # introduced it — without it every event looks like it came from the same
+    # build and a regression is indistinguishable from a long-standing bug.
+    # Left blank, main.py falls back to Fly's FLY_IMAGE_REF.
+    sentry_release: str = ""
 
     # CORS allowlist. Comma-separated origins in .env (CORS_ALLOW_ORIGINS);
     # defaults to the Vite dev server so local dev keeps working with no

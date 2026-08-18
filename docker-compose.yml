@@ -51,9 +51,10 @@ services:
       - FRONTEND_BASE_URL
       - LOG_LEVEL
       - LOG_JSON
-      # error tracking
+      # error tracking (unset = off; a crash is then invisible)
       - SENTRY_DSN
       - SENTRY_ENVIRONMENT
+      - SENTRY_RELEASE
       # back office / payouts
       - ADMIN_EMAILS
       - PAYOUT_AUTO_APPROVE
