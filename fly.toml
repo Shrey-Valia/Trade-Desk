@@ -39,6 +39,10 @@ primary_region = "iad"
   PAYOUT_AUTO_APPROVE = "0"
   KYC_AUTO_VERIFY = "0"
   BACKUP_RETENTION_DAYS = "14"
+  # Tags events so a staging app can share the Sentry project without
+  # polluting production's issue list. The DSN itself is a SECRET —
+  # `fly secrets set SENTRY_DSN=...` — never inlined here.
+  SENTRY_ENVIRONMENT = "production"
   # Set this to your real origin once a custom domain is attached; it builds
   # the links inside password-reset and payout emails. Wrong value = dead
   # links in every email you send.

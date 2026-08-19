@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -118,13 +119,45 @@ _configure_logging()
 log = logging.getLogger("dashboard")
 
 
+_SCRUB_HEADERS = frozenset({"cookie", "set-cookie", "authorization", "x-api-key"})
+
+
+def _sentry_scrub(event: dict, _hint: dict) -> dict:
+    """Strip credential-bearing headers before an event leaves the process.
+
+    sentry-sdk already omits most PII while send_default_pii is False, but
+    this app carries session cookies, KYC legal names, tax profiles and
+    payout destinations — so the scrub is explicit and independent of that
+    default rather than trusting it not to change. Belt and braces: an
+    error report is never worth leaking a live session token into a
+    third-party dashboard.
+    """
+    headers = (event.get("request") or {}).get("headers")
+    if isinstance(headers, dict):
+        for key in list(headers):
+            if key.lower() in _SCRUB_HEADERS:
+                headers[key] = "[scrubbed]"
+    return event
+
+
 def _init_sentry() -> None:
     """Initialise Sentry error tracking — a clean no-op when unconfigured.
 
     Skips entirely when `settings.sentry_dsn` is blank (the default), so a
     dev box / CI never phones home. Also degrades gracefully if the SDK
     isn't installed: logs and moves on rather than crashing startup. The
-    FastAPI integration is auto-enabled by sentry-sdk[fastapi] on init."""
+    FastAPI integration is auto-enabled by sentry-sdk[fastapi] on init.
+
+    Scheduled-job failures arrive here for free: services/job_runs.run_logged
+    re-raises, APScheduler logs the exception at ERROR, and the SDK's default
+    logging integration turns ERROR records into events. That is the path
+    that makes a 3am settlement or backup failure visible at all, so
+    tests/test_sentry_wiring.py pins it.
+
+    `release` defaults to Fly's FLY_IMAGE_REF when SENTRY_RELEASE is unset —
+    without some release marker every event looks like the same build and a
+    fresh regression is indistinguishable from an old bug.
+    """
     if not settings.sentry_dsn:
         log.info("sentry_dsn unset; error tracking disabled")
         return
@@ -133,12 +166,24 @@ def _init_sentry() -> None:
     except ImportError:
         log.warning("SENTRY_DSN set but sentry-sdk not installed; skipping")
         return
+    release = settings.sentry_release or os.environ.get("FLY_IMAGE_REF") or None
     sentry_sdk.init(
         dsn=settings.sentry_dsn,
         environment=settings.sentry_environment,
         traces_sample_rate=settings.sentry_traces_sample_rate,
+        release=release,
+        # Which machine emitted it — Fly runs one, but a restart loop is much
+        # easier to read when the events are attributable.
+        server_name=os.environ.get("FLY_MACHINE_ID") or None,
+        # Never attach user identity / request bodies automatically.
+        send_default_pii=False,
+        before_send=_sentry_scrub,
     )
-    log.info("sentry initialised (env=%s)", settings.sentry_environment)
+    log.info(
+        "sentry initialised (env=%s release=%s)",
+        settings.sentry_environment,
+        release or "unset",
+    )
 
 
 @asynccontextmanager
