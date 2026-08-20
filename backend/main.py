@@ -8,17 +8,19 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
 from config import settings
-from database import init_db
+from database import get_session, init_db
 from services.job_runs import run_logged
 from services.rate_limit import _client_ip, global_limiter
 from jobs.backup_db import backup_db, backup_db_if_stale
@@ -118,11 +120,14 @@ def _configure_logging() -> None:
 _configure_logging()
 log = logging.getLogger("dashboard")
 
+# Wall-clock process start, for /health's scheduler-staleness grace window.
+_PROCESS_STARTED_AT = time.time()
+
 
 _SCRUB_HEADERS = frozenset({"cookie", "set-cookie", "authorization", "x-api-key"})
 
 
-def _sentry_scrub(event: dict, _hint: dict) -> dict:
+def _sentry_scrub(event: Any, _hint: Any) -> Any:
     """Strip credential-bearing headers before an event leaves the process.
 
     sentry-sdk already omits most PII while send_default_pii is False, but
@@ -585,29 +590,79 @@ app.include_router(support_router.router)
 app.include_router(notifications_router.router)
 
 
-@app.get("/health")
-def health() -> JSONResponse:
-    """Liveness + DB readiness. Probes a `SELECT 1` so a healthy 200 means
-    the app can actually reach its database, not merely that the process is
-    up. DB-down → 503 with status "degraded" so a load balancer pulls the
-    box. Exempt from the global rate limit (see _RATE_LIMIT_EXEMPT_PATHS)."""
-    from sqlalchemy import text
+def _scheduler_health(session) -> str:
+    """"ok" | "stale" | "unknown" | "off" — is the in-process scheduler alive?
 
-    from database import engine
+    THE failure this exists for: the process answers HTTP perfectly while the
+    APScheduler thread is dead. Liveness and a `SELECT 1` both pass, so an
+    uptime check goes green while billing renewals, combine settlement, EOD
+    settlement and the nightly backup have silently stopped. The only
+    evidence available from outside is that nothing has written a JobRun row
+    in a while.
+
+    Two deliberate non-alarms:
+      * "unknown" when no JobRun rows exist at all — a fresh database, not a
+        fault. Reporting stale here would 503 every first boot.
+      * a startup grace of one full window: the process must have been up
+        LONGER than the staleness window before silence can mean anything.
+        Without it a restart inside the window looks like a dead scheduler.
+    """
+    window = settings.health_scheduler_stale_s
+    if window <= 0:
+        return "off"
+    if (time.time() - _PROCESS_STARTED_AT) < window:
+        return "ok"
+    try:
+        from sqlalchemy import func, select
+
+        from models.job_run import JobRun
+
+        newest = session.execute(select(func.max(JobRun.started_at))).scalar()
+    except Exception:  # noqa: BLE001 — a health probe must never raise
+        log.exception("/health scheduler check failed")
+        return "unknown"
+    if newest is None:
+        return "unknown"
+    # started_at comes back tz-aware — database.UTCDateTime stamps UTC on
+    # every result — so .timestamp() is exact and no tz constant is needed.
+    age = time.time() - newest.timestamp()
+    return "ok" if age <= window else "stale"
+
+
+@app.get("/health")
+def health(session: Session = Depends(get_session)) -> JSONResponse:
+    """Liveness + DB readiness + scheduler liveness.
+
+    A healthy 200 means the app can reach its database AND the in-process
+    scheduler has run something recently — not merely that the process is up.
+    Either failing → 503 "degraded" so a load balancer pulls the box, Fly
+    restarts the machine (which is the right remediation for a dead
+    scheduler thread), and an external uptime check actually fires. Exempt
+    from the global rate limit (see _RATE_LIMIT_EXEMPT_PATHS).
+
+    Intentionally says nothing about WHICH job is late: this endpoint is
+    unauthenticated. Job-level detail lives behind the admin jobs view.
+    """
+    from sqlalchemy import text
 
     db_ok = True
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        session.execute(text("SELECT 1"))
     except Exception:  # noqa: BLE001
         db_ok = False
         log.exception("/health DB check failed")
 
+    # Same session as the probe above: one connection per health check, and
+    # it honours the get_session dependency override (a self-built
+    # SessionLocal would silently read a DIFFERENT database under test).
+    scheduler = _scheduler_health(session)
+    ok = db_ok and scheduler != "stale"
     body = {
-        "status": "ok" if db_ok else "degraded",
+        "status": "ok" if ok else "degraded",
         "database": "up" if db_ok else "down",
+        "scheduler": scheduler,
     }
-    return JSONResponse(status_code=200 if db_ok else 503, content=body)
+    return JSONResponse(status_code=200 if ok else 503, content=body)
 
 
 def _safe_spa_file(dist: "Path", spa_path: str):

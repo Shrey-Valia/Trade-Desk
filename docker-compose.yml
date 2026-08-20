@@ -51,6 +51,9 @@ services:
       - FRONTEND_BASE_URL
       - LOG_LEVEL
       - LOG_JSON
+      # /health 503s when no scheduled job has run in this window — the only
+      # external signal that the in-process scheduler died. 0 disables.
+      - HEALTH_SCHEDULER_STALE_S
       # error tracking (unset = off; a crash is then invisible)
       - SENTRY_DSN
       - SENTRY_ENVIRONMENT

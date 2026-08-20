@@ -1,0 +1,75 @@
+# Uptime check — polls /health and fails the run when the app is unhealthy.
+#
+# GitHub emails the repo owner on a failed scheduled run, so this needs no
+# third-party account and costs nothing. Read the LIMITS below before relying
+# on it as your only monitor.
+#
+# Setup: add a repository VARIABLE named HEALTH_URL (Settings -> Secrets and
+# variables -> Actions -> Variables), e.g.
+#     HEALTH_URL = https://trade-desk.fly.dev/health
+# Until that variable exists every run exits 0 with a skip notice, so merging
+# this before the first deploy is harmless.
+#
+# LIMITS — be honest about what this is:
+#   * Cron granularity is 5 minutes MINIMUM and GitHub delays scheduled runs
+#     under load, sometimes by 10+ minutes. This detects "down for a while",
+#     not "down for 30 seconds".
+#   * Scheduled workflows are DISABLED automatically after 60 days without
+#     repo activity. A quiet month silently turns the monitor off.
+#   * Notification is a workflow-failure email — no SMS, no escalation, no
+#     on-call rotation.
+# A free tier of a real monitor (UptimeRobot, Better Stack, Healthchecks.io)
+# beats this on every one of those axes. This exists because it works today,
+# in-repo, with no signup.
+
+name: Uptime
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  # So you can prove it works without waiting for the cron.
+  workflow_dispatch:
+
+# Never pile up: a slow probe must not stack behind the next tick.
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe /health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe
+        env:
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+        run: |
+          set -uo pipefail
+          if [ -z "${HEALTH_URL}" ]; then
+            echo "::notice::HEALTH_URL variable not set — nothing deployed yet, skipping."
+            exit 0
+          fi
+
+          # Three attempts, 20s apart: one dropped connection or a deploy
+          # restart is not an outage, and a monitor that pages on single
+          # blips gets muted.
+          for attempt in 1 2 3; do
+            body=$(curl -fsS --max-time 15 "${HEALTH_URL}" 2>/dev/null) && rc=0 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "attempt ${attempt}: ${body}"
+              # /health returns 200 only when the DB answers AND the
+              # scheduler has run recently, so a 200 is the whole assertion.
+              echo "::notice::healthy — ${body}"
+              exit 0
+            fi
+            echo "attempt ${attempt} failed (curl rc=${rc})"
+            [ "$attempt" -lt 3 ] && sleep 20
+          done
+
+          # Surface the final status line and body to make the failure email
+          # diagnosable without opening a shell.
+          echo "--- final attempt, full response ---"
+          curl -sS -i --max-time 15 "${HEALTH_URL}" || true
+          echo "::error::${HEALTH_URL} unhealthy after 3 attempts over ~40s"
+          exit 1
