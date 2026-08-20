@@ -67,6 +67,7 @@ Compose passes these through from the host shell or a `.env` file beside
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Public URL of the app — used to build links in emails (password reset, payout status). Set to your real origin. |
 | `DATABASE_URL` | `sqlite:////app/data/dashboard.db` | See "SQLite → Postgres" below. |
 | `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | empty / `development` | Empty = error tracking fully off — a crash is then invisible. See "Error tracking" below. |
+| `HEALTH_SCHEDULER_STALE_S` | `900` | `/health` 503s when no scheduled job has recorded a run in this many seconds — the only external signal that the in-process scheduler died. `0` disables. |
 | `SENTRY_RELEASE` | empty | Pins events to a deploy. Falls back to Fly's `FLY_IMAGE_REF`; without either, a regression is indistinguishable from an old bug. |
 | `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | `LOG_JSON=1` emits one JSON object per line for log aggregators. |
 | `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `ALPACA_PAPER` | empty / `true` | Required for live quotes, chains, fills. |
@@ -218,10 +219,64 @@ leaves the process — an error report is never worth leaking a live session
 token. `User-Agent` and the path survive, since those are what let you
 reproduce the failure.
 
-**Still missing after this:** Sentry catches crashes, not silence. A machine
-that is up but wedged, or one that never restarted after an OOM, produces no
-events. An external uptime check against `/health` is the complement — it
-returns 200 only when the database answers.
+**Sentry catches crashes, not silence.** A machine that is up but wedged, or
+one that never restarted after an OOM, produces no events at all. That is
+what the uptime check below is for — the two are complements, not
+alternatives.
+
+## Uptime check
+
+`/health` returns 200 only when **both** hold:
+
+- the database answers a `SELECT 1`, and
+- some scheduled job has recorded a run within `HEALTH_SCHEDULER_STALE_S`
+  (default 900s).
+
+That second condition is the one worth understanding. A plain liveness probe
+cannot see the failure that actually costs money: the process answering HTTP
+perfectly while the in-process APScheduler thread is dead, so billing
+renewals, combine settlement, EOD settlement and the nightly backup have
+silently stopped. Nothing user-visible breaks for hours. Since every job
+writes a `job_runs` row, total silence is the one externally observable
+symptom — so `/health` degrades to 503 on it, which makes Fly restart the
+machine (the correct remediation for a dead thread) and makes any external
+monitor fire.
+
+Two deliberate non-alarms: an empty `job_runs` table reports `unknown`, not
+stale (a fresh database is not a fault), and there is a startup grace of one
+full window (a restart inside the window must not look like a dead
+scheduler). A check that cries wolf gets muted, which is worse than no check.
+
+The endpoint is unauthenticated, so it never names which job is late —
+job-level detail lives behind **Admin → Jobs**.
+
+### The monitor
+
+`.github/workflows/uptime.yml` polls it every 10 minutes and fails the run
+when unhealthy; GitHub emails you on a failed scheduled run. Enable it by
+adding a repository **variable** (not a secret) under Settings → Secrets and
+variables → Actions → Variables:
+
+```
+HEALTH_URL = https://trade-desk.fly.dev/health
+```
+
+Until that variable exists, every run exits 0 with a skip notice — safe to
+merge before the first deploy. `workflow_dispatch` is enabled so you can
+prove it works without waiting for the cron. It retries 3× over ~40s, so a
+single dropped connection or a deploy restart is not treated as an outage.
+
+**Know what this is not.** GitHub cron granularity is 5 minutes minimum and
+scheduled runs are frequently delayed 10+ minutes under load, so this
+detects "down for a while", not "down for 30 seconds". Scheduled workflows
+are also **disabled automatically after 60 days of repo inactivity** — a
+quiet month silently turns the monitor off. And the only notification is a
+workflow-failure email: no SMS, no escalation.
+
+A free tier of a real monitor (UptimeRobot, Better Stack, Healthchecks.io)
+beats it on every one of those axes and takes about five minutes to point at
+the same URL. Do that when the beta has real users; the workflow is what
+works today with no signup.
 
 ## Invite-only launch
 

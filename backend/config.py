@@ -94,6 +94,17 @@ class Settings(BaseSettings):
     sentry_environment: str = "development"
     # Fraction of transactions traced for performance monitoring (0 = off).
     sentry_traces_sample_rate: float = 0.0
+    # /health scheduler-liveness window, seconds. A plain liveness probe
+    # cannot see the failure that actually costs money: the process up and
+    # answering while the in-process APScheduler thread is dead, so billing
+    # renewals, settlement and the nightly backup silently stop. /health
+    # therefore also checks how long it has been since ANY scheduled job
+    # recorded a run, and degrades to 503 past this window. Generous by
+    # design — the fastest job runs every few seconds, so 15 minutes of
+    # total silence is unambiguous rather than a slow-job false alarm.
+    # Set 0 to disable the check (status then reports "off").
+    health_scheduler_stale_s: int = 900
+
     # Release identifier, so an error can be pinned to the deploy that
     # introduced it — without it every event looks like it came from the same
     # build and a regression is indistinguishable from a long-standing bug.
