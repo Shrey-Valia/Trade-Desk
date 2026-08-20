@@ -77,7 +77,7 @@ Compose passes these through from the host shell or a `.env` file beside
 | `INVITE_DEFAULT_TTL_DAYS` | `14` | TTL the admin mint form pre-fills. `0` = codes never expire. |
 | `PAYOUT_AUTO_APPROVE` | `true` | Set `0` to require a human on every payout (the real-firm posture). |
 | `MAIL_PROVIDER` | `console` | `console` logs mail to stdout; `smtp` sends via the `SMTP_*` settings. |
-| `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS` | see `backend/config.py` | Only used when `MAIL_PROVIDER=smtp`. |
+| `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS`, `SMTP_SSL` | see `backend/config.py` | Only used when `MAIL_PROVIDER=smtp`. `SMTP_SSL=1` for implicit TLS (port 465) instead of STARTTLS (587). **`MAIL_FROM` must be a real domain** — the transport refuses to start otherwise. See "Transactional email" below. |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_50K/100K/150K` | empty | Opt-in; payments stay simulated while unset. |
 | `BACKUP_RETENTION_DAYS` | `14` | Nightly-backup retention window. |
 | `ALLOW_LEGACY_TRADE_WIPE` | `false` | **Leave unset.** See "restored pre-tier backup" below. |
@@ -277,6 +277,68 @@ A free tier of a real monitor (UptimeRobot, Better Stack, Healthchecks.io)
 beats it on every one of those axes and takes about five minutes to point at
 the same URL. Do that when the beta has real users; the workflow is what
 works today with no signup.
+
+## Transactional email (real SMTP)
+
+While `MAIL_PROVIDER=console` (the default) mail is only **logged**. Password
+resets still "work", but recovering a locked-out user means grepping the
+token out of `fly logs` — there is no admin password-reset endpoint. That is
+survivable for a handful of invitees and not past that.
+
+### Setup
+
+1. Pick a provider and verify a sending domain (Resend, Postmark, SES,
+   Mailgun — any of them speaks SMTP). **Verifying the domain, i.e. adding
+   the SPF and DKIM DNS records they give you, is the step that decides
+   whether mail lands in an inbox or a spam folder.** It is not optional.
+2. Set the secrets — password and host are secrets, the rest is config:
+
+   ```bash
+   fly secrets set \
+     MAIL_PROVIDER=smtp \
+     MAIL_FROM='Trade Desk <no-reply@yourdomain.com>' \
+     SMTP_HOST=smtp.provider.com \
+     SMTP_PORT=587 \
+     SMTP_USERNAME=... \
+     SMTP_PASSWORD=...
+   ```
+
+   For a provider on port **465**, add `SMTP_SSL=1` (implicit TLS) instead of
+   relying on STARTTLS.
+
+3. **Prove it before trusting a password reset to it:**
+
+   ```bash
+   backend/.venv/bin/python backend/scripts/send_test_email.py you@yourdomain.com
+   ```
+
+   It prints the resolved config (credentials shown only as set/unset),
+   sends one real message, and names the likely cause on failure. **Check the
+   spam folder too** — a message that arrives but is filtered is a failure,
+   and it is the most likely outcome of a sending domain without SPF/DKIM.
+
+### What the transport guarantees
+
+- **`MAIL_FROM` must be routable.** The transport refuses to start on the
+  shipped `@tradedesk.local` default (or `.invalid` / `.example` / `.test` /
+  no domain at all). A real provider cannot deliver an unroutable From, so
+  the alternative was every reset silently vanishing with no error anywhere.
+  The refusal surfaces as a loud job failure — visible in Sentry and
+  **Admin → Jobs** — and leaves the mail queued rather than marking it dead.
+- **Messages are RFC-valid.** `Date` and `Message-ID` are set explicitly.
+  smtplib adds neither, so mail previously went out without a `Date` — which
+  RFC 5322 requires and which spam filters score heavily.
+- **Retries survive an outage.** A transient failure is retried on a backoff
+  of roughly 1m / 5m / 20m / 1h / 3h — about 4.5 hours across five attempts,
+  rather than the ~2.5 minutes the old 30s job cadence allowed. A brief
+  provider incident no longer permanently drops a queued password reset.
+- **Permanent refusals fail fast.** An SMTP 5xx (bad mailbox, rejected
+  message) goes terminal on the first attempt instead of pretending for
+  hours that it might land.
+
+Queued mail lives in `email_outbox`; `jobs/send_outbox.py` drains it every
+30s. A row that goes `failed` is terminal — the log line and `last_error`
+say why.
 
 ## Invite-only launch
 

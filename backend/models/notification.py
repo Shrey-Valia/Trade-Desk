@@ -39,6 +39,13 @@ class EmailOutbox(Base):
     status: Mapped[str] = mapped_column(String(12), nullable=False, default="queued")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Earliest time the drain may retry this row. NULL = eligible now.
+    # Without it, retries fire at the job's 30s cadence and the attempt cap
+    # is exhausted ~2.5 minutes after the first failure — so a brief provider
+    # outage would PERMANENTLY drop a password reset.
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
         nullable=False,
