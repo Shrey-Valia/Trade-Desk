@@ -303,6 +303,11 @@ class Settings(BaseSettings):
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_starttls: bool = True
+    # Implicit TLS / SMTPS — the socket is wrapped before the greeting,
+    # which is what port 465 relays expect. Providers split roughly evenly
+    # between this and STARTTLS on 587; set SMTP_SSL=1 (and port 465) for
+    # the former. Mutually exclusive with smtp_starttls in practice.
+    smtp_ssl: bool = False
     mail_max_attempts: int = 5
     # Base URL the frontend is served from — used to build links in emails
     # (password reset, payout status).

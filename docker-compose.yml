@@ -72,6 +72,8 @@ services:
       - SMTP_USERNAME
       - SMTP_PASSWORD
       - SMTP_STARTTLS
+      # Implicit TLS instead of STARTTLS — what port-465 relays expect.
+      - SMTP_SSL
       # Stripe (opt-in; payments stay simulated while unset)
       - STRIPE_SECRET_KEY
       - STRIPE_WEBHOOK_SECRET

@@ -4,6 +4,7 @@ outbox drain job, the combine_events lifecycle notifier, and the
 
 from __future__ import annotations
 
+import smtplib
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -37,6 +38,28 @@ class FailingMailer:
     def send(self, to: str, subject: str, body: str) -> None:
         self.calls += 1
         raise RuntimeError(self.error)
+
+
+class RefusingMailer:
+    """Raises a permanent SMTP 5xx — a bad mailbox or rejected message,
+    which will refuse identically on every retry."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def send(self, to: str, subject: str, body: str) -> None:
+        self.calls += 1
+        raise smtplib.SMTPRecipientsRefused({to: (550, b"No such user")})
+
+
+def _make_due(session_factory) -> None:
+    """Clear the backoff so the next drain treats every queued row as due —
+    the test-suite equivalent of waiting out _BACKOFF."""
+    s = session_factory()
+    for row in s.execute(select(EmailOutbox)).scalars().all():
+        row.next_attempt_at = None
+    s.commit()
+    s.close()
 
 
 def _make_user(session, email: str = "notify@test.local") -> User:
@@ -145,7 +168,13 @@ def test_send_outbox_failure_retries_then_fails_at_max(session_factory, monkeypa
     assert row.last_error is not None and len(row.last_error) <= 300
     check.close()
 
-    # Attempt 2 == mail_max_attempts: terminal.
+    # A retry is NOT attempted before next_attempt_at — that spacing is the
+    # whole point of the backoff, so assert the row is genuinely skipped.
+    assert send_outbox(session_factory=session_factory) == {"sent": 0, "failed": 0}
+    assert mailer.calls == 1
+
+    # Attempt 2 == mail_max_attempts: terminal, once the backoff is due.
+    _make_due(session_factory)
     assert send_outbox(session_factory=session_factory) == {"sent": 0, "failed": 1}
     check = session_factory()
     row = check.execute(select(EmailOutbox)).scalar_one()
