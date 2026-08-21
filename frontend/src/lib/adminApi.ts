@@ -676,6 +676,34 @@ export const updateAdminTicket = (
     body: JSON.stringify(input),
   });
 
+/** A single-use password-reset link minted by an operator.
+ *
+ *  The endpoint deliberately does NOT set a password: an operator who knows
+ *  a trader's password could trade and request payouts as them, which
+ *  destroys non-repudiation. The trader completes the reset themselves.
+ *
+ *  `reset_url` is returned ONCE — only its sha256 is stored — so the UI has
+ *  to show it before the response is discarded. */
+export const AdminPasswordResetSchema = z.object({
+  user_id: z.number().int(),
+  email: z.string(),
+  reset_url: z.string(),
+  expires_at: z.string(),
+  /** Whether a copy was also queued to the user's own address. */
+  emailed: z.boolean(),
+});
+export type AdminPasswordReset = z.infer<typeof AdminPasswordResetSchema>;
+
+export const mintPasswordReset = (
+  userId: number,
+  reason?: string,
+): Promise<AdminPasswordReset> =>
+  mutateJson(
+    `/api/admin/users/${userId}/password-reset`,
+    AdminPasswordResetSchema,
+    { method: "POST", body: JSON.stringify({ reason: reason || null }) },
+  );
+
 // -- invites (the closed-launch signup gate) -----------------------------------
 
 /** services/invites.INVITE_STATES, verbatim. Status is DERIVED server-side

@@ -14,6 +14,7 @@ import {
   decideKyc,
   demoteUser,
   errorMessage,
+  mintPasswordReset,
   fetchAdminUserDetail,
   fetchAdminUsers,
   grantResetCredit,
@@ -22,6 +23,7 @@ import {
   suspendUser,
   unsuspendUser,
   type AdminCombine,
+  type AdminPasswordReset,
   type AdminPayment,
   type AdminUserDetail,
   type CombineAdjustAction,
@@ -208,6 +210,7 @@ type DrawerModal =
   | { kind: "demote" }
   | { kind: "promote" }
   | { kind: "grant" }
+  | { kind: "pwreset" }
   | { kind: "kyc_reject" }
   | { kind: "refund"; payment: AdminPayment }
   | { kind: "adjust"; combine: AdminCombine }
@@ -378,6 +381,9 @@ function DrawerBody({
             )}
             <Btn kind="ghost" disabled={pending} onClick={() => openModal({ kind: "grant" })}>
               Grant reset credit…
+            </Btn>
+            <Btn kind="ghost" disabled={pending} onClick={() => openModal({ kind: "pwreset" })}>
+              Password reset link…
             </Btn>
           </div>
         </div>
@@ -697,6 +703,23 @@ function DrawerModals({
   const [count, setCount] = useState(1);
   const [adjustAction, setAdjustAction] = useState<CombineAdjustAction>("fail");
   const [days, setDays] = useState(30);
+  // The minted link is returned ONCE (only its sha256 is stored server-side),
+  // so it has to be held here and shown until the operator dismisses it —
+  // the shared onRun path discards mutation results.
+  const [minted, setMinted] = useState<AdminPasswordReset | null>(null);
+  const [copied, setCopied] = useState(false);
+  const mint = useMutation({
+    mutationFn: () => mintPasswordReset(user.id, reason.trim() || undefined),
+    onSuccess: (data) => setMinted(data),
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+
+  const dismissMinted = () => {
+    setMinted(null);
+    setCopied(false);
+    setReason("");
+    onClose();
+  };
 
   // Reset the shared field state whenever a different modal opens.
   const kindKey = modal
@@ -709,6 +732,54 @@ function DrawerModals({
     setCount(1);
     setAdjustAction("fail");
     setDays(30);
+  }
+
+  // Shown regardless of `modal`, because the link must survive the confirm
+  // modal closing — losing it means minting another and invalidating this one.
+  if (minted) {
+    return (
+      <ActionModal
+        open
+        onClose={dismissMinted}
+        title={`Reset link for ${minted.email}`}
+        confirmLabel="Done"
+        onConfirm={dismissMinted}
+      >
+        <div className="flex flex-col gap-2">
+          <div className="text-tiny text-fg-tertiary-2">
+            Shown once — it isn't stored and can't be retrieved again. Send it
+            to the user over a channel you trust; they set their own password.
+            A copy was also queued to {minted.email}.
+          </div>
+          <input
+            readOnly
+            value={minted.reset_url}
+            onFocus={(e) => e.currentTarget.select()}
+            className={INPUT_CLS}
+            style={{ fontSize: 12 }}
+          />
+          <div className="flex items-center gap-2">
+            <Btn
+              kind="ghost"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(minted.reset_url);
+                  setCopied(true);
+                } catch {
+                  // Clipboard is permission-gated and absent over plain HTTP;
+                  // the field above is selectable, so this is a non-event.
+                }
+              }}
+            >
+              {copied ? "Copied" : "Copy link"}
+            </Btn>
+            <span className="text-tiny text-fg-tertiary-2">
+              Expires {fmtDateTime(minted.expires_at)}
+            </span>
+          </div>
+        </div>
+      </ActionModal>
+    );
   }
 
   if (modal === null) return null;
@@ -813,6 +884,31 @@ function DrawerModals({
               style={{ fontSize: 12 }}
             />
           </Field>
+          {reasonField()}
+        </ActionModal>
+      );
+    case "pwreset":
+      return (
+        <ActionModal
+          open
+          onClose={onClose}
+          title={`Mint a password-reset link for ${user.email}`}
+          description={
+            "Does NOT set a password — you get a single-use link and the user " +
+            "chooses their own. Any previous unused link stops working, and " +
+            "completing this one signs the account out everywhere. Their " +
+            "current session keeps working until they finish; to block access " +
+            "now, suspend instead."
+          }
+          confirmLabel="Mint link"
+          // The field is labelled "required, audited" — enforce it, and match
+          // every other operator action on someone else's account (suspend,
+          // demote, grant all gate on a reason). Handing out a credential is
+          // exactly the thing you want a why for six months from now.
+          disabled={!hasReason}
+          pending={mint.isPending}
+          onConfirm={() => mint.mutate()}
+        >
           {reasonField()}
         </ActionModal>
       );

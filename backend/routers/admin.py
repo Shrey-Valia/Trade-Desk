@@ -7,7 +7,8 @@ docs/P0_IMPLEMENTATION_PLAN_2026-07-14.md (workstream C2) for the contract.
 
 Surface:
   * Users     — search/detail, suspend/unsuspend, promote/demote,
-                grant-reset-credit, KYC decide.
+                grant-reset-credit, KYC decide, mint a password-reset link
+                (never sets a password — see mint_password_reset).
   * Combines  — manual fail / unfail / extend_billing adjustments.
   * Payments  — refund (reuses the Stripe webhook's refund core).
   * Payouts   — the human review queue + approve/deny/hold/resume/mark-paid
@@ -28,13 +29,15 @@ KYC legal_name + country alongside the provider decision.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -45,6 +48,7 @@ from models.combine_event import CombineEvent
 from models.invite import Invite
 from models.job_run import JobRun
 from models.kyc import KycVerification
+from models.password_reset import PasswordResetToken
 from models.payment import Payment
 from models.payout_request import PAYOUT_STATES, PayoutRequest
 from models.support_ticket import SupportTicket
@@ -73,6 +77,7 @@ from services.invites import (
     invite_status,
     mint_code,
 )
+from services.notify import enqueue_email
 from services.payout_desk import decide as payout_decide
 from services.platform_state import TRADING_MODES
 from services.pricing import BASE_MONTHLY, RESET_CREDIT_CAP, monthly_price
@@ -664,6 +669,105 @@ def grant_reset_credit(
     )
     db.commit()
     return GrantCreditOut(id=target.id, reset_credits=new, granted=new - before)
+
+
+class PasswordResetLinkOut(BaseModel):
+    user_id: int
+    email: str
+    # The RAW single-use link. Returned exactly once — only its sha256 is
+    # stored — so the console shows it and never can again.
+    reset_url: str
+    expires_at: str
+    # Whether a copy was also queued to the user's own address.
+    emailed: bool
+
+
+@router.post(
+    "/users/{user_id}/password-reset", response_model=PasswordResetLinkOut
+)
+def mint_password_reset(
+    user_id: int,
+    payload: OptionalReasonIn | None = None,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_session),
+) -> PasswordResetLinkOut:
+    """Mint a single-use password-reset link for a user and return it once.
+
+    DELIBERATELY does not set a password. An operator who knows a trader's
+    password can open positions and request payouts as them, which destroys
+    non-repudiation on a platform that moves money and makes the audit log
+    unfalsifiable. The trader completes the reset themselves; the operator
+    only ever handles a link.
+
+    Reuses the /auth/forgot machinery exactly — prior unused tokens are
+    invalidated so there is at most one live link, the raw token is returned
+    while only its sha256 is stored, and completing it revokes every session
+    for the account (routers/auth.reset_password). A copy is also queued to
+    the user's own address, which is a no-op worth having while
+    MAIL_PROVIDER=console and the point of the endpoint: an invitee whose
+    mail never arrives can be recovered by handing the link over directly.
+
+    Minting does NOT sign the user out. A live session keeps working until
+    the reset is completed — kicking someone out because an operator
+    prepared a recovery link would be a surprise. For a suspected
+    compromise, suspend the account (that is the tool that blocks access).
+
+    Resetting another ADMIN is permitted: operators legitimately recover a
+    colleague, and forbidding it buys nothing when the same admin can demote
+    the target, reset, and re-promote. It is audited like everything else.
+    """
+    target = _get_user_or_404(db, user_id)
+    db.execute(
+        delete(PasswordResetToken).where(
+            PasswordResetToken.user_id == target.id,
+            PasswordResetToken.used_at.is_(None),
+        )
+    )
+    raw = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        hours=settings.password_reset_ttl_h
+    )
+    db.add(
+        PasswordResetToken(
+            token_hash=hashlib.sha256(raw.encode("ascii")).hexdigest(),
+            user_id=target.id,
+            expires_at=expires_at,
+        )
+    )
+    link = f"{settings.frontend_base_url}/reset-password?token={raw}"
+    enqueue_email(
+        db,
+        to_email=target.email,
+        template="password_reset",
+        subject="Reset your Trade Desk password",
+        body=(
+            "An operator started a password reset for this account.\n\n"
+            f"Reset your password: {link}\n\n"
+            f"The link expires in {settings.password_reset_ttl_h:g} hours "
+            "and can be used once."
+        ),
+        user_id=target.id,
+    )
+    audit(
+        db,
+        admin,
+        "user.password_reset",
+        "user",
+        target.id,
+        # NEVER the token: an audit row is long-lived and widely readable,
+        # and the whole point of hashing at rest is defeated by logging the
+        # raw value beside it. Only that a link was minted, and until when.
+        after={"reset_link_minted": True, "expires_at": _iso(expires_at)},
+        reason=payload.reason if payload else None,
+    )
+    db.commit()
+    return PasswordResetLinkOut(
+        user_id=target.id,
+        email=target.email,
+        reset_url=link,
+        expires_at=_iso(expires_at) or "",
+        emailed=True,
+    )
 
 
 class KycDecideIn(BaseModel):
