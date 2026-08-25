@@ -280,10 +280,11 @@ works today with no signup.
 
 ## Transactional email (real SMTP)
 
-While `MAIL_PROVIDER=console` (the default) mail is only **logged**. Password
-resets still "work", but recovering a locked-out user means grepping the
-token out of `fly logs` — there is no admin password-reset endpoint. That is
-survivable for a handful of invitees and not past that.
+While `MAIL_PROVIDER=console` (the default) mail is only **logged**, so a
+locked-out user can't self-serve recovery. The stopgap is **Admin → Users →
+_user_ → Password reset link…**, which mints a single-use link you hand over
+directly (see "Recovering a locked-out user" below). Real SMTP is still what
+you want before the beta grows.
 
 ### Setup
 
@@ -339,6 +340,35 @@ survivable for a handful of invitees and not past that.
 Queued mail lives in `email_outbox`; `jobs/send_outbox.py` drains it every
 30s. A row that goes `failed` is terminal — the log line and `last_error`
 say why.
+
+## Recovering a locked-out user
+
+**Admin → Users → _the user_ → Password reset link…** mints a single-use
+link, shows it once, and queues a copy to the user's own address. Send it
+over any channel you trust; they choose their own password.
+
+It deliberately **does not set a password.** An operator who knows a
+trader's password can open positions and request payouts as them — that
+destroys non-repudiation on a platform that moves money and makes the audit
+log unfalsifiable. The operator only ever handles a link.
+
+Worth knowing before you use it:
+
+- **The link is shown exactly once.** Only its sha256 is stored, so it
+  cannot be retrieved later. Minting a replacement invalidates the previous
+  one — there is at most one live link per account.
+- **It expires** after `PASSWORD_RESET_TTL_H` (default 2 hours).
+- **Minting does not sign the user out.** Their current session keeps
+  working until they complete the reset. To block access right now,
+  **suspend** the account instead — that is the tool for a suspected
+  compromise.
+- **Completing the reset revokes every session** for that account.
+- **A reason is required** and lands in the audit log. The raw token never
+  does — an audit row is long-lived and widely readable, and logging the
+  token beside a hashed column would defeat hashing it.
+- Resetting another **admin** is allowed: operators legitimately recover a
+  colleague, and forbidding it buys nothing when the same admin could
+  demote, reset, and re-promote. It is audited like everything else.
 
 ## Invite-only launch
 
