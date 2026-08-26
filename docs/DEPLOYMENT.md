@@ -80,6 +80,9 @@ Compose passes these through from the host shell or a `.env` file beside
 | `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS`, `SMTP_SSL` | see `backend/config.py` | Only used when `MAIL_PROVIDER=smtp`. `SMTP_SSL=1` for implicit TLS (port 465) instead of STARTTLS (587). **`MAIL_FROM` must be a real domain** — the transport refuses to start otherwise. See "Transactional email" below. |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_50K/100K/150K` | empty | Opt-in; payments stay simulated while unset. |
 | `BACKUP_RETENTION_DAYS` | `14` | Nightly-backup retention window. |
+| `BACKUP_OFFSITE_PROVIDER` | `none` | `none` = backups never leave the volume they are protecting. `s3` = mirror every nightly snapshot to an S3-compatible bucket. See "Offsite copies" below. |
+| `BACKUP_S3_BUCKET`, `BACKUP_S3_REGION`, `BACKUP_S3_ENDPOINT_URL`, `BACKUP_S3_PREFIX`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | empty / `auto` / empty / `backups/` / empty / empty | Only used when `BACKUP_OFFSITE_PROVIDER=s3`, and then **all of bucket/region/keys are required** — an incomplete set fails the backup job instead of silently not replicating. Leave the endpoint blank for bare AWS S3; set it for R2/B2/MinIO. |
+| `BACKUP_OFFSITE_RETENTION_DAYS` | `0` | `0` = the app never deletes a remote object (prefer a bucket lifecycle rule, whose blast radius isn't this process). A positive value enables app-side pruning, which still always keeps the newest 3 snapshots. |
 | `ALLOW_LEGACY_TRADE_WIPE` | `false` | **Leave unset.** See "restored pre-tier backup" below. |
 
 Full list with inline docs: `backend/config.py`.
@@ -403,13 +406,74 @@ ADMIN_EMAILS=["you@yourdomain.com"]   # you need the console to mint codes
 `dashboard-YYYYMMDD-HHMMSS.db` (UTC stamp) into `/app/data/backups` using
 sqlite3's online-backup API — safe against concurrent writers, always a
 consistent snapshot. Files older than `BACKUP_RETENTION_DAYS` are pruned on
-each run. Job outcomes are visible in the admin jobs-health view (`job_runs`).
+each run, and the snapshot is mirrored offsite when a provider is
+configured (below). Job outcomes are visible in the admin jobs-health view
+(`job_runs`).
 
-Copy backups off the box regularly — the volume is not offsite storage:
+### Offsite copies (the volume is not a backup)
+
+`/app/data/backups` sits on **the same Fly volume as the live database**.
+Losing that volume — hardware, a region incident, a mistaken `fly volumes
+destroy` — takes the database and every backup of it in one step. Fly volume
+snapshots don't fix this either: 5-day retention, same provider, same region,
+and nothing you have ever restored from.
+
+Set `BACKUP_OFFSITE_PROVIDER=s3` and the nightly job mirrors each snapshot to
+an S3-compatible bucket right after writing it locally. Works with Cloudflare
+R2, Backblaze B2, MinIO, or AWS S3. Setup with R2 (cheapest for this: no
+egress fees, and the free tier covers a database this size):
+
+1. Create a bucket, then an **R2 API token scoped to that bucket only** with
+   Object Read & Write. Note the account ID from the endpoint R2 shows you.
+2. Set the secrets (all in one command — a partial set fails the job):
+
+   ```bash
+   fly secrets set \
+     BACKUP_OFFSITE_PROVIDER=s3 \
+     BACKUP_S3_BUCKET=trade-desk-backups \
+     BACKUP_S3_REGION=auto \
+     BACKUP_S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com \
+     BACKUP_S3_ACCESS_KEY_ID=<token-id> \
+     BACKUP_S3_SECRET_ACCESS_KEY=<token-secret>
+   ```
+
+   R2 requires the literal `auto` region. AWS and B2 need their real region,
+   and for bare AWS leave `BACKUP_S3_ENDPOINT_URL` unset.
+3. **Don't wait for 02:30 ET to find out whether it works.** Force one now
+   and then verify from the other end:
+
+   ```bash
+   fly ssh console -C "/app/backend/.venv/bin/python /app/backend/scripts/offsite_backup_check.py put"
+   fly ssh console -C "/app/backend/.venv/bin/python /app/backend/scripts/offsite_backup_check.py list"
+   ```
+
+   `list` prints every remote snapshot with its age and exits non-zero when
+   the newest is older than `--max-age-h` (default 48), so the same command
+   doubles as a monitor check.
+4. Set a bucket **lifecycle rule** for retention (e.g. delete after 90 days)
+   and leave `BACKUP_OFFSITE_RETENTION_DAYS=0`. App-side pruning exists
+   (`BACKUP_OFFSITE_RETENTION_DAYS=N`) and refuses to delete the newest 3
+   snapshots whatever their age, but a lifecycle rule can't be triggered by a
+   bug in this process.
+
+**A failed upload fails the whole `backup_db` job**, on purpose: the local
+snapshot and both prunes have already happened by then, so the only thing
+left to report is that the copy which survives losing the volume didn't
+happen. A green job next to an empty bucket is the failure this feature
+exists to prevent. The error in Admin → Jobs leads with `LOCAL snapshot
+… OK; OFFSITE copy FAILED — …`, so a red row doesn't mean there is no
+backup at all.
+
+**Run the restore drill.** A backup nobody has ever restored is not a
+backup:
 
 ```bash
-docker compose cp app:/app/data/backups ./offsite-backups
+backend/.venv/bin/python backend/scripts/offsite_backup_check.py restore /tmp/restored.db
 ```
+
+That downloads the newest remote snapshot, runs `PRAGMA integrity_check` on
+it and prints row counts for `users` / `combines` / `trades`. Do it once at
+setup and after any change to the bucket, credentials or prefix.
 
 **Restore procedure** (SQLite):
 
@@ -442,7 +506,8 @@ DATABASE_URL=postgresql+psycopg://user:pass@host:5432/trade
 boot (CI proves this against postgres:16 on every push). Pool knobs
 (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_RECYCLE_S`) exist in
 `backend/config.py`; SQLite ignores them. The nightly `backup_db` job
-no-ops on Postgres — use `pg_dump` / managed snapshots instead. The
+no-ops on Postgres — use `pg_dump` / managed snapshots instead, and note
+that offsite mirroring rides on that job, so it no-ops too. The
 single-replica constraint **still applies** on Postgres: it's the
 scheduler, not the database, that forbids replicas.
 

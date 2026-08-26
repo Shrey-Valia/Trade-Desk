@@ -83,6 +83,17 @@ services:
       # backups / migration escape hatch
       - BACKUP_RETENTION_DAYS
       - ALLOW_LEGACY_TRADE_WIPE
+      # Offsite backup mirroring (unset = off, nothing leaves this volume —
+      # which is the same volume the database lives on). See "Offsite copies"
+      # in docs/DEPLOYMENT.md.
+      - BACKUP_OFFSITE_PROVIDER
+      - BACKUP_S3_BUCKET
+      - BACKUP_S3_REGION
+      - BACKUP_S3_ENDPOINT_URL
+      - BACKUP_S3_PREFIX
+      - BACKUP_S3_ACCESS_KEY_ID
+      - BACKUP_S3_SECRET_ACCESS_KEY
+      - BACKUP_OFFSITE_RETENTION_DAYS
       # Postgres opt-in. Deliberately NOT a bare `- DATABASE_URL`
       # passthrough: this repo's dev .env sets a RELATIVE sqlite path
       # (sqlite:///./data/dashboard.db, correct when the backend runs with

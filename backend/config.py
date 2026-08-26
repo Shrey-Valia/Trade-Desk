@@ -328,6 +328,36 @@ class Settings(BaseSettings):
     allow_legacy_trade_wipe: bool = False
 
     # ---------------------------------------------------------------------
+    # OFFSITE backup replication. backup_dir lives on the SAME volume as the
+    # live SQLite database (both default under PROJECT_ROOT/data, /app/data
+    # in the image), so local backups share their failure domain with the
+    # thing they protect. Setting a provider mirrors each nightly snapshot to
+    # object storage. "none" (default) = off, nothing is sent anywhere;
+    # "s3" = any S3-compatible bucket (Cloudflare R2, Backblaze B2, MinIO,
+    # AWS S3) — see services/offsite_backup.py and docs/DEPLOYMENT.md.
+    #
+    # With provider="s3" an INCOMPLETE configuration is a loud error, not a
+    # skip: a backup that silently stopped replicating is the exact failure
+    # this exists to catch.
+    backup_offsite_provider: str = "none"
+    backup_s3_bucket: str = ""
+    # R2 requires the literal "auto"; AWS and B2 need their real region.
+    backup_s3_region: str = "auto"
+    # Empty = bare AWS S3 (virtual-hosted addressing). Set to the provider's
+    # endpoint (e.g. https://<account>.r2.cloudflarestorage.com) for anything
+    # else, which switches to path-style addressing.
+    backup_s3_endpoint_url: str = ""
+    backup_s3_prefix: str = "backups/"
+    backup_s3_access_key_id: str = ""
+    backup_s3_secret_access_key: str = ""
+    backup_offsite_timeout_s: float = 60.0
+    # Remote retention. 0 (default) = the app NEVER deletes an offsite
+    # object; prefer a bucket lifecycle rule, whose blast radius is not this
+    # process. A positive value enables app-side pruning, which additionally
+    # always keeps the newest few snapshots (see prune_remote).
+    backup_offsite_retention_days: int = 0
+
+    # ---------------------------------------------------------------------
     # Trading-universe + quote-quality enforcement on the OPEN path.
     # enforce_tradeable_universe gates opens to zero_dte_universe (minus any
     # platform_state symbol bans); the quote-quality gate refuses option legs
