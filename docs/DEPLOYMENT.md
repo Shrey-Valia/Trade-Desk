@@ -75,7 +75,8 @@ Compose passes these through from the host shell or a `.env` file beside
 | `ADMIN_EMAILS` | `[]` | JSON array; listed emails are auto-promoted to admin at signin — the bootstrap for the first operator seat. |
 | `SIGNUP_REQUIRE_INVITE` | `false` | `1` closes signup: `POST /api/auth/signup` then demands a valid invite code. See "Invite-only launch" below. |
 | `INVITE_DEFAULT_TTL_DAYS` | `14` | TTL the admin mint form pre-fills. `0` = codes never expire. |
-| `PAYOUT_AUTO_APPROVE` | `true` | Set `0` to require a human on every payout (the real-firm posture). |
+| `PAYOUT_AUTO_APPROVE` | **follows `APP_ENV`** — off in production, on in dev | Unset is the safe answer: in production a payout waits for a human. Setting `1` in production restores unattended approval on a timer with `reviewer_id=None`, and the preflight warns about it every boot. |
+| `KYC_AUTO_VERIFY` | **follows `APP_ENV`** — off in production, on in dev | Unset is the safe answer: submissions park at `pending` for an admin decision. `1` restores the simulated instant-verify provider. |
 | `MAIL_PROVIDER` | `console` | `console` logs mail to stdout; `smtp` sends via the `SMTP_*` settings. |
 | `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS`, `SMTP_SSL` | see `backend/config.py` | Only used when `MAIL_PROVIDER=smtp`. `SMTP_SSL=1` for implicit TLS (port 465) instead of STARTTLS (587). **`MAIL_FROM` must be a real domain** — the transport refuses to start otherwise. See "Transactional email" below. |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_50K/100K/150K` | empty | Opt-in; payments stay simulated while unset. |
@@ -398,6 +399,67 @@ Two things to know before flipping it:
 ```bash
 SIGNUP_REQUIRE_INVITE=1
 ADMIN_EMAILS=["you@yourdomain.com"]   # you need the console to mint codes
+```
+
+## Configuration preflight
+
+Every serious near-miss this project has had came from configuration, not
+code: the demo dry-run nearly died on an empty `ADMIN_EMAILS`, the container
+smoke test found the session cookie shipping without `Secure` because compose
+had erased `APP_ENV`, and `MAIL_FROM` defaulted to an unroutable `.local`
+domain. In each case the app booted happily and looked fine.
+
+So `APP_ENV=production` now runs a preflight at startup
+(`backend/services/preflight.py`) that reports every setting whose value means
+something different in a deployment than it does on a laptop. Read it in
+`fly logs` right after a deploy:
+
+```
+WARNING preflight: 5 production configuration warning(s) —
+  [WARN] SIGNUP_REQUIRE_INVITE: off, so POST /api/auth/signup is open to the public internet → …
+  [WARN] MAIL_PROVIDER: 'console': every transactional mail is written to stdout instead of sent → …
+  [WARN] SENTRY_DSN: unset, so an unhandled exception — including a scheduled job dying — is invisible → …
+  [WARN] BACKUP_OFFSITE_PROVIDER: 'none': nightly backups are written beside the live database → …
+  [WARN] COOKIE_SECURE: explicitly off in production: the session cookie is sent over plain HTTP → …
+```
+
+The same findings appear in **Admin → Overview**, at the top of the tab, via
+`GET /api/admin/preflight`. Boot logs scroll away within minutes of a deploy;
+the settings they describe do not. Both surfaces name the *setting* and what
+its current value implies — a value is never echoed, so the panel is safe to
+have on screen.
+
+**Two levels, and the split is deliberate.** A `WARN` is logged and shown, and
+the app serves — these are posture choices, not broken flows. A `REFUSE` stops
+the boot, and there is currently exactly one, because a refusal that fires on
+a merely-risky setting turns the next restart of a healthy deployment into an
+outage:
+
+| Level | Condition | Why this line |
+|---|---|---|
+| **REFUSE** | `MAIL_PROVIDER` is real **and** `FRONTEND_BASE_URL` is localhost / an unroutable TLD | Every link the app mails — password reset, admin-minted reset, payout status — is built from that base URL. Real recipients would get a URL resolving to their own machine: delivered, no error, account unrecoverable. It can only fire once someone has deliberately configured real mail. |
+| WARN | `ADMIN_EMAILS` empty | No operator seat exists and `/admin` 403s for everyone. |
+| WARN | `SIGNUP_REQUIRE_INVITE` off | Signup is open to the public internet. |
+| WARN | `MAIL_PROVIDER=console` | Password resets go to stdout; recovery means fishing a token out of the logs. |
+| WARN | `PAYOUT_AUTO_APPROVE` explicitly on | Real money approving itself on a timer with no human in the audit trail. |
+| WARN | `KYC_AUTO_VERIFY` explicitly on | Identity documents rubber-stamped by the simulated provider. |
+| WARN | `SENTRY_DSN` unset | Crashes and dying scheduled jobs are invisible outside the container logs. |
+| WARN | `BACKUP_OFFSITE_PROVIDER=none` | Backups share a failure domain with the database — see below. |
+| WARN | `COOKIE_SECURE` forced off | Session cookie sent over plain HTTP. |
+| WARN | `TRUST_PROXY` off on Fly / on with no proxy | Either the throttle keys every user to the proxy's IP, or `X-Forwarded-For` is spoofable straight past it. |
+
+The database-URL refusal in `backend/database.py` (a relative sqlite path
+under production) predates this and still fires first, at import.
+
+**Nothing fires outside production.** A dev box and CI get an empty list by
+design — on a laptop every one of these defaults is the right answer, and a
+check that cries wolf is one people learn to scroll past.
+
+To see it locally, run the backend in production posture against a throwaway
+database:
+
+```bash
+APP_ENV=production COOKIE_SECURE=0 ADMIN_EMAILS='["you@example.com"]' DATABASE_URL=sqlite:////tmp/td-preflight.db uv run --directory backend uvicorn main:app --port 8000
 ```
 
 ## Backups & restore

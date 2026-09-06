@@ -498,7 +498,7 @@ def test_grant_reset_credit_with_cap_and_audit(admin_client, auth_client):
 
 
 def test_kyc_decide_approve_reject_and_audit(admin_client, auth_client, monkeypatch):
-    monkeypatch.setattr(settings, "kyc_auto_verify", False)
+    monkeypatch.setattr(settings, "kyc_auto_verify_override", False)
     res = auth_client.post(
         "/api/verification/kyc/submit",
         json={"legal_name": "Test Trader", "dob": "1990-01-15",

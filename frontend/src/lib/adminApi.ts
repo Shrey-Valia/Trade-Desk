@@ -118,6 +118,7 @@ export const adminKeys = {
   user: (id: number) => ["admin", "user", id] as const,
   platform: ["admin", "platform"] as const,
   jobs: ["admin", "jobs"] as const,
+  preflight: ["admin", "preflight"] as const,
   actions: (targetType: string, targetId: string, page: number) =>
     ["admin", "actions", targetType, targetId, page] as const,
   actionsPrefix: ["admin", "actions"] as const,
@@ -582,6 +583,26 @@ export type JobHealth = z.infer<typeof JobHealthSchema>;
 
 export const fetchJobsHealth = (): Promise<JobHealth[]> =>
   requestJson("/api/admin/jobs", z.array(JobHealthSchema));
+
+// -- configuration preflight ----------------------------------------------------------------
+
+export const PreflightFindingSchema = z.object({
+  level: z.enum(["refuse", "warn"]),
+  key: z.string(),
+  problem: z.string(),
+  fix: z.string(),
+});
+export type PreflightFinding = z.infer<typeof PreflightFindingSchema>;
+
+export const PreflightSchema = z.object({
+  environment: z.string(),
+  is_production: z.boolean(),
+  findings: z.array(PreflightFindingSchema),
+});
+export type Preflight = z.infer<typeof PreflightSchema>;
+
+export const fetchPreflight = (): Promise<Preflight> =>
+  requestJson("/api/admin/preflight", PreflightSchema);
 
 // -- audit log ------------------------------------------------------------------------------
 

@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { LoadError } from "@/components/ui/LoadError";
 import { adminKeys, fetchAdminMetrics } from "@/lib/adminApi";
 
+import { AdminPreflight } from "./AdminPreflight";
+
 import {
   fmtMoney,
   NUM_CLS,
@@ -27,13 +29,26 @@ export function AdminOverview() {
     refetchInterval: 60_000,
   });
 
+  // The preflight panel renders above the metrics and OUTSIDE their loading
+  // and error branches: a deployment whose metrics query is failing is
+  // exactly when a configuration finding is most worth reading.
   if (metrics.isPending) {
     return (
-      <div className="px-1 py-6 text-tiny text-fg-tertiary-2">Loading metrics…</div>
+      <div className="flex flex-col gap-3.5">
+        <AdminPreflight />
+        <div className="px-1 py-6 text-tiny text-fg-tertiary-2">
+          Loading metrics…
+        </div>
+      </div>
     );
   }
   if (metrics.isError) {
-    return <LoadError subject="platform metrics" onRetry={metrics.refetch} />;
+    return (
+      <div className="flex flex-col gap-3.5">
+        <AdminPreflight />
+        <LoadError subject="platform metrics" onRetry={metrics.refetch} />
+      </div>
+    );
   }
   const m = metrics.data;
   const pendingLiability = m.payout_liability["requested_pending"] ?? 0;
@@ -42,6 +57,7 @@ export function AdminOverview() {
 
   return (
     <div className="flex flex-col gap-3.5">
+      <AdminPreflight />
       <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-6">
         <StatTile label="MRR" value={fmtMoney(m.mrr)} tone="amber" hint="active combines × monthly price" />
         <StatTile label="Users" value={m.users_total.toLocaleString("en-US")} />

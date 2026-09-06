@@ -274,7 +274,17 @@ class Settings(BaseSettings):
     # approves unattended. Flip PAYOUT_AUTO_APPROVE=0 to require a human on
     # every request (the real-firm posture). The window is the legacy
     # PAYOUT_REVIEW_WINDOW_H, now owned here.
-    payout_auto_approve: bool = True
+    # PROD-SAFE BY DEFAULT, like cookie_secure above: left unset it follows
+    # app_env — OFF in production (a human adjudicates every payout), ON in
+    # development so the sim desk and the test suite keep today's behaviour.
+    # An explicit PAYOUT_AUTO_APPROVE always wins, in either direction; the
+    # property below resolves it, and services.preflight warns when a
+    # production deployment has explicitly turned it back on. This is real
+    # money leaving on a timer — the default should have to be chosen, not
+    # inherited.
+    payout_auto_approve_override: bool | None = Field(
+        default=None, alias="payout_auto_approve"
+    )
     payout_review_window_h: float = 1.0
 
     # Payout-request prerequisites (each individually toggleable so tests and
@@ -287,7 +297,12 @@ class Settings(BaseSettings):
     # Simulated KYC provider: when True a submission auto-decides instantly
     # (verified unless the declared country is blocked below); when False the
     # submission parks at 'pending' for an admin decision.
-    kyc_auto_verify: bool = True
+    # Also PROD-SAFE BY DEFAULT (see payout_auto_approve above): unset means
+    # OFF in production, so a submission parks at 'pending' for a human
+    # instead of being rubber-stamped by a simulated provider.
+    kyc_auto_verify_override: bool | None = Field(
+        default=None, alias="kyc_auto_verify"
+    )
     # ISO-3166 alpha-2 country codes refused at KYC (OFAC-comprehensive
     # jurisdictions). Checked case-insensitively.
     ofac_blocked_countries: tuple[str, ...] = ("CU", "IR", "KP", "SY", "RU", "BY")
@@ -488,6 +503,22 @@ class Settings(BaseSettings):
         if self.cookie_secure_override is not None:
             return self.cookie_secure_override
         return self.is_production
+
+    @property
+    def payout_auto_approve(self) -> bool:
+        """Effective payout auto-approval. Explicit env wins; otherwise OFF in
+        production (a human on every payout) and ON in development."""
+        if self.payout_auto_approve_override is not None:
+            return self.payout_auto_approve_override
+        return not self.is_production
+
+    @property
+    def kyc_auto_verify(self) -> bool:
+        """Effective KYC auto-verification. Explicit env wins; otherwise OFF in
+        production (submissions park at 'pending') and ON in development."""
+        if self.kyc_auto_verify_override is not None:
+            return self.kyc_auto_verify_override
+        return not self.is_production
 
     @property
     def session_ttl(self) -> timedelta:

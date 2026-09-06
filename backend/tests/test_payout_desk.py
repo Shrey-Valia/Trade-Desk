@@ -378,7 +378,7 @@ def test_auto_approve_never_touches_reviewed_rows(auth_client, parked_state):
 def test_auto_approve_respects_settings_toggle(auth_client, monkeypatch):
     c, row = _funded_request(auth_client)
     _backdate_request(auth_client, row.id, hours=48.0)
-    monkeypatch.setattr(settings, "payout_auto_approve", False)
+    monkeypatch.setattr(settings, "payout_auto_approve_override", False)
     session = _session(auth_client)
     assert auto_approve_pass(session, review_window_h=0) == 0
     session.close()
@@ -818,7 +818,7 @@ def test_auto_approve_loses_race_to_deny(auth_client, monkeypatch):
     """A deny landing before the auto-approve pass claims the row wins: the
     pass's per-row CAS misses and the request stays denied — never
     'approved with the re-credit still booked'."""
-    monkeypatch.setattr(settings, "payout_auto_approve", True)
+    monkeypatch.setattr(settings, "payout_auto_approve_override", True)
     c = make_combine(auth_client, "50K")
     _fund_and_activate(auth_client, c["id"], 3_000.0)
     _request_payout(auth_client, c["id"], amount=500.0)
@@ -845,7 +845,7 @@ def test_auto_approve_loses_race_to_deny(auth_client, monkeypatch):
 def test_auto_approve_skips_archived_and_failed_combines(auth_client, monkeypatch):
     """Lifecycle guard: requests on archived or FAILED combines never
     auto-approve — they wait for a human (or a lifecycle void)."""
-    monkeypatch.setattr(settings, "payout_auto_approve", True)
+    monkeypatch.setattr(settings, "payout_auto_approve_override", True)
     c = make_combine(auth_client, "50K")
     _fund_and_activate(auth_client, c["id"], 3_000.0)
     _request_payout(auth_client, c["id"], amount=500.0)
