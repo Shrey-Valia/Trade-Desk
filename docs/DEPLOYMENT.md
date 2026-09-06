@@ -619,5 +619,24 @@ scheduler, not the database, that forbids replicas.
 ## CI
 
 `.github/workflows/ci.yml` job `docker-image` builds this Dockerfile on
-every push (build only, no registry push — no credentials exist) so the
-deploy artifact can't silently rot.
+every push, so the deploy artifact can't silently rot.
+
+**On `main` it also publishes to GHCR**, tagged with the commit SHA. That is
+the rollback story: `fly deploy` builds remotely from whatever the working
+tree happens to be, so without a published artifact "put back what was
+running an hour ago" means reconstructing it from git and hoping the build is
+reproducible. With one:
+
+```bash
+fly deploy --image ghcr.io/<owner>/trade-desk:sha-<the good sha>
+```
+
+Each successful main build prints that exact command in the run summary, so
+the rollback is copy-paste. `:main` also moves to the newest build.
+
+No secret is needed — `GITHUB_TOKEN` already carries `packages: write` for
+its own repository — and the package inherits repo visibility, so a private
+repo publishes a private image. That matters: the image bakes no credentials
+(they all arrive as runtime env) but it is still the whole application.
+Pushing is skipped on pull requests and side branches, including forks, which
+have no write credential.

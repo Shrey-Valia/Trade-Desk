@@ -199,13 +199,33 @@ jobs:
         run: npm run build
 
   # B4 (P0 wave 2026-07): prove the deploy image builds — the multi-stage
-  # Dockerfile is otherwise dead code until someone deploys. Build only, NO
-  # registry push (no credentials exist; a green build is the whole gate).
-  # The GHA layer cache keeps this cheap: the multi-GB python-deps layer
-  # only rebuilds when backend/uv.lock changes.
+  # Dockerfile is otherwise dead code until someone deploys. On a PR or a
+  # side branch this is BUILD ONLY: a green build is the whole gate, and
+  # publishing an image for a branch nobody deployed just fills the registry.
+  #
+  # On main it also PUSHES to GHCR, tagged with the commit SHA. That is the
+  # rollback story: `fly deploy` builds remotely from whatever the working
+  # tree happens to be, so without a published artifact "put back what was
+  # running an hour ago" means reconstructing it from git and hoping the
+  # build is reproducible. An immutable ghcr.io/<owner>/trade-desk:sha-<sha>
+  # turns that into one command:
+  #
+  #   fly deploy --image ghcr.io/<owner>/trade-desk:sha-<the good sha>
+  #
+  # GITHUB_TOKEN already carries packages:write for its own repository, so
+  # no secret has to be created. The package inherits repo visibility —
+  # PRIVATE for a private repo, which is what you want: the image bakes no
+  # secrets (they all arrive as runtime env) but it is still the whole
+  # application.
+  #
+  # The GHA layer cache keeps both paths cheap: the multi-GB python-deps
+  # layer only rebuilds when backend/uv.lock changes.
   docker-image:
-    name: Docker image (build only)
+    name: Docker image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -213,10 +233,51 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (no push)
+      # Only on main, and never for a fork's PR — a fork has no write
+      # credential and the step would fail for a contributor doing nothing
+      # wrong.
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercased owner: GHCR rejects an uppercase path, and GitHub
+      # usernames routinely have capitals (this one does).
+      - name: Resolve image name
+        id: image
+        run: echo "repo=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/trade-desk" >> "$GITHUB_OUTPUT"
+
+      - name: Build (and push on main)
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
+          push: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+          # sha- prefixed so a tag can never be mistaken for a semver
+          # release, plus a moving :main for "whatever is current".
+          tags: |
+            ${{ steps.image.outputs.repo }}:sha-${{ github.sha }}
+            ${{ steps.image.outputs.repo }}:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Summary
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo '```'
+            echo "${{ steps.image.outputs.repo }}:sha-${{ github.sha }}"
+            echo '```'
+            echo
+            echo "Roll back to it with:"
+            echo '```bash'
+            echo "fly deploy --image ${{ steps.image.outputs.repo }}:sha-${{ github.sha }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
