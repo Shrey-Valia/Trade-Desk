@@ -179,6 +179,21 @@ def check_config(*, on_fly: bool | None = None) -> list[Finding]:
             )
         )
 
+    if not (settings.legal_entity_name.strip() and settings.legal_contact_email.strip()):
+        findings.append(
+            Finding(
+                "warn",
+                "LEGAL_ENTITY_NAME / LEGAL_CONTACT_EMAIL",
+                "unset, so the public Terms/Privacy/Refund pages name no "
+                "counterparty, carry no governing-law clause, and give users no "
+                "way to reach anyone except an in-app ticket — they read as a "
+                "template rather than an agreement",
+                "set LEGAL_ENTITY_NAME, LEGAL_CONTACT_EMAIL and "
+                "LEGAL_ENTITY_JURISDICTION (and have counsel read the text — "
+                "filling these in is not a substitute for that)",
+            )
+        )
+
     provider = (settings.backup_offsite_provider or "none").strip().lower()
     if provider in ("", "none", "off", "disabled"):
         findings.append(

@@ -85,6 +85,7 @@ Compose passes these through from the host shell or a `.env` file beside
 | `BACKUP_S3_BUCKET`, `BACKUP_S3_REGION`, `BACKUP_S3_ENDPOINT_URL`, `BACKUP_S3_PREFIX`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | empty / `auto` / empty / `backups/` / empty / empty | Only used when `BACKUP_OFFSITE_PROVIDER=s3`, and then **all of bucket/region/keys are required** — an incomplete set fails the backup job instead of silently not replicating. Leave the endpoint blank for bare AWS S3; set it for R2/B2/MinIO. |
 | `BACKUP_OFFSITE_RETENTION_DAYS` | `0` | `0` = the app never deletes a remote object (prefer a bucket lifecycle rule, whose blast radius isn't this process). A positive value enables app-side pruning, which still always keeps the newest 3 snapshots. |
 | `ALLOW_LEGACY_TRADE_WIPE` | `false` | **Leave unset.** See "restored pre-tier backup" below. |
+| `LEGAL_ENTITY_NAME`, `LEGAL_ENTITY_JURISDICTION`, `LEGAL_CONTACT_EMAIL`, `LEGAL_CONTACT_ADDRESS` | empty | Who the public Terms/Privacy/Refund pages name as the counterparty, and how to reach them. Unset = the pages omit the entity and governing-law clause and point at the in-app Support page. See "Legal identity" below. |
 
 Full list with inline docs: `backend/config.py`.
 
@@ -400,6 +401,48 @@ Two things to know before flipping it:
 SIGNUP_REQUIRE_INVITE=1
 ADMIN_EMAILS=["you@yourdomain.com"]   # you need the console to mint codes
 ```
+
+## Legal identity
+
+The public legal pages (`/terms`, `/privacy`, `/refund-policy`,
+`/risk-disclosure`) are a contract with real people, and a contract needs a
+counterparty: who is bound, where disputes are heard, and a contact that
+reaches a human. None of that can live in source, so the pages read it from
+four settings via the public `GET /api/legal/identity`:
+
+```bash
+fly secrets set \
+  LEGAL_ENTITY_NAME="Your Company LLC" \
+  LEGAL_ENTITY_JURISDICTION="Delaware, United States" \
+  LEGAL_CONTACT_EMAIL="legal@yourdomain.com" \
+  LEGAL_CONTACT_ADDRESS="1 Main St, Dover DE 19901"   # optional
+```
+
+`LEGAL_ENTITY_JURISDICTION` is free text, written as it should read in a
+clause ("organised under the laws of …", "governed by the laws of …"). One
+contact address is deliberate: a small operator has one inbox, and three
+aliases that all forward to it help nobody.
+
+**Unset is handled honestly, not papered over.** The pages previously
+hard-coded `legal@tradedesk.example`, `privacy@…` and `billing@…` — addresses
+that bounce. A contact that silently fails is worse than no contact: someone
+with a GDPR request follows the instruction, hears nothing, and reasonably
+concludes they were ignored. So while these are blank:
+
+- the email clause is omitted entirely and the sentence falls back to the
+  in-app **Support page**, which always reaches someone;
+- the entity and governing-law clause is **omitted**, rather than filled with
+  boilerplate naming a jurisdiction nobody chose;
+- the production preflight warns on every boot.
+
+`LEGAL_ENTITY_NAME` and `LEGAL_CONTACT_EMAIL` are both required before the
+clause appears — a name with no way to reach it, or an inbox belonging to
+nobody named, is not a counterparty.
+
+> **This is plumbing, not counsel.** Filling these in makes the documents
+> name a real party and offer a real contact. It does not make the text
+> right for your entity, your jurisdiction, or your product — the legal
+> pages still need a lawyer's read before you take real users.
 
 ## Configuration preflight
 

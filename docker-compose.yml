@@ -80,6 +80,12 @@ services:
       - STRIPE_PRICE_50K
       - STRIPE_PRICE_100K
       - STRIPE_PRICE_150K
+      # legal identity for the public Terms/Privacy/Refund pages (unset =
+      # the pages omit the clause and point at the Support page)
+      - LEGAL_ENTITY_NAME
+      - LEGAL_ENTITY_JURISDICTION
+      - LEGAL_CONTACT_EMAIL
+      - LEGAL_CONTACT_ADDRESS
       # backups / migration escape hatch
       - BACKUP_RETENTION_DAYS
       - ALLOW_LEGACY_TRADE_WIPE

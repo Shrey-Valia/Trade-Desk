@@ -116,6 +116,28 @@ export type LegalStatus = z.infer<typeof LegalStatusSchema>;
 
 /** Shared react-query key so consent state stays coherent across the
  *  signup, purchase, and activation surfaces. */
+export const LEGAL_IDENTITY_KEY = ["legal", "identity"] as const;
+
+/**
+ * Who the public legal documents name as the counterparty. Operator-supplied
+ * (backend settings), so it cannot live in source.
+ *
+ * Every field may be blank, and blank means blank: the pages omit the clause
+ * and fall back to the in-app Support page rather than printing a
+ * plausible-looking address. `configured` is the single flag to gate on.
+ */
+export const LegalIdentitySchema = z.object({
+  entity_name: z.string(),
+  jurisdiction: z.string(),
+  contact_email: z.string(),
+  contact_address: z.string(),
+  configured: z.boolean(),
+});
+export type LegalIdentity = z.infer<typeof LegalIdentitySchema>;
+
+export const fetchLegalIdentity = (): Promise<LegalIdentity> =>
+  requestJson("/api/legal/identity", LegalIdentitySchema);
+
 export const LEGAL_STATUS_KEY = ["legal", "status"] as const;
 
 export const fetchLegalStatus = (): Promise<LegalStatus> =>

@@ -343,6 +343,31 @@ class Settings(BaseSettings):
     allow_legacy_trade_wipe: bool = False
 
     # ---------------------------------------------------------------------
+    # Legal identity. The public legal pages (terms / privacy / refund / risk)
+    # are a contract with real people, and a contract needs a counterparty:
+    # WHO is bound, WHERE disputes are heard, and a contact that reaches a
+    # human. None of that can live in source — it is per-operator — so the
+    # pages read it from here through GET /api/legal/identity.
+    #
+    # Unset is handled honestly: the pages fall back to the in-app Support
+    # page and OMIT the entity/governing-law clause entirely rather than
+    # print a plausible-looking placeholder. An address that bounces is worse
+    # than no address, and boilerplate naming a jurisdiction nobody chose is
+    # worse than an obvious gap. The production preflight warns while these
+    # are blank.
+    #
+    # Filling these in is NOT a substitute for counsel reviewing the text.
+    legal_entity_name: str = ""
+    # Free-form, as it should read in a clause: "Delaware, United States".
+    legal_entity_jurisdiction: str = ""
+    # One address is deliberate — a small operator has one inbox, and three
+    # aliases that all forward to it help nobody.
+    legal_contact_email: str = ""
+    # Optional postal address. Privacy regimes generally expect one; rendered
+    # only when set.
+    legal_contact_address: str = ""
+
+    # ---------------------------------------------------------------------
     # OFFSITE backup replication. backup_dir lives on the SAME volume as the
     # live SQLite database (both default under PROJECT_ROOT/data, /app/data
     # in the image), so local backups share their failure domain with the

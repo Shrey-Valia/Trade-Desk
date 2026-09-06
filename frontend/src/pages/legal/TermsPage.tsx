@@ -1,5 +1,10 @@
 import { Link } from "react-router-dom";
 
+import {
+  IfLegalContact,
+  LegalEmail,
+  LegalEntityClause,
+} from "./LegalContact";
 import { LegalDocShell, LegalList, LegalSection, Strong } from "./LegalDocShell";
 
 /**
@@ -242,9 +247,14 @@ export function TermsPage() {
           on the{" "}
           <Link to="/support" className="text-amber hover:underline">
             Support page
-          </Link>{" "}
-          or write to legal@tradedesk.example.
+          </Link>
+          <IfLegalContact>
+            {" "}
+            or write to <LegalEmail />
+          </IfLegalContact>
+          .
         </p>
+        <LegalEntityClause />
       </LegalSection>
     </LegalDocShell>
   );

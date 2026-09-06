@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
+from config import settings
 from database import get_session
 from models.user import User
 from services.auth import get_current_user
@@ -47,6 +48,45 @@ class SignFundedAgreementRequest(BaseModel):
         if not value:
             raise ValueError("typed_name must not be blank")
         return value
+
+
+class LegalIdentityOut(BaseModel):
+    """Who the legal pages name as the counterparty. Public and unauthenticated
+    — the pages are reachable from the landing footer without a session."""
+
+    entity_name: str
+    jurisdiction: str
+    contact_email: str
+    contact_address: str
+    configured: bool
+
+
+@router.get("/identity", response_model=LegalIdentityOut)
+def legal_identity() -> LegalIdentityOut:
+    """The operator-supplied identity the public legal pages render.
+
+    Blank fields are returned as blank, never as a placeholder: the pages
+    then omit the clause and point at the in-app Support page instead. A
+    contact address that bounces is worse than no address, and a
+    governing-law clause naming a jurisdiction nobody chose is worse than an
+    obvious gap. `configured` is the single flag the frontend gates on, and
+    the production preflight warns while it is False.
+
+    Everything here is already public by construction (it is printed on the
+    Terms page), so there is nothing to protect behind auth.
+    """
+    entity = settings.legal_entity_name.strip()
+    jurisdiction = settings.legal_entity_jurisdiction.strip()
+    email = settings.legal_contact_email.strip()
+    return LegalIdentityOut(
+        entity_name=entity,
+        jurisdiction=jurisdiction,
+        contact_email=email,
+        contact_address=settings.legal_contact_address.strip(),
+        # The entity and a reachable contact are what make the documents a
+        # contract with someone; the postal address is a nicety.
+        configured=bool(entity and email),
+    )
 
 
 @router.get("/status", response_model=dict[str, DocStatusOut])

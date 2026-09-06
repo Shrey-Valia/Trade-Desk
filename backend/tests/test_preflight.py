@@ -54,6 +54,8 @@ def prod(monkeypatch):
     monkeypatch.setattr(settings, "backup_offsite_provider", "s3")
     monkeypatch.setattr(settings, "cookie_secure_override", None)
     monkeypatch.setattr(settings, "trust_proxy", True)
+    monkeypatch.setattr(settings, "legal_entity_name", "Example Trading LLC")
+    monkeypatch.setattr(settings, "legal_contact_email", "legal@example.com")
     return monkeypatch
 
 
@@ -72,6 +74,8 @@ class TestNotProduction:
         monkeypatch.setattr(settings, "mail_provider", "console")
         monkeypatch.setattr(settings, "sentry_dsn", "")
         monkeypatch.setattr(settings, "backup_offsite_provider", "none")
+        monkeypatch.setattr(settings, "legal_entity_name", "")
+        monkeypatch.setattr(settings, "legal_contact_email", "")
         assert check_config(on_fly=True) == []
 
     def test_run_preflight_is_silent_and_raises_nothing(self, monkeypatch):
@@ -150,10 +154,12 @@ class TestRefusals:
         prod.setattr(settings, "backup_offsite_provider", "none")
         prod.setattr(settings, "cookie_secure_override", False)
         prod.setattr(settings, "trust_proxy", False)
+        prod.setattr(settings, "legal_entity_name", "")
+        prod.setattr(settings, "legal_contact_email", "")
 
         findings = check_config(on_fly=True)
         assert [f.key for f in findings if f.level == "refuse"] == ["FRONTEND_BASE_URL"]
-        assert len([f for f in findings if f.level == "warn"]) == 8
+        assert len([f for f in findings if f.level == "warn"]) == 9
         # worst first, so a log reader sees the fatal one at the top
         assert findings[0].level == "refuse"
 
@@ -180,6 +186,17 @@ class TestWarnings:
     def test_kyc_auto_verify_explicitly_on(self, prod):
         prod.setattr(settings, "kyc_auto_verify_override", True)
         assert "KYC_AUTO_VERIFY" in _keys(check_config(on_fly=True))
+
+    @pytest.mark.parametrize(
+        "entity,email",
+        [("", ""), ("Example Trading LLC", ""), ("", "legal@example.com"), ("  ", " ")],
+    )
+    def test_incomplete_legal_identity(self, prod, entity, email):
+        """Either half missing is the same problem: the documents don't say who
+        is bound or how to reach them."""
+        prod.setattr(settings, "legal_entity_name", entity)
+        prod.setattr(settings, "legal_contact_email", email)
+        assert "LEGAL_ENTITY_NAME / LEGAL_CONTACT_EMAIL" in _keys(check_config(on_fly=True))
 
     def test_missing_sentry_dsn(self, prod):
         prod.setattr(settings, "sentry_dsn", "")
@@ -231,6 +248,8 @@ class TestFindingContent:
         prod.setattr(settings, "backup_offsite_provider", "none")
         prod.setattr(settings, "cookie_secure_override", False)
         prod.setattr(settings, "trust_proxy", False)
+        prod.setattr(settings, "legal_entity_name", "")
+        prod.setattr(settings, "legal_contact_email", "")
         for finding in check_config(on_fly=True):
             assert finding.fix.strip(), f"{finding.key} has no fix"
             assert finding.problem.strip(), f"{finding.key} has no problem statement"
