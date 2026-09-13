@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useActivateCombine, useCombines } from "@/hooks/useCombines";
@@ -29,6 +29,19 @@ export function CombineSwitcher({ size = "sm" }: { size?: "sm" | "md" }) {
   const breached = active != null && active.balance < active.mll;
   const h = size === "md" ? "h-10" : "h-8";
 
+  // Escape closes the popup — the backdrop only handled outside CLICKS, so
+  // a keyboard user who opened the menu had no way out of it.
+  useEffect(() => {
+    if (!open) return;
+    function handleKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setOpen(false);
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [open]);
+
   if (!data) return null;
 
   if (openCombines.length === 0) {
@@ -49,7 +62,7 @@ export function CombineSwitcher({ size = "sm" }: { size?: "sm" | "md" }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-haspopup="listbox"
+        aria-haspopup="true"
         aria-expanded={open}
         title="Switch the active combine"
         className={[
@@ -78,61 +91,66 @@ export function CombineSwitcher({ size = "sm" }: { size?: "sm" | "md" }) {
       {open && (
         <>
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} aria-hidden />
-          <div
-            role="listbox"
+          {/* A plain list of buttons, NOT role="listbox": the children are
+              real <button>s, and a listbox whose children aren't
+              role="option" announces as an empty listbox. */}
+          <ul
             className="absolute left-0 top-full mt-1 z-30 bg-tier-2 border border-tier-3 rounded-btn overflow-hidden"
             style={{ minWidth: 300 }}
           >
             {openCombines.map((c) => {
               const isActive = c.id === activeId;
               return (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => {
-                    if (!isActive) activate.mutate(c.id);
-                    setOpen(false);
-                  }}
-                  className={[
-                    "w-full text-left px-3 py-2 tabular-nums",
-                    isActive
-                      ? "text-amber bg-tier-3"
-                      : "text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
-                  ].join(" ")}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="uppercase tracking-label-up" style={{ fontSize: 12 }}>
-                      {c.name}
-                    </span>
-                    {isActive && (
-                      <span
-                        className="border border-amber text-amber px-1 uppercase tracking-label-up"
-                        style={{ fontSize: 11, borderRadius: 2 }}
-                      >
-                        active
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!isActive) activate.mutate(c.id);
+                      setOpen(false);
+                    }}
+                    className={[
+                      "w-full text-left px-3 py-2 tabular-nums",
+                      isActive
+                        ? "text-amber bg-tier-3"
+                        : "text-fg-secondary hover:bg-tier-3 hover:text-fg-primary",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="uppercase tracking-label-up" style={{ fontSize: 12 }}>
+                        {c.name}
                       </span>
-                    )}
-                    <StageBadge funded={c.funded} failed={c.outcome === "failed"} />
-                    <CopyRoleBadge isLead={c.id === leadId} isFollower={c.copy_follow} />
-                  </div>
-                  <div className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
-                    {c.tier} · {c.account_code}
-                  </div>
-                </button>
+                      {isActive && (
+                        <span
+                          className="border border-amber text-amber px-1 uppercase tracking-label-up"
+                          style={{ fontSize: 11, borderRadius: 2 }}
+                        >
+                          active
+                        </span>
+                      )}
+                      <StageBadge funded={c.funded} failed={c.outcome === "failed"} />
+                      <CopyRoleBadge isLead={c.id === leadId} isFollower={c.copy_follow} />
+                    </div>
+                    <div className="text-fg-tertiary-2" style={{ fontSize: 12 }}>
+                      {c.tier} · {c.account_code}
+                    </div>
+                  </button>
+                </li>
               );
             })}
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                navigate("/combines/new");
-              }}
-              className="w-full text-left px-3 py-2 text-amber hover:bg-tier-3 border-t border-tier-3 uppercase tracking-label-up"
-              style={{ fontSize: 12 }}
-            >
-              + Start a new combine
-            </button>
-          </div>
+            <li>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  navigate("/combines/new");
+                }}
+                className="w-full text-left px-3 py-2 text-amber hover:bg-tier-3 border-t border-tier-3 uppercase tracking-label-up"
+                style={{ fontSize: 12 }}
+              >
+                + Start a new combine
+              </button>
+            </li>
+          </ul>
         </>
       )}
     </div>

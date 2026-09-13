@@ -34,7 +34,7 @@ from alpaca.trading.client import TradingClient
 from calculations.types import ContractRow
 from config import settings
 from services.cache import cache
-from services.rate_limit import TokenBucket, in_background_budget
+from services.rate_limit import TokenBucket, TokenBucketExhausted, in_background_budget
 from services.realtime_feed import get_realtime_feed
 from services.resilience import (
     CircuitOpenError,
@@ -90,6 +90,11 @@ def _spaced(fn: Callable[[], T], *, timeout_s: float | None = None, interactive:
     check, so a short-circuited call costs no tokens). Raises CallTimeout
     on a stall — treated as degraded by `_is_degraded`, NOT as "no data".
 
+    A bucket queue deeper than its max wait raises TokenBucketExhausted
+    rather than parking this thread behind the backlog; it surfaces as the
+    same degraded-feed 503 as a breaker trip, so a flood of cache-missing
+    requests can't exhaust the threadpool and stall unrelated routes.
+
     `interactive=True` pins the reserved interactive bucket even inside a
     background-budget context — used by the live option-quote plane, whose
     tiny per-~10s batch prices real fills/stops (the order monitor runs on
@@ -99,7 +104,12 @@ def _spaced(fn: Callable[[], T], *, timeout_s: float | None = None, interactive:
         if in_background_budget() and not interactive
         else _interactive_bucket
     )
-    bucket.take()
+    try:
+        bucket.take()
+    except TokenBucketExhausted as exc:
+        raise MarketDataUnavailable(
+            "market-data feed is saturated — try again shortly"
+        ) from exc
     deadline = float(timeout_s if timeout_s is not None else settings.alpaca_sdk_timeout_s)
     return run_with_timeout(fn, timeout_s=deadline, executor=_SDK_EXECUTOR)
 
@@ -128,7 +138,7 @@ def _is_degraded(exc: Exception) -> bool:
     """True when `exc` means the feed is throttled/circuit-open/stalled (a
     transient, retryable degradation) rather than a malformed/empty
     response."""
-    if isinstance(exc, (CircuitOpenError, CallTimeout)):
+    if isinstance(exc, (CircuitOpenError, CallTimeout, TokenBucketExhausted)):
         return True
     s = str(exc).lower()
     return "too many requests" in s or "429" in s or "rate limit" in s

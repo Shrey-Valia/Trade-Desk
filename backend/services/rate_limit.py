@@ -90,6 +90,25 @@ class RateLimiter:
             self._hits.clear()
 
 
+# Ceiling on how long a TokenBucket.take() will queue before giving up. Sized
+# well above any legitimate wait — the market-data buckets bank a burst of 4-5
+# tokens and refill at ~1/s, so a real fan-out settles in a few seconds — and
+# well below the point where parked threads starve the request pool.
+_DEFAULT_MAX_WAIT_S = 15.0
+
+
+class TokenBucketExhausted(RuntimeError):
+    """The bucket's queue is deeper than its max wait, so `take()` refused to
+    join it. Callers translate this into their own degraded-upstream path
+    (services.alpaca_client maps it to MarketDataUnavailable → 503)."""
+
+    def __init__(self, wait_s: float) -> None:
+        self.wait_s = wait_s
+        super().__init__(
+            f"upstream rate-limit queue is {wait_s:.1f}s deep — refusing to wait"
+        )
+
+
 class TokenBucket:
     """Token-bucket throttle for spacing out a SHARED upstream quota.
 
@@ -103,6 +122,16 @@ class TokenBucket:
 
     Clock + sleep are injectable so the spacing behaviour is unit-testable
     without real time.
+
+    `max_wait_s` bounds the debt. Without it, sustained oversubscription grows
+    the queue without limit: each caller drives `_tokens` further negative and
+    `_updated` further into the future, so the computed wait keeps climbing.
+    Because the callers are sync FastAPI handlers, every one of them parks an
+    AnyIO threadpool thread while it sleeps — so an unbounded queue on the
+    market-data bucket converts into thread exhaustion that stalls unrelated
+    authenticated routes. Past the ceiling we raise `TokenBucketExhausted`
+    instead of queueing, which callers translate into their existing
+    degraded-feed path (a 503 + Retry-After) rather than a hung request.
     """
 
     def __init__(
@@ -112,11 +141,13 @@ class TokenBucket:
         *,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        max_wait_s: float = _DEFAULT_MAX_WAIT_S,
     ) -> None:
         if rate <= 0:
             raise ValueError("rate must be > 0")
         self.rate = rate
         self.capacity = max(1.0, capacity)
+        self.max_wait_s = max_wait_s
         self._clock = clock
         self._sleep = sleep
         self._lock = threading.Lock()
@@ -132,7 +163,11 @@ class TokenBucket:
 
     def take(self, tokens: float = 1.0) -> float:
         """Consume `tokens`, sleeping until they're available. Returns the
-        seconds actually slept (0 when a token was immediately available)."""
+        seconds actually slept (0 when a token was immediately available).
+
+        Raises TokenBucketExhausted when the queue is already deeper than
+        `max_wait_s` — without consuming, so a rejected caller doesn't
+        deepen the backlog for the ones still waiting."""
         with self._lock:
             self._refill_locked()
             if self._tokens >= tokens:
@@ -140,6 +175,8 @@ class TokenBucket:
                 return 0.0
             deficit = tokens - self._tokens
             wait = deficit / self.rate
+            if wait > self.max_wait_s:
+                raise TokenBucketExhausted(wait)
             # Consume now; the sleep below pays for the debt so the NEXT
             # caller sees the bucket already drained (no double-spend).
             self._tokens -= tokens

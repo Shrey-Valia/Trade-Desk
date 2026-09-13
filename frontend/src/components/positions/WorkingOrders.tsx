@@ -196,17 +196,29 @@ function WorkingRow({
         ].join(" ")}
         style={{ fontSize: 11 }}
         onClick={selecting ? onToggleSelect : undefined}
-        role={selecting ? "checkbox" : undefined}
-        aria-checked={selecting ? selected : undefined}
       >
         {selecting && (
-          <span
-            className={selected ? "text-amber" : "text-fg-tertiary"}
+          // The checkbox is the ☑/☐ indicator itself, not the row: a real
+          // focusable button so Tab reaches it and Space/Enter toggle it,
+          // and so the row's edit/oco/cancel buttons aren't nested inside a
+          // checkbox role. Whole-row click still toggles for mouse users.
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={selected}
+            aria-label={`Select ${order.symbol} ${order.order_type} order for OCO pairing`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelect?.();
+            }}
+            className={[
+              "leading-none",
+              selected ? "text-amber" : "text-fg-tertiary hover:text-amber",
+            ].join(" ")}
             style={{ fontSize: 10 }}
-            aria-hidden
           >
-            {selected ? "☑" : "☐"}
-          </span>
+            <span aria-hidden>{selected ? "☑" : "☐"}</span>
+          </button>
         )}
         <span
           className="uppercase tracking-label-up text-amber border border-amber px-1 leading-none"

@@ -83,6 +83,15 @@ export function MetricPill({
       ].join(" ")}
       style={{ height: 44, minWidth: width, ...style }}
       title={resolvedTitle}
+      // A `title` alone is mouse-only. Making the pill focusable (the global
+      // *:focus-visible ring applies) plus an aria-label that folds in the
+      // definition gives keyboard and screen-reader users the same
+      // explanation the dotted underline advertises.
+      tabIndex={hint ? 0 : undefined}
+      // role="group" so the aria-label is a legal (non-prohibited) name for
+      // the box; a bare <div aria-label> has no role to hang a name on.
+      role={hint ? "group" : undefined}
+      aria-label={hint ? ariaLabelFor(hint, label, value, sub) : undefined}
       {...rest}
     >
       <span
@@ -108,4 +117,21 @@ export function MetricPill({
       </span>
     </div>
   );
+}
+
+/**
+ * Folds the pill's label/value/sub into one spoken string and appends the
+ * hint — "MLL $47,000 — the account's max-loss floor…". ReactNode parts that
+ * aren't primitives (a nested <Badge>, an element) are skipped rather than
+ * stringified into "[object Object]".
+ */
+function ariaLabelFor(hint: string, ...parts: ReactNode[]): string {
+  const spoken = parts
+    .filter(
+      (p): p is string | number =>
+        typeof p === "string" || typeof p === "number",
+    )
+    .join(" ")
+    .trim();
+  return spoken ? `${spoken} — ${hint}` : hint;
 }

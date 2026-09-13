@@ -61,6 +61,7 @@ services:
       # back office / payouts
       - ADMIN_EMAILS
       - PAYOUT_AUTO_APPROVE
+      - KYC_AUTO_VERIFY
       # closed launch — see "Invite-only launch" in docs/DEPLOYMENT.md
       - SIGNUP_REQUIRE_INVITE
       - INVITE_DEFAULT_TTL_DAYS

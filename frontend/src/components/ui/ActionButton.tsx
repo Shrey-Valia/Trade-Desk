@@ -16,8 +16,10 @@ export interface ActionButtonProps
 /**
  * ActionButton — the large BUY / SELL ticket button. 56px tall, solid
  * ACTION-affordance fill (`action-buy` / `action-sell`, deliberately NOT
- * the bullish/bearish P&L colors), white text, 4px radius, two-line
- * label with hover + press states. Disabled sinks to tier-1.
+ * the bullish/bearish P&L colors), dark text on the fill (the palette's
+ * documented action affordance, and the only WCAG-AA-passing pairing),
+ * 4px radius, two-line label with hover + press states. Disabled sinks
+ * to tier-1.
  *
  * Matches the inline ActionButton currently in TradeTicket (and the
  * CLOSE button chrome in BottomStrip).
@@ -52,7 +54,7 @@ export function ActionButton({
         "flex flex-col items-center justify-center",
         "transition-colors duration-100",
         fill,
-        disabled ? "text-fg-disabled cursor-not-allowed" : "text-white",
+        disabled ? "text-fg-disabled cursor-not-allowed" : "text-tier-0",
         className,
       ].join(" ")}
       {...rest}
@@ -63,7 +65,7 @@ export function ActionButton({
       {sub && (
         <span
           className="tabular-nums"
-          style={{ fontSize: 12, marginTop: 2, opacity: disabled ? 1 : 0.78 }}
+          style={{ fontSize: 12, marginTop: 2 }}
         >
           {sub}
         </span>

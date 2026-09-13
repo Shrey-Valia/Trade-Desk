@@ -53,7 +53,7 @@ export function AlertsBell({ symbol }: { symbol: string | null }) {
         </svg>
         {(activeCount > 0 || hasTriggered) && (
           <span
-            className={`absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 text-white text-center ${
+            className={`absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-tiny leading-4 text-tier-0 text-center ${
               hasTriggered ? "bg-bearish" : "bg-amber"
             }`}
           >
@@ -182,7 +182,7 @@ function NewAlertForm({ symbol }: { symbol: string | null }) {
       <button
         type="submit"
         disabled={!valid || create.isPending}
-        className="self-end bg-action-buy hover:bg-action-buy-hover disabled:bg-tier-1 disabled:text-fg-disabled text-white rounded-btn px-3 py-1.5 text-sm font-medium"
+        className="self-end bg-action-buy hover:bg-action-buy-hover disabled:bg-tier-1 disabled:text-fg-disabled text-tier-0 rounded-btn px-3 py-1.5 text-sm font-medium"
       >
         {create.isPending ? "Adding…" : "Add alert"}
       </button>

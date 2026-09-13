@@ -76,9 +76,24 @@ export function TradeEntryModal({ open, onClose }: Props) {
   const [screenshot, setScreenshot] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Hydrate defaults when the modal opens.
+  // Latest symbol/quote, read through refs by the hydrate effect below so it
+  // can seed from them without depending on them.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const detailRef = useRef(detail);
+  detailRef.current = detail;
+
+  // Hydrate defaults on the OPEN transition only.
+  //
+  // `detail` is a 5s-polling live quote, so listing it (or `selected`) as a
+  // dependency re-ran this reset on every tick and wiped whatever the user was
+  // typing — strategy, legs, thesis, notes, tags, and the staged screenshot —
+  // mid-sentence. Seeding happens once per open; a later quote must not
+  // clobber the form.
   useEffect(() => {
     if (!open) return;
+    const selected = selectedRef.current;
+    const detail = detailRef.current;
     setSymbol(selected ?? "");
     setStrategy("long_call");
     setLegs(scaffoldLegs("long_call", defaultExpiry(), detail?.price ?? 100));
@@ -94,7 +109,7 @@ export function TradeEntryModal({ open, onClose }: Props) {
     setPlannedExit("");
     setRiskAmount("");
     setScreenshot(null);
-  }, [open, selected, detail]);
+  }, [open]);
 
   const onPickScreenshot = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] ?? null;

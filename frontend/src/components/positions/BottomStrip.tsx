@@ -26,6 +26,7 @@ import {
   setCloseOrder,
   updateTrade,
 } from "@/lib/api";
+import { isActiveCombineTrade } from "@/lib/combineScope";
 import { flattenPositions, reversePositions } from "@/lib/zerodteOpen";
 import { TOOLTIPS } from "@/lib/tooltips";
 import { tradingDayStartMs } from "@/lib/tradingDay";
@@ -91,9 +92,16 @@ export function BottomStrip() {
   // queries, so they're shared from cache (no extra network).
   const { data: account } = useAccountState();
   const activeTier = account?.active_tier ?? "50K";
+  // Scope by combine id (not tier) — a copy-trade lead/follower pair shares a
+  // tier, so a tier filter would list the OTHER combine's positions here and
+  // let CLOSE act on a trade this terminal doesn't own.
+  const combineId = account?.combine_id;
   const openPositions = useMemo(
-    () => trades.filter((t) => t.status === "open" && (t.tier ?? "50K") === activeTier),
-    [trades, activeTier],
+    () =>
+      trades.filter(
+        (t) => t.status === "open" && isActiveCombineTrade(t, combineId, activeTier),
+      ),
+    [trades, activeTier, combineId],
   );
   const openAnalytics = useQueries({
     queries: openPositions.map((t) => {
@@ -121,9 +129,9 @@ export function BottomStrip() {
   const workingOrders = useMemo(
     () =>
       trades.filter(
-        (t) => t.status === "working" && (t.tier ?? "50K") === activeTier,
+        (t) => t.status === "working" && isActiveCombineTrade(t, combineId, activeTier),
       ),
-    [trades, activeTier],
+    [trades, activeTier, combineId],
   );
 
   // No active position → pre-execution strip: KEY LEVELS inline + a TODAY
@@ -1419,7 +1427,12 @@ function CloseLimitRow({
     );
   }
 
-  const parsed = Number.parseFloat(raw);
+  // Validate the WHOLE string, not a prefix. This is the app's only free-text
+  // numeric order input, and parseFloat prefix-parses: "1,50" (comma decimal,
+  // what most non-US decimal keypads offer) yields 1, and "2.4.5" yields 2.4 —
+  // both pass a Number.isFinite check and would silently rest the close limit
+  // at a price the trader never typed.
+  const parsed = /^\d*\.?\d+$/.test(raw.trim()) ? Number.parseFloat(raw.trim()) : NaN;
   const valid = Number.isFinite(parsed) && parsed > 0;
   return (
     <div className="flex items-center gap-1 text-tiny tabular-nums">
