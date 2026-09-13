@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -48,6 +48,26 @@ function makeClosedTrade(overrides: Partial<Trade> = {}): Trade {
 }
 
 /**
+ * Open the lightbox, but only AFTER ui/Modal's own focus has landed.
+ *
+ * Modal moves focus into itself from a requestAnimationFrame (ui/Modal.tsx:54).
+ * The lightbox focuses its close button synchronously in an effect, so if that
+ * still-pending rAF fires after the lightbox opens, it yanks focus back to the
+ * modal's header ✕ and the focus assertion below flakes. A real user cannot
+ * click within the same frame the modal opens, so this is a test-timing
+ * artifact — waiting for the modal's initial focus removes the race at source
+ * rather than papering over it with a retry on the final assertion.
+ */
+async function openLightbox() {
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus(),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "View trade screenshot" }),
+  );
+}
+
+/**
  * The day-detail lightbox is nested INSIDE the ui/Modal day-review dialog,
  * which owns its own document-capture Escape handler. A naive listener here
  * would close the whole day modal instead of just the image, so the lightbox
@@ -60,9 +80,7 @@ describe("DayModal screenshot lightbox — nested Escape", () => {
     render(
       <DayModal date="2026-07-03" trades={[makeClosedTrade()]} onClose={onClose} />,
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "View trade screenshot" }),
-    );
+    await openLightbox();
     expect(screen.getByRole("dialog", { name: "Trade screenshot" })).toBeInTheDocument();
 
     await userEvent.keyboard("{Escape}");
@@ -81,9 +99,7 @@ describe("DayModal screenshot lightbox — nested Escape", () => {
     render(
       <DayModal date="2026-07-03" trades={[makeClosedTrade()]} onClose={onClose} />,
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "View trade screenshot" }),
-    );
+    await openLightbox();
     await userEvent.keyboard("{Escape}");
     expect(onClose).not.toHaveBeenCalled();
 
@@ -95,9 +111,7 @@ describe("DayModal screenshot lightbox — nested Escape", () => {
     render(
       <DayModal date="2026-07-03" trades={[makeClosedTrade()]} onClose={() => {}} />,
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "View trade screenshot" }),
-    );
+    await openLightbox();
     // Both exist and are unambiguous — getByRole throws on duplicates.
     expect(screen.getByRole("button", { name: "Close screenshot" })).toHaveFocus();
     expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
