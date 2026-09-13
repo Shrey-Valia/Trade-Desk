@@ -75,12 +75,17 @@ Compose passes these through from the host shell or a `.env` file beside
 | `ADMIN_EMAILS` | `[]` | JSON array; listed emails are auto-promoted to admin at signin — the bootstrap for the first operator seat. |
 | `SIGNUP_REQUIRE_INVITE` | `false` | `1` closes signup: `POST /api/auth/signup` then demands a valid invite code. See "Invite-only launch" below. |
 | `INVITE_DEFAULT_TTL_DAYS` | `14` | TTL the admin mint form pre-fills. `0` = codes never expire. |
-| `PAYOUT_AUTO_APPROVE` | `true` | Set `0` to require a human on every payout (the real-firm posture). |
+| `PAYOUT_AUTO_APPROVE` | **follows `APP_ENV`** — off in production, on in dev | Unset is the safe answer: in production a payout waits for a human. Setting `1` in production restores unattended approval on a timer with `reviewer_id=None`, and the preflight warns about it every boot. |
+| `KYC_AUTO_VERIFY` | **follows `APP_ENV`** — off in production, on in dev | Unset is the safe answer: submissions park at `pending` for an admin decision. `1` restores the simulated instant-verify provider. |
 | `MAIL_PROVIDER` | `console` | `console` logs mail to stdout; `smtp` sends via the `SMTP_*` settings. |
 | `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS`, `SMTP_SSL` | see `backend/config.py` | Only used when `MAIL_PROVIDER=smtp`. `SMTP_SSL=1` for implicit TLS (port 465) instead of STARTTLS (587). **`MAIL_FROM` must be a real domain** — the transport refuses to start otherwise. See "Transactional email" below. |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_50K/100K/150K` | empty | Opt-in; payments stay simulated while unset. |
 | `BACKUP_RETENTION_DAYS` | `14` | Nightly-backup retention window. |
+| `BACKUP_OFFSITE_PROVIDER` | `none` | `none` = backups never leave the volume they are protecting. `s3` = mirror every nightly snapshot to an S3-compatible bucket. See "Offsite copies" below. |
+| `BACKUP_S3_BUCKET`, `BACKUP_S3_REGION`, `BACKUP_S3_ENDPOINT_URL`, `BACKUP_S3_PREFIX`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | empty / `auto` / empty / `backups/` / empty / empty | Only used when `BACKUP_OFFSITE_PROVIDER=s3`, and then **all of bucket/region/keys are required** — an incomplete set fails the backup job instead of silently not replicating. Leave the endpoint blank for bare AWS S3; set it for R2/B2/MinIO. |
+| `BACKUP_OFFSITE_RETENTION_DAYS` | `0` | `0` = the app never deletes a remote object (prefer a bucket lifecycle rule, whose blast radius isn't this process). A positive value enables app-side pruning, which still always keeps the newest 3 snapshots. |
 | `ALLOW_LEGACY_TRADE_WIPE` | `false` | **Leave unset.** See "restored pre-tier backup" below. |
+| `LEGAL_ENTITY_NAME`, `LEGAL_ENTITY_JURISDICTION`, `LEGAL_CONTACT_EMAIL`, `LEGAL_CONTACT_ADDRESS` | empty | Who the public Terms/Privacy/Refund pages name as the counterparty, and how to reach them. Unset = the pages omit the entity and governing-law clause and point at the in-app Support page. See "Legal identity" below. |
 
 Full list with inline docs: `backend/config.py`.
 
@@ -397,19 +402,183 @@ SIGNUP_REQUIRE_INVITE=1
 ADMIN_EMAILS=["you@yourdomain.com"]   # you need the console to mint codes
 ```
 
+## Legal identity
+
+The public legal pages (`/terms`, `/privacy`, `/refund-policy`,
+`/risk-disclosure`) are a contract with real people, and a contract needs a
+counterparty: who is bound, where disputes are heard, and a contact that
+reaches a human. None of that can live in source, so the pages read it from
+four settings via the public `GET /api/legal/identity`:
+
+```bash
+fly secrets set \
+  LEGAL_ENTITY_NAME="Your Company LLC" \
+  LEGAL_ENTITY_JURISDICTION="Delaware, United States" \
+  LEGAL_CONTACT_EMAIL="legal@yourdomain.com" \
+  LEGAL_CONTACT_ADDRESS="1 Main St, Dover DE 19901"   # optional
+```
+
+`LEGAL_ENTITY_JURISDICTION` is free text, written as it should read in a
+clause ("organised under the laws of …", "governed by the laws of …"). One
+contact address is deliberate: a small operator has one inbox, and three
+aliases that all forward to it help nobody.
+
+**Unset is handled honestly, not papered over.** The pages previously
+hard-coded `legal@tradedesk.example`, `privacy@…` and `billing@…` — addresses
+that bounce. A contact that silently fails is worse than no contact: someone
+with a GDPR request follows the instruction, hears nothing, and reasonably
+concludes they were ignored. So while these are blank:
+
+- the email clause is omitted entirely and the sentence falls back to the
+  in-app **Support page**, which always reaches someone;
+- the entity and governing-law clause is **omitted**, rather than filled with
+  boilerplate naming a jurisdiction nobody chose;
+- the production preflight warns on every boot.
+
+`LEGAL_ENTITY_NAME` and `LEGAL_CONTACT_EMAIL` are both required before the
+clause appears — a name with no way to reach it, or an inbox belonging to
+nobody named, is not a counterparty.
+
+> **This is plumbing, not counsel.** Filling these in makes the documents
+> name a real party and offer a real contact. It does not make the text
+> right for your entity, your jurisdiction, or your product — the legal
+> pages still need a lawyer's read before you take real users.
+
+## Configuration preflight
+
+Every serious near-miss this project has had came from configuration, not
+code: the demo dry-run nearly died on an empty `ADMIN_EMAILS`, the container
+smoke test found the session cookie shipping without `Secure` because compose
+had erased `APP_ENV`, and `MAIL_FROM` defaulted to an unroutable `.local`
+domain. In each case the app booted happily and looked fine.
+
+So `APP_ENV=production` now runs a preflight at startup
+(`backend/services/preflight.py`) that reports every setting whose value means
+something different in a deployment than it does on a laptop. Read it in
+`fly logs` right after a deploy:
+
+```
+WARNING preflight: 5 production configuration warning(s) —
+  [WARN] SIGNUP_REQUIRE_INVITE: off, so POST /api/auth/signup is open to the public internet → …
+  [WARN] MAIL_PROVIDER: 'console': every transactional mail is written to stdout instead of sent → …
+  [WARN] SENTRY_DSN: unset, so an unhandled exception — including a scheduled job dying — is invisible → …
+  [WARN] BACKUP_OFFSITE_PROVIDER: 'none': nightly backups are written beside the live database → …
+  [WARN] COOKIE_SECURE: explicitly off in production: the session cookie is sent over plain HTTP → …
+```
+
+The same findings appear in **Admin → Overview**, at the top of the tab, via
+`GET /api/admin/preflight`. Boot logs scroll away within minutes of a deploy;
+the settings they describe do not. Both surfaces name the *setting* and what
+its current value implies — a value is never echoed, so the panel is safe to
+have on screen.
+
+**Two levels, and the split is deliberate.** A `WARN` is logged and shown, and
+the app serves — these are posture choices, not broken flows. A `REFUSE` stops
+the boot, and there is currently exactly one, because a refusal that fires on
+a merely-risky setting turns the next restart of a healthy deployment into an
+outage:
+
+| Level | Condition | Why this line |
+|---|---|---|
+| **REFUSE** | `MAIL_PROVIDER` is real **and** `FRONTEND_BASE_URL` is localhost / an unroutable TLD | Every link the app mails — password reset, admin-minted reset, payout status — is built from that base URL. Real recipients would get a URL resolving to their own machine: delivered, no error, account unrecoverable. It can only fire once someone has deliberately configured real mail. |
+| WARN | `ADMIN_EMAILS` empty | No operator seat exists and `/admin` 403s for everyone. |
+| WARN | `SIGNUP_REQUIRE_INVITE` off | Signup is open to the public internet. |
+| WARN | `MAIL_PROVIDER=console` | Password resets go to stdout; recovery means fishing a token out of the logs. |
+| WARN | `PAYOUT_AUTO_APPROVE` explicitly on | Real money approving itself on a timer with no human in the audit trail. |
+| WARN | `KYC_AUTO_VERIFY` explicitly on | Identity documents rubber-stamped by the simulated provider. |
+| WARN | `SENTRY_DSN` unset | Crashes and dying scheduled jobs are invisible outside the container logs. |
+| WARN | `BACKUP_OFFSITE_PROVIDER=none` | Backups share a failure domain with the database — see below. |
+| WARN | `COOKIE_SECURE` forced off | Session cookie sent over plain HTTP. |
+| WARN | `TRUST_PROXY` off on Fly / on with no proxy | Either the throttle keys every user to the proxy's IP, or `X-Forwarded-For` is spoofable straight past it. |
+
+The database-URL refusal in `backend/database.py` (a relative sqlite path
+under production) predates this and still fires first, at import.
+
+**Nothing fires outside production.** A dev box and CI get an empty list by
+design — on a laptop every one of these defaults is the right answer, and a
+check that cries wolf is one people learn to scroll past.
+
+To see it locally, run the backend in production posture against a throwaway
+database:
+
+```bash
+APP_ENV=production COOKIE_SECURE=0 ADMIN_EMAILS='["you@example.com"]' DATABASE_URL=sqlite:////tmp/td-preflight.db uv run --directory backend uvicorn main:app --port 8000
+```
+
 ## Backups & restore
 
 **Where they land.** A scheduler job (`backup_db`, 02:30 ET nightly) writes
 `dashboard-YYYYMMDD-HHMMSS.db` (UTC stamp) into `/app/data/backups` using
 sqlite3's online-backup API — safe against concurrent writers, always a
 consistent snapshot. Files older than `BACKUP_RETENTION_DAYS` are pruned on
-each run. Job outcomes are visible in the admin jobs-health view (`job_runs`).
+each run, and the snapshot is mirrored offsite when a provider is
+configured (below). Job outcomes are visible in the admin jobs-health view
+(`job_runs`).
 
-Copy backups off the box regularly — the volume is not offsite storage:
+### Offsite copies (the volume is not a backup)
+
+`/app/data/backups` sits on **the same Fly volume as the live database**.
+Losing that volume — hardware, a region incident, a mistaken `fly volumes
+destroy` — takes the database and every backup of it in one step. Fly volume
+snapshots don't fix this either: 5-day retention, same provider, same region,
+and nothing you have ever restored from.
+
+Set `BACKUP_OFFSITE_PROVIDER=s3` and the nightly job mirrors each snapshot to
+an S3-compatible bucket right after writing it locally. Works with Cloudflare
+R2, Backblaze B2, MinIO, or AWS S3. Setup with R2 (cheapest for this: no
+egress fees, and the free tier covers a database this size):
+
+1. Create a bucket, then an **R2 API token scoped to that bucket only** with
+   Object Read & Write. Note the account ID from the endpoint R2 shows you.
+2. Set the secrets (all in one command — a partial set fails the job):
+
+   ```bash
+   fly secrets set \
+     BACKUP_OFFSITE_PROVIDER=s3 \
+     BACKUP_S3_BUCKET=trade-desk-backups \
+     BACKUP_S3_REGION=auto \
+     BACKUP_S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com \
+     BACKUP_S3_ACCESS_KEY_ID=<token-id> \
+     BACKUP_S3_SECRET_ACCESS_KEY=<token-secret>
+   ```
+
+   R2 requires the literal `auto` region. AWS and B2 need their real region,
+   and for bare AWS leave `BACKUP_S3_ENDPOINT_URL` unset.
+3. **Don't wait for 02:30 ET to find out whether it works.** Force one now
+   and then verify from the other end:
+
+   ```bash
+   fly ssh console -C "/app/backend/.venv/bin/python /app/backend/scripts/offsite_backup_check.py put"
+   fly ssh console -C "/app/backend/.venv/bin/python /app/backend/scripts/offsite_backup_check.py list"
+   ```
+
+   `list` prints every remote snapshot with its age and exits non-zero when
+   the newest is older than `--max-age-h` (default 48), so the same command
+   doubles as a monitor check.
+4. Set a bucket **lifecycle rule** for retention (e.g. delete after 90 days)
+   and leave `BACKUP_OFFSITE_RETENTION_DAYS=0`. App-side pruning exists
+   (`BACKUP_OFFSITE_RETENTION_DAYS=N`) and refuses to delete the newest 3
+   snapshots whatever their age, but a lifecycle rule can't be triggered by a
+   bug in this process.
+
+**A failed upload fails the whole `backup_db` job**, on purpose: the local
+snapshot and both prunes have already happened by then, so the only thing
+left to report is that the copy which survives losing the volume didn't
+happen. A green job next to an empty bucket is the failure this feature
+exists to prevent. The error in Admin → Jobs leads with `LOCAL snapshot
+… OK; OFFSITE copy FAILED — …`, so a red row doesn't mean there is no
+backup at all.
+
+**Run the restore drill.** A backup nobody has ever restored is not a
+backup:
 
 ```bash
-docker compose cp app:/app/data/backups ./offsite-backups
+backend/.venv/bin/python backend/scripts/offsite_backup_check.py restore /tmp/restored.db
 ```
+
+That downloads the newest remote snapshot, runs `PRAGMA integrity_check` on
+it and prints row counts for `users` / `combines` / `trades`. Do it once at
+setup and after any change to the bucket, credentials or prefix.
 
 **Restore procedure** (SQLite):
 
@@ -442,12 +611,32 @@ DATABASE_URL=postgresql+psycopg://user:pass@host:5432/trade
 boot (CI proves this against postgres:16 on every push). Pool knobs
 (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_RECYCLE_S`) exist in
 `backend/config.py`; SQLite ignores them. The nightly `backup_db` job
-no-ops on Postgres — use `pg_dump` / managed snapshots instead. The
+no-ops on Postgres — use `pg_dump` / managed snapshots instead, and note
+that offsite mirroring rides on that job, so it no-ops too. The
 single-replica constraint **still applies** on Postgres: it's the
 scheduler, not the database, that forbids replicas.
 
 ## CI
 
 `.github/workflows/ci.yml` job `docker-image` builds this Dockerfile on
-every push (build only, no registry push — no credentials exist) so the
-deploy artifact can't silently rot.
+every push, so the deploy artifact can't silently rot.
+
+**On `main` it also publishes to GHCR**, tagged with the commit SHA. That is
+the rollback story: `fly deploy` builds remotely from whatever the working
+tree happens to be, so without a published artifact "put back what was
+running an hour ago" means reconstructing it from git and hoping the build is
+reproducible. With one:
+
+```bash
+fly deploy --image ghcr.io/<owner>/trade-desk:sha-<the good sha>
+```
+
+Each successful main build prints that exact command in the run summary, so
+the rollback is copy-paste. `:main` also moves to the newest build.
+
+No secret is needed — `GITHUB_TOKEN` already carries `packages: write` for
+its own repository — and the package inherits repo visibility, so a private
+repo publishes a private image. That matters: the image bakes no credentials
+(they all arrive as runtime env) but it is still the whole application.
+Pushing is skipped on pull requests and side branches, including forks, which
+have no write credential.

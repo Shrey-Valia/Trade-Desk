@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 
+import { IfLegalContact, LegalEmail } from "./LegalContact";
 import { LegalDocShell, LegalList, LegalSection, Strong } from "./LegalDocShell";
 
 /**
@@ -143,8 +144,12 @@ export function PrivacyPage() {
           To exercise any right, open a ticket on the{" "}
           <Link to="/support" className="text-amber hover:underline">
             Support page
-          </Link>{" "}
-          or email privacy@tradedesk.example. We respond within 30 days
+          </Link>
+          <IfLegalContact>
+            {" "}
+            or email <LegalEmail />
+          </IfLegalContact>
+          . We respond within 30 days
           (GDPR) or 45 days (CCPA). EU/UK users may also lodge a complaint
           with their supervisory authority.
         </p>
@@ -171,11 +176,14 @@ export function PrivacyPage() {
       <LegalSection id="changes" title="9. Changes and contact">
         <p>
           We may update this policy; material changes are versioned and
-          re-presented for acceptance. Contact: privacy@tradedesk.example, or
-          the{" "}
+          re-presented for acceptance. To reach us, open a ticket on the{" "}
           <Link to="/support" className="text-amber hover:underline">
             Support page
           </Link>
+          <IfLegalContact>
+            {" "}
+            or email <LegalEmail />
+          </IfLegalContact>
           .
         </p>
       </LegalSection>

@@ -239,10 +239,10 @@ export function PositionsPage() {
       trades.filter(
         (t) =>
           t.status === "open" &&
-          (t.tier ?? "50K") === activeTier &&
+          isActiveCombineTrade(t, combineId, activeTier) &&
           t.symbol === symbol,
       ),
-    [trades, activeTier, symbol],
+    [trades, activeTier, combineId, symbol],
   );
   const openAnalytics = useQueries({
     queries: openOnSymbol.map((t) => {

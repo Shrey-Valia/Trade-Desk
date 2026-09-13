@@ -189,6 +189,96 @@ describe("WorkingOrders row display", () => {
   });
 });
 
+/**
+ * OCO select mode used to be mouse-only: the row <div> carried
+ * role="checkbox" + aria-checked but no tabIndex and no onKeyDown, so rows
+ * were neither reachable by Tab nor activatable by Space/Enter — and the
+ * row's own edit/oco/cancel buttons were nested inside the checkbox role.
+ * The checkbox is now the ☑/☐ indicator itself.
+ */
+describe("WorkingOrders OCO selection — keyboard", () => {
+  beforeEach(() => {
+    tradesRef.current = {
+      trades: [
+        makeTrade({ id: 1, symbol: "SPY" }),
+        makeTrade({ id: 2, symbol: "QQQ" }),
+      ],
+    };
+  });
+  afterEach(() => vi.clearAllMocks());
+
+  const enterSelectMode = () =>
+    userEvent.click(screen.getByRole("button", { name: "link OCO" }));
+
+  it("exposes one named checkbox per row once select mode is on", async () => {
+    renderStrip();
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    await enterSelectMode();
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(2);
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select SPY limit order for OCO pairing",
+      }),
+    ).toBeInTheDocument();
+    boxes.forEach((b) => expect(b).toHaveAttribute("aria-checked", "false"));
+  });
+
+  it("is reachable by Tab and togglable by Space", async () => {
+    renderStrip();
+    await enterSelectMode();
+    const first = screen.getByRole("checkbox", {
+      name: "Select SPY limit order for OCO pairing",
+    });
+
+    // Tab must land on the checkbox — it's a real focusable control now.
+    first.focus();
+    expect(first).toHaveFocus();
+
+    await userEvent.keyboard(" ");
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select SPY limit order for OCO pairing",
+      }),
+    ).toHaveAttribute("aria-checked", "true");
+
+    // Space again unselects (toggle), keeping the mouse behaviour.
+    await userEvent.keyboard(" ");
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select SPY limit order for OCO pairing",
+      }),
+    ).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("enables LINK once two rows are checked from the keyboard", async () => {
+    renderStrip();
+    await enterSelectMode();
+    expect(screen.getByRole("button", { name: /link 0/ })).toBeDisabled();
+
+    for (const sym of ["SPY", "QQQ"]) {
+      const box = screen.getByRole("checkbox", {
+        name: `Select ${sym} limit order for OCO pairing`,
+      });
+      box.focus();
+      await userEvent.keyboard("{Enter}");
+    }
+    expect(screen.getByRole("button", { name: /link 2/ })).toBeEnabled();
+  });
+
+  it("does not nest the row's action buttons inside the checkbox", async () => {
+    renderStrip();
+    await enterSelectMode();
+    const box = screen.getByRole("checkbox", {
+      name: "Select SPY limit order for OCO pairing",
+    });
+    expect(box.querySelector("button")).toBeNull();
+    expect(
+      screen.getAllByRole("button", { name: "Edit order" })[0].closest("[role='checkbox']"),
+    ).toBeNull();
+  });
+});
+
 describe("display helpers", () => {
   it("describeWorkingLegs marks ratios and sides compactly", () => {
     expect(

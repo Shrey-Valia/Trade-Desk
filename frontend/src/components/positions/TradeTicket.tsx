@@ -1719,8 +1719,8 @@ function ActionButton({
   onClick: () => void;
   buttonRef?: React.Ref<HTMLButtonElement>;
 }) {
-  // Topstep aesthetic: solid action color fill, white-ish text, no
-  // border, slight rounded corners. NOT bullish/bearish (those are
+  // Topstep aesthetic: solid action color fill, dark text on the fill,
+  // no border, slight rounded corners. NOT bullish/bearish (those are
   // P&L colors); these are the action-affordance hues from
   // palette.actionBuy / palette.actionSell.
   const bg = disabled
@@ -1728,7 +1728,7 @@ function ActionButton({
     : intent === "buy"
       ? "bg-action-buy hover:bg-action-buy-hover active:bg-action-buy-active"
       : "bg-action-sell hover:bg-action-sell-hover active:bg-action-sell-active";
-  const textColor = disabled ? "text-fg-disabled" : "text-white";
+  const textColor = disabled ? "text-fg-disabled" : "text-tier-0";
   return (
     <button
       ref={buttonRef}
@@ -1750,7 +1750,6 @@ function ActionButton({
         className="tabular-nums"
         style={{
           fontSize: 12,
-          opacity: disabled ? 1 : 0.78,
           marginTop: 2,
         }}
       >

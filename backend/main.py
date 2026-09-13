@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import get_session, init_db
 from services.job_runs import run_logged
+from services.preflight import run_preflight
 from services.rate_limit import _client_ip, global_limiter
 from jobs.backup_db import backup_db, backup_db_if_stale
 from jobs.collect_options_chain import collect_options_chain
@@ -210,6 +211,13 @@ async def lifespan(app: FastAPI):
     # Error tracking first so failures during the rest of startup are
     # captured. No-op when SENTRY_DSN is unset (the default).
     _init_sentry()
+
+    # Say out loud what this deployment's configuration actually means, while
+    # `fly logs` is still the thing the operator is looking at. No-op outside
+    # production; raises PreflightError on a configuration that cannot work
+    # (see services/preflight.py for why the refuse/warn line sits where it
+    # does). Sentry is already up, so a refusal is reported, not just logged.
+    run_preflight()
 
     init_db()
 

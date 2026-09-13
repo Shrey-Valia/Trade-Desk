@@ -64,7 +64,12 @@ export function QuickOrder({
   // price we send (server re-prices market fills anyway, but be honest).
   const currentPrice = livePrice ?? target.price;
 
-  const cap = Math.max(1, maxContracts);
+  // Floor at 0, not 1: useOpenContractsCount really does return 0 remaining at
+  // the scaling cap, and clamping to 1 rendered a false "1 left" while leaving
+  // BUY/SELL live — one click then earned a server rejection where the main
+  // ticket shows an at-cap banner instead.
+  const cap = Math.max(0, maxContracts);
+  const atCap = cap < 1;
   const [contracts, setContracts] = useState(1);
   const [orderType, setOrderType] = useState<TicketOrderType>("market");
   const [trigger, setTrigger] = useState<number | null>(currentPrice);
@@ -90,8 +95,10 @@ export function QuickOrder({
 
   // Clamp qty to the live scaling cap (mirrors the TradeTicket clamp so a
   // quick order can never exceed the remaining size the server would accept).
+  // Never below 1: at cap the fire buttons are disabled outright, so the
+  // displayed size stays "+1" rather than an absurd "BUY +0".
   useEffect(() => {
-    setContracts((c) => Math.min(cap, Math.max(1, c)));
+    setContracts((c) => Math.min(Math.max(1, cap), Math.max(1, c)));
   }, [cap]);
 
   // Close on Escape + outside-click; restore focus to the previously focused
@@ -289,11 +296,14 @@ export function QuickOrder({
             +
           </QtyButton>
           <span
-            className="uppercase tracking-label-up text-fg-tertiary-2 ml-auto"
+            className={[
+              "uppercase tracking-label-up ml-auto",
+              atCap ? "text-amber" : "text-fg-tertiary-2",
+            ].join(" ")}
             style={{ fontSize: 11 }}
             title="Remaining contracts allowed by the scaling cap"
           >
-            {cap} left
+            {atCap ? "at cap" : `${cap} left`}
           </span>
         </div>
 
@@ -301,13 +311,13 @@ export function QuickOrder({
         <div className="grid grid-cols-2 gap-1.5" style={{ height: 30 }}>
           <button
             type="button"
-            disabled={pending || !triggerOk}
+            disabled={pending || !triggerOk || atCap}
             onClick={() => fire("buy")}
             className={[
               "rounded-btn font-semibold tracking-wide flex items-center justify-center transition-colors duration-100",
-              pending || !triggerOk
+              pending || !triggerOk || atCap
                 ? "bg-tier-1 text-fg-disabled cursor-not-allowed"
-                : "bg-action-buy hover:bg-action-buy-hover active:bg-action-buy-active text-white",
+                : "bg-action-buy hover:bg-action-buy-hover active:bg-action-buy-active text-tier-0",
             ].join(" ")}
             style={{ fontSize: 12 }}
           >
@@ -315,13 +325,13 @@ export function QuickOrder({
           </button>
           <button
             type="button"
-            disabled={pending || !triggerOk}
+            disabled={pending || !triggerOk || atCap}
             onClick={() => fire("sell")}
             className={[
               "rounded-btn font-semibold tracking-wide flex items-center justify-center transition-colors duration-100",
-              pending || !triggerOk
+              pending || !triggerOk || atCap
                 ? "bg-tier-1 text-fg-disabled cursor-not-allowed"
-                : "bg-action-sell hover:bg-action-sell-hover active:bg-action-sell-active text-white",
+                : "bg-action-sell hover:bg-action-sell-hover active:bg-action-sell-active text-tier-0",
             ].join(" ")}
             style={{ fontSize: 12 }}
           >

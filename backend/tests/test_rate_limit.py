@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from services.rate_limit import RateLimiter, TokenBucket, auth_limiter, global_limiter
+from services.rate_limit import (
+    RateLimiter,
+    TokenBucket,
+    TokenBucketExhausted,
+    auth_limiter,
+    global_limiter,
+)
 
 
 class FakeClock:
@@ -112,6 +118,77 @@ def test_token_bucket_refills_over_time():
 def test_token_bucket_rejects_non_positive_rate():
     with pytest.raises(ValueError):
         TokenBucket(rate=0.0, capacity=1.0)
+
+
+def test_token_bucket_waits_normally_below_the_ceiling():
+    """The ceiling must not disturb ordinary spacing — a wait under the cap
+    still sleeps and still returns the slept duration."""
+    clk = FakeClock()
+    sleeper = FakeSleeper(clk)
+    tb = TokenBucket(rate=5.0, capacity=1.0, clock=clk, sleep=sleeper, max_wait_s=10.0)
+    assert tb.take() == 0.0
+    assert tb.take() == pytest.approx(0.2, abs=1e-9)
+    assert sleeper.slept == [pytest.approx(0.2, abs=1e-9)]
+
+
+class StuckSleeper:
+    """Records sleeps WITHOUT advancing the clock.
+
+    This is what oversubscription actually looks like: many threads queue on
+    the bucket at effectively the same instant, so wall-clock time does not
+    advance enough to repay the debt between takes. FakeSleeper would refill
+    the bucket on every sleep and the backlog could never build."""
+
+    def __init__(self) -> None:
+        self.slept: list[float] = []
+
+    def __call__(self, secs: float) -> None:
+        self.slept.append(secs)
+
+
+def test_token_bucket_refuses_to_queue_past_the_ceiling():
+    """Sustained oversubscription used to grow the wait without bound while
+    each caller parked a threadpool thread. Past the cap, take() raises
+    instead of joining the queue."""
+    sleeper = StuckSleeper()
+    tb = TokenBucket(
+        rate=1.0, capacity=1.0, clock=FakeClock(), sleep=sleeper, max_wait_s=2.0
+    )
+    assert tb.take() == 0.0                            # the one banked token
+    assert tb.take() == pytest.approx(1.0, abs=1e-9)   # 1s debt — under the cap
+    assert tb.take() == pytest.approx(2.0, abs=1e-9)   # 2s — exactly at the cap
+    with pytest.raises(TokenBucketExhausted):          # 3s — over it
+        tb.take()
+
+
+def test_token_bucket_rejection_does_not_deepen_the_queue():
+    """A refused caller must not consume — otherwise every rejection makes
+    the wait worse for the callers still legitimately queued."""
+    sleeper = StuckSleeper()
+    tb = TokenBucket(
+        rate=1.0, capacity=1.0, clock=FakeClock(), sleep=sleeper, max_wait_s=1.0
+    )
+    tb.take()                        # banked token
+    tb.take()                        # 1s debt — at the cap
+    with pytest.raises(TokenBucketExhausted):
+        tb.take()
+    before = tb._tokens
+    with pytest.raises(TokenBucketExhausted):
+        tb.take()
+    assert tb._tokens == before      # the rejection cost nothing
+    assert sleeper.slept == [pytest.approx(1.0, abs=1e-9)]  # rejections never slept
+
+
+def test_token_bucket_exhausted_reports_the_wait_it_refused():
+    sleeper = StuckSleeper()
+    tb = TokenBucket(
+        rate=1.0, capacity=1.0, clock=FakeClock(), sleep=sleeper, max_wait_s=1.0
+    )
+    tb.take()
+    tb.take()
+    with pytest.raises(TokenBucketExhausted) as exc:
+        tb.take()
+    assert exc.value.wait_s == pytest.approx(2.0, abs=1e-9)
 
 
 def test_signin_throttled_returns_429(api_client, monkeypatch):

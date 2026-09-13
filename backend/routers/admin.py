@@ -1740,6 +1740,49 @@ def jobs_health(db: Session = Depends(get_session)) -> list[JobHealthOut]:
 
 
 # ---------------------------------------------------------------------------
+# Configuration preflight
+# ---------------------------------------------------------------------------
+
+
+class PreflightFindingOut(BaseModel):
+    level: str
+    key: str
+    problem: str
+    fix: str
+
+
+class PreflightOut(BaseModel):
+    environment: str
+    is_production: bool
+    findings: list[PreflightFindingOut]
+
+
+@router.get("/preflight", response_model=PreflightOut)
+def preflight_report() -> PreflightOut:
+    """What this deployment's configuration actually means.
+
+    The same check that runs at startup (services/preflight.py), re-evaluated
+    live so the operator console can show it without anyone reading `fly
+    logs`. Boot-time warnings scroll away within minutes of a deploy; the
+    settings they describe do not. Outside production the list is empty by
+    design — every one of these defaults is correct on a laptop.
+
+    Values are never echoed: each finding names the SETTING and what its
+    current value implies, so this is safe to render in a browser.
+    """
+    from services.preflight import check_config
+
+    return PreflightOut(
+        environment=settings.app_env,
+        is_production=settings.is_production,
+        findings=[
+            PreflightFindingOut(level=f.level, key=f.key, problem=f.problem, fix=f.fix)
+            for f in check_config()
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Audit trail
 # ---------------------------------------------------------------------------
 

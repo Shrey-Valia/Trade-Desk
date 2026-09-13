@@ -61,6 +61,7 @@ services:
       # back office / payouts
       - ADMIN_EMAILS
       - PAYOUT_AUTO_APPROVE
+      - KYC_AUTO_VERIFY
       # closed launch — see "Invite-only launch" in docs/DEPLOYMENT.md
       - SIGNUP_REQUIRE_INVITE
       - INVITE_DEFAULT_TTL_DAYS
@@ -80,9 +81,26 @@ services:
       - STRIPE_PRICE_50K
       - STRIPE_PRICE_100K
       - STRIPE_PRICE_150K
+      # legal identity for the public Terms/Privacy/Refund pages (unset =
+      # the pages omit the clause and point at the Support page)
+      - LEGAL_ENTITY_NAME
+      - LEGAL_ENTITY_JURISDICTION
+      - LEGAL_CONTACT_EMAIL
+      - LEGAL_CONTACT_ADDRESS
       # backups / migration escape hatch
       - BACKUP_RETENTION_DAYS
       - ALLOW_LEGACY_TRADE_WIPE
+      # Offsite backup mirroring (unset = off, nothing leaves this volume —
+      # which is the same volume the database lives on). See "Offsite copies"
+      # in docs/DEPLOYMENT.md.
+      - BACKUP_OFFSITE_PROVIDER
+      - BACKUP_S3_BUCKET
+      - BACKUP_S3_REGION
+      - BACKUP_S3_ENDPOINT_URL
+      - BACKUP_S3_PREFIX
+      - BACKUP_S3_ACCESS_KEY_ID
+      - BACKUP_S3_SECRET_ACCESS_KEY
+      - BACKUP_OFFSITE_RETENTION_DAYS
       # Postgres opt-in. Deliberately NOT a bare `- DATABASE_URL`
       # passthrough: this repo's dev .env sets a RELATIVE sqlite path
       # (sqlite:///./data/dashboard.db, correct when the backend runs with

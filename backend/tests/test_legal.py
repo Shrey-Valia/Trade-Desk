@@ -7,10 +7,13 @@ e-sign validation, and IP capture on the acceptance rows.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from config import settings
 from models.agreement import AgreementAcceptance
 from models.user import User
 from services.legal import (
@@ -268,3 +271,77 @@ def test_acceptances_are_per_user(auth_client, second_user_client, session_facto
             assert_consented(session, rival)
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/legal/identity — who the public documents name as the counterparty
+# ---------------------------------------------------------------------------
+
+
+def test_identity_is_public(client):
+    """The legal pages are reachable from the landing footer without a
+    session, so the identity behind them has to be too."""
+    assert client.get("/api/legal/identity").status_code == 200
+
+
+def test_identity_reports_unconfigured_as_blank_not_placeholder(client, monkeypatch):
+    """The regression this endpoint exists for: the pages used to hard-code
+    legal@tradedesk.example, an address that bounces. Blank is the honest
+    answer — the frontend then points at the Support page instead."""
+    for field in (
+        "legal_entity_name",
+        "legal_entity_jurisdiction",
+        "legal_contact_email",
+        "legal_contact_address",
+    ):
+        monkeypatch.setattr(settings, field, "")
+    body = client.get("/api/legal/identity").json()
+    assert body == {
+        "entity_name": "",
+        "jurisdiction": "",
+        "contact_email": "",
+        "contact_address": "",
+        "configured": False,
+    }
+    assert "example" not in json.dumps(body)
+
+
+def test_identity_returns_configured_values(client, monkeypatch):
+    monkeypatch.setattr(settings, "legal_entity_name", "Example Trading LLC")
+    monkeypatch.setattr(settings, "legal_entity_jurisdiction", "Delaware, United States")
+    monkeypatch.setattr(settings, "legal_contact_email", "legal@example.com")
+    monkeypatch.setattr(settings, "legal_contact_address", "1 Main St, Dover DE 19901")
+    body = client.get("/api/legal/identity").json()
+    assert body["entity_name"] == "Example Trading LLC"
+    assert body["jurisdiction"] == "Delaware, United States"
+    assert body["contact_email"] == "legal@example.com"
+    assert body["contact_address"] == "1 Main St, Dover DE 19901"
+    assert body["configured"] is True
+
+
+def test_identity_strips_whitespace_and_treats_it_as_unset(client, monkeypatch):
+    monkeypatch.setattr(settings, "legal_entity_name", "   ")
+    monkeypatch.setattr(settings, "legal_contact_email", "  legal@example.com  ")
+    body = client.get("/api/legal/identity").json()
+    assert body["entity_name"] == ""
+    assert body["contact_email"] == "legal@example.com"
+    assert body["configured"] is False
+
+
+@pytest.mark.parametrize(
+    "entity,email,expected",
+    [
+        ("Example Trading LLC", "legal@example.com", True),
+        ("Example Trading LLC", "", False),
+        ("", "legal@example.com", False),
+        ("", "", False),
+    ],
+)
+def test_configured_requires_both_an_entity_and_a_contact(
+    client, monkeypatch, entity, email, expected
+):
+    """A name with no way to reach it, or an inbox belonging to nobody named,
+    is not a counterparty — the pages gate their clause on both."""
+    monkeypatch.setattr(settings, "legal_entity_name", entity)
+    monkeypatch.setattr(settings, "legal_contact_email", email)
+    assert client.get("/api/legal/identity").json()["configured"] is expected

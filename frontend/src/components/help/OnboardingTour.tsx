@@ -168,7 +168,7 @@ export function OnboardingTour() {
             <button
               type="button"
               onClick={() => (isLast ? finish() : setStep((s) => s + 1))}
-              className="bg-action-buy hover:bg-action-buy-hover text-white rounded-btn px-4 py-1.5 text-sm font-medium"
+              className="bg-action-buy hover:bg-action-buy-hover text-tier-0 rounded-btn px-4 py-1.5 text-sm font-medium"
             >
               {isLast ? "Start trading" : "Next"}
             </button>
@@ -208,7 +208,7 @@ export function OnboardingTour() {
             <button
               type="button"
               onClick={closeIntro}
-              className="bg-action-buy hover:bg-action-buy-hover text-white rounded-btn px-4 py-1.5 text-sm font-medium"
+              className="bg-action-buy hover:bg-action-buy-hover text-tier-0 rounded-btn px-4 py-1.5 text-sm font-medium"
             >
               Choose my account
             </button>

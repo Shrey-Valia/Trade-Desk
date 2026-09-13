@@ -151,7 +151,7 @@ def test_kyc_verified_resubmit_409(auth_client):
 
 
 def test_kyc_pending_when_auto_verify_off(auth_client, db, monkeypatch):
-    monkeypatch.setattr(settings, "kyc_auto_verify", False, raising=False)
+    monkeypatch.setattr(settings, "kyc_auto_verify_override", False)
     res = _submit_kyc(auth_client)
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "pending"
@@ -166,7 +166,7 @@ def test_kyc_pending_when_auto_verify_off(auth_client, db, monkeypatch):
 
 
 def test_kyc_admin_reject_reason_surfaces(auth_client, db, monkeypatch):
-    monkeypatch.setattr(settings, "kyc_auto_verify", False, raising=False)
+    monkeypatch.setattr(settings, "kyc_auto_verify_override", False)
     assert _submit_kyc(auth_client).status_code == 200
     verification.decide_kyc(db, _user(db).id, approve=False, reason="Document unreadable")
     kyc = auth_client.get("/api/verification/status").json()["kyc"]
@@ -432,7 +432,7 @@ def test_assert_payout_eligible_walks_each_gate(auth_client, db):
 
 def test_assert_payout_eligible_pending_and_rejected_block(auth_client, db, monkeypatch):
     user = _user(db)
-    monkeypatch.setattr(settings, "kyc_auto_verify", False, raising=False)
+    monkeypatch.setattr(settings, "kyc_auto_verify_override", False)
     assert _submit_kyc(auth_client).status_code == 200  # parks at pending
     db.expire_all()
     _assert_blocked_with(db, user, "kyc_required")

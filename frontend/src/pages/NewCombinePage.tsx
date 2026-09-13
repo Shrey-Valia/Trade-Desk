@@ -431,7 +431,7 @@ function Configure({
           type="button"
           disabled={purchase.isPending || accepting || (needsConsent && !agreed)}
           onClick={startPurchase}
-          className="h-10 w-full uppercase tracking-label-up bg-action-buy hover:bg-action-buy-hover text-white font-semibold rounded-btn disabled:opacity-50"
+          className="h-10 w-full uppercase tracking-label-up bg-action-buy hover:bg-action-buy-hover text-tier-0 font-semibold rounded-btn disabled:opacity-50"
           style={{ fontSize: 12 }}
         >
           {purchase.isPending || accepting
@@ -616,7 +616,7 @@ function Launch({ combine }: { combine: CombineOut }) {
         </button>
         <Link
           to="/positions"
-          className="h-9 inline-flex items-center justify-center uppercase tracking-label-up bg-action-buy hover:bg-action-buy-hover text-white font-semibold rounded-btn"
+          className="h-9 inline-flex items-center justify-center uppercase tracking-label-up bg-action-buy hover:bg-action-buy-hover text-tier-0 font-semibold rounded-btn"
           style={{ fontSize: 11 }}
         >
           Start trading →

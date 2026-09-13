@@ -459,7 +459,7 @@ export function StrategyBuilder({ symbol }: Props) {
           className={[
             "ml-auto rounded-btn px-3 font-semibold uppercase tracking-label-up transition-colors duration-100",
             canFire
-              ? "bg-action-buy hover:bg-action-buy-hover text-white"
+              ? "bg-action-buy hover:bg-action-buy-hover text-tier-0"
               : "bg-tier-1 text-fg-disabled cursor-not-allowed",
           ].join(" ")}
           style={{ height: 28, fontSize: 12 }}

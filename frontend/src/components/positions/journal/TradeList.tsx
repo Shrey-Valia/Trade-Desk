@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { useUpdateTrade } from "@/hooks/useTrades";
@@ -590,6 +590,30 @@ function CloseForm({
  *  overlay; the click is stopped so it never toggles the row selection. */
 function ScreenshotThumb({ url }: { url: string }) {
   const [open, setOpen] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  // The overlay is full-bleed image, so ui/Modal's panel layout doesn't fit;
+  // it instead gets the two dismissal paths a dialog owes a keyboard user —
+  // Escape and a real close button — plus focus in/out. The listener is
+  // registered on `window` in the CAPTURE phase so it runs BEFORE
+  // ui/Modal's document-capture handler (capture propagates window →
+  // document), and stopPropagation keeps an enclosing Modal from closing
+  // along with the lightbox. Same shape as journal/DayModal's thumbnail.
+  useEffect(() => {
+    if (!open) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    function handleKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    }
+    window.addEventListener("keydown", handleKey, true);
+    return () => {
+      window.removeEventListener("keydown", handleKey, true);
+      prevFocus?.focus?.();
+    };
+  }, [open]);
   return (
     <>
       <button
@@ -621,6 +645,19 @@ function ScreenshotThumb({ url }: { url: string }) {
             setOpen(false);
           }}
         >
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+            }}
+            aria-label="Close screenshot"
+            className="absolute top-3 right-3 leading-none px-2 py-1 border border-hairline-strong bg-tier-1 text-fg-secondary hover:text-fg-primary rounded-btn"
+            style={{ fontSize: 14 }}
+          >
+            ×
+          </button>
           <img
             src={url}
             alt="trade screenshot"

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 
+import { IfLegalContact, LegalEmail } from "./LegalContact";
 import { LegalDocShell, LegalList, LegalSection, Strong } from "./LegalDocShell";
 
 /**
@@ -84,9 +85,12 @@ export function RefundPolicyPage() {
           Open a <Strong>billing ticket</Strong> from the{" "}
           <Link to="/support" className="text-amber hover:underline">
             Support page
-          </Link>{" "}
-          (or email billing@tradedesk.example from your account email) with
-          the combine's account code. We verify the no-trades condition
+          </Link>
+          <IfLegalContact>
+            {" "}
+            (or email <LegalEmail /> from your account email)
+          </IfLegalContact>{" "}
+          with the combine's account code. We verify the no-trades condition
           against the account's order record — the platform's event log is
           authoritative — and answer within 5 business days. Approved refunds
           are returned to the original payment method; processing time

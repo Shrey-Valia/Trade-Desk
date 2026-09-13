@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Modal } from "@/components/ui/Modal";
 import { useUpdateTrade } from "@/hooks/useTrades";
@@ -425,6 +425,29 @@ function NetMoveLine({ pnl }: { pnl: number }) {
  *  lightbox overlay. */
 function ScreenshotThumb({ url }: { url: string }) {
   const [open, setOpen] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  // Escape must close ONLY the lightbox, not the day-review Modal this is
+  // nested inside. ui/Modal listens on `document` in the capture phase, so
+  // this one listens on `window` — capture propagates window → document, so
+  // it fires first — and stopPropagation stops the event before the Modal's
+  // handler ever sees it. Also moves focus to the close button and restores
+  // it to the thumbnail on dismissal.
+  useEffect(() => {
+    if (!open) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    function handleKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    }
+    window.addEventListener("keydown", handleKey, true);
+    return () => {
+      window.removeEventListener("keydown", handleKey, true);
+      prevFocus?.focus?.();
+    };
+  }, [open]);
   return (
     <div className="mt-2">
       <button
@@ -450,6 +473,22 @@ function ScreenshotThumb({ url }: { url: string }) {
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6"
           onClick={() => setOpen(false)}
         >
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+            }}
+            // Not a bare "Close" — the day-review modal's own header ✕
+            // already owns that name; two identical names inside one dialog
+            // is a coin-flip for a screen-reader user.
+            aria-label="Close screenshot"
+            className="absolute top-3 right-3 leading-none px-2 py-1 border border-hairline-strong bg-tier-1 text-fg-secondary hover:text-fg-primary rounded-btn"
+            style={{ fontSize: 14 }}
+          >
+            ×
+          </button>
           <img
             src={url}
             alt="trade screenshot"

@@ -274,7 +274,17 @@ class Settings(BaseSettings):
     # approves unattended. Flip PAYOUT_AUTO_APPROVE=0 to require a human on
     # every request (the real-firm posture). The window is the legacy
     # PAYOUT_REVIEW_WINDOW_H, now owned here.
-    payout_auto_approve: bool = True
+    # PROD-SAFE BY DEFAULT, like cookie_secure above: left unset it follows
+    # app_env — OFF in production (a human adjudicates every payout), ON in
+    # development so the sim desk and the test suite keep today's behaviour.
+    # An explicit PAYOUT_AUTO_APPROVE always wins, in either direction; the
+    # property below resolves it, and services.preflight warns when a
+    # production deployment has explicitly turned it back on. This is real
+    # money leaving on a timer — the default should have to be chosen, not
+    # inherited.
+    payout_auto_approve_override: bool | None = Field(
+        default=None, alias="payout_auto_approve"
+    )
     payout_review_window_h: float = 1.0
 
     # Payout-request prerequisites (each individually toggleable so tests and
@@ -287,7 +297,12 @@ class Settings(BaseSettings):
     # Simulated KYC provider: when True a submission auto-decides instantly
     # (verified unless the declared country is blocked below); when False the
     # submission parks at 'pending' for an admin decision.
-    kyc_auto_verify: bool = True
+    # Also PROD-SAFE BY DEFAULT (see payout_auto_approve above): unset means
+    # OFF in production, so a submission parks at 'pending' for a human
+    # instead of being rubber-stamped by a simulated provider.
+    kyc_auto_verify_override: bool | None = Field(
+        default=None, alias="kyc_auto_verify"
+    )
     # ISO-3166 alpha-2 country codes refused at KYC (OFAC-comprehensive
     # jurisdictions). Checked case-insensitively.
     ofac_blocked_countries: tuple[str, ...] = ("CU", "IR", "KP", "SY", "RU", "BY")
@@ -326,6 +341,61 @@ class Settings(BaseSettings):
     # trade row). Set ALLOW_LEGACY_TRADE_WIPE=1 only for a genuine one-time
     # adoption of a pre-tier database.
     allow_legacy_trade_wipe: bool = False
+
+    # ---------------------------------------------------------------------
+    # Legal identity. The public legal pages (terms / privacy / refund / risk)
+    # are a contract with real people, and a contract needs a counterparty:
+    # WHO is bound, WHERE disputes are heard, and a contact that reaches a
+    # human. None of that can live in source — it is per-operator — so the
+    # pages read it from here through GET /api/legal/identity.
+    #
+    # Unset is handled honestly: the pages fall back to the in-app Support
+    # page and OMIT the entity/governing-law clause entirely rather than
+    # print a plausible-looking placeholder. An address that bounces is worse
+    # than no address, and boilerplate naming a jurisdiction nobody chose is
+    # worse than an obvious gap. The production preflight warns while these
+    # are blank.
+    #
+    # Filling these in is NOT a substitute for counsel reviewing the text.
+    legal_entity_name: str = ""
+    # Free-form, as it should read in a clause: "Delaware, United States".
+    legal_entity_jurisdiction: str = ""
+    # One address is deliberate — a small operator has one inbox, and three
+    # aliases that all forward to it help nobody.
+    legal_contact_email: str = ""
+    # Optional postal address. Privacy regimes generally expect one; rendered
+    # only when set.
+    legal_contact_address: str = ""
+
+    # ---------------------------------------------------------------------
+    # OFFSITE backup replication. backup_dir lives on the SAME volume as the
+    # live SQLite database (both default under PROJECT_ROOT/data, /app/data
+    # in the image), so local backups share their failure domain with the
+    # thing they protect. Setting a provider mirrors each nightly snapshot to
+    # object storage. "none" (default) = off, nothing is sent anywhere;
+    # "s3" = any S3-compatible bucket (Cloudflare R2, Backblaze B2, MinIO,
+    # AWS S3) — see services/offsite_backup.py and docs/DEPLOYMENT.md.
+    #
+    # With provider="s3" an INCOMPLETE configuration is a loud error, not a
+    # skip: a backup that silently stopped replicating is the exact failure
+    # this exists to catch.
+    backup_offsite_provider: str = "none"
+    backup_s3_bucket: str = ""
+    # R2 requires the literal "auto"; AWS and B2 need their real region.
+    backup_s3_region: str = "auto"
+    # Empty = bare AWS S3 (virtual-hosted addressing). Set to the provider's
+    # endpoint (e.g. https://<account>.r2.cloudflarestorage.com) for anything
+    # else, which switches to path-style addressing.
+    backup_s3_endpoint_url: str = ""
+    backup_s3_prefix: str = "backups/"
+    backup_s3_access_key_id: str = ""
+    backup_s3_secret_access_key: str = ""
+    backup_offsite_timeout_s: float = 60.0
+    # Remote retention. 0 (default) = the app NEVER deletes an offsite
+    # object; prefer a bucket lifecycle rule, whose blast radius is not this
+    # process. A positive value enables app-side pruning, which additionally
+    # always keeps the newest few snapshots (see prune_remote).
+    backup_offsite_retention_days: int = 0
 
     # ---------------------------------------------------------------------
     # Trading-universe + quote-quality enforcement on the OPEN path.
@@ -458,6 +528,22 @@ class Settings(BaseSettings):
         if self.cookie_secure_override is not None:
             return self.cookie_secure_override
         return self.is_production
+
+    @property
+    def payout_auto_approve(self) -> bool:
+        """Effective payout auto-approval. Explicit env wins; otherwise OFF in
+        production (a human on every payout) and ON in development."""
+        if self.payout_auto_approve_override is not None:
+            return self.payout_auto_approve_override
+        return not self.is_production
+
+    @property
+    def kyc_auto_verify(self) -> bool:
+        """Effective KYC auto-verification. Explicit env wins; otherwise OFF in
+        production (submissions park at 'pending') and ON in development."""
+        if self.kyc_auto_verify_override is not None:
+            return self.kyc_auto_verify_override
+        return not self.is_production
 
     @property
     def session_ttl(self) -> timedelta:
